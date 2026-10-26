@@ -1,22 +1,22 @@
 # Graph Report - agent-hub  (2026-10-26)
 
 ## Corpus Check
-- 148 files · ~110,477 words
+- 160 files · ~115,947 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1057 nodes · 2719 edges · 75 communities (59 shown, 16 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 85 edges (avg confidence: 0.8)
+- 1095 nodes · 2833 edges · 72 communities (56 shown, 16 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 86 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `dce21bbd`
+- Built from commit: `ebc8a9e5`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - h
-- compilers.ts
+- workmodes.ts
 - Agent Hub (local-first hub for coding agents)
 - prompt.md (pinned reconstruction prompt S1)
 - Tooling for building the project (TOOLING.md)
@@ -30,7 +30,7 @@
 - install-remote.ts
 - redact
 - build-tokens.mjs
-- hooks-adopt.ts
+- hooks.ts
 - scout-remote.ts
 - hub.js
 - fake-agent.mjs
@@ -39,18 +39,16 @@
 - 2. Схема базы
 - server.test.ts
 - mcp-test.ts
-- auth.ts
+- probe.ts
 - core.test.ts
 - install.test.ts
 - hooks-adopt.test.ts
-- econ.test.ts
 - econ.ts
-- AgentId
+- RunManager
 - core/types.ts
-- bench.ts
+- AgentId
 - install-remote.test.ts
 - loading.test.ts
-- history/codex.ts
 - registry.ts
 - Agent Hub v0.1 — отчёт: что сделано, как работает, как запускать
 - run.test.ts
@@ -66,7 +64,6 @@
 - design-study.md
 - mobile-app.md
 - web-saas.md
-- adapters/codex.ts
 - Security and vulnerability checks (SECURITY.md)
 - Deviations from the plan (ADR-010 to ADR-015)
 - Phase 3 — Model and effort routing toward the ideal
@@ -86,16 +83,16 @@
 - cache.js
 
 ## God Nodes (most connected - your core abstractions)
-1. `h()` - 75 edges
-2. `main()` - 39 edges
+1. `h()` - 76 edges
+2. `main()` - 40 edges
 3. `btn()` - 35 edges
-4. `icon()` - 31 edges
-5. `chip()` - 31 edges
-6. `AgentId` - 30 edges
-7. `pageHead()` - 25 edges
-8. `toast()` - 23 edges
-9. `readText()` - 22 edges
-10. `RunManager` - 22 edges
+4. `chip()` - 32 edges
+5. `AgentId` - 31 edges
+6. `icon()` - 31 edges
+7. `RunManager` - 25 edges
+8. `pageHead()` - 25 edges
+9. `toast()` - 23 edges
+10. `readText()` - 22 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Agent Hub (local-first hub for coding agents)` --semantically_similar_to--> `Repository map`  [INFERRED] [semantically similar]
@@ -122,15 +119,15 @@
 - **Token and cost reduction measures validated by A/B** — docs_optimization_stable_prefix, docs_optimization_two_level_skills, docs_tooling_ponytail, docs_tooling_graphify, docs_optimization_golden_task_set, docs_tooling_token_saving_measures [INFERRED 0.85]
 - **Four-theme design system pipeline** — design_design_system_tokens_css, design_design_system_shadcn_bridge, design_design_system_contrast_measurements, design_preview [INFERRED 0.85]
 
-## Communities (75 total, 16 thin omitted)
+## Communities (72 total, 16 thin omitted)
 
 ### Community 0 - "h"
 Cohesion: 0.08
-Nodes (115): api, call(), prefs, qs(), stream(), app, main, NAV (+107 more)
+Nodes (117): api, call(), prefs, qs(), stream(), app, main, NAV (+109 more)
 
-### Community 1 - "compilers.ts"
-Cohesion: 0.27
-Nodes (12): compileAll(), compileMcpClaude(), compileMcpCodex(), compileRules(), compileSkill(), McpJson, mcpName(), projectType() (+4 more)
+### Community 1 - "workmodes.ts"
+Cohesion: 0.22
+Nodes (11): AP_DEPTHS, AP_MODES, applyWorkMode(), CLASSES, loadWorkModes(), ORDER, parseWorkMode(), PERMS (+3 more)
 
 ### Community 2 - "Agent Hub (local-first hub for coding agents)"
 Cohesion: 0.09
@@ -145,24 +142,24 @@ Cohesion: 0.14
 Nodes (21): Agent Hub Design System v0.1, Accent edge (light themes), Accent fill vs accent text rule, First component set (limit meter, handoff card, stage stepper, approval diff sheet), Measured contrast table, Material: opaque work surfaces, glass only for navigation, shadcn/ui variable bridge, Typography (Golos Text, JetBrains Mono) (+13 more)
 
 ### Community 5 - "store.ts"
-Cohesion: 0.10
-Nodes (23): db, t, cf, claudeDir, codexDir, rollout, rolloutSub, st (+15 more)
+Cohesion: 0.07
+Nodes (52): db, t, Block, clip(), isNoise(), Line, syncClaude(), SyncStats (+44 more)
 
 ### Community 6 - "loading.ts"
 Cohesion: 0.16
-Nodes (22): auditLoading(), CLAUDE_FILE, ClaudeLocal, CodexBlock, compileProfile(), Desired, mcpNamesClaude(), mcpNamesCodex() (+14 more)
+Nodes (18): auditLoading(), CLAUDE_FILE, ClaudeLocal, CodexBlock, compileProfile(), Desired, LoadingAudit, mcpNamesClaude() (+10 more)
 
 ### Community 7 - "main.ts"
-Cohesion: 0.22
-Nodes (31): detectAgents(), summarize(), Args, BOOL, cmdBench(), cmdConfig(), cmdGet(), cmdHooks() (+23 more)
+Cohesion: 0.24
+Nodes (29): Args, BOOL, cmdBench(), cmdGet(), cmdHooks(), cmdInit(), cmdInstall(), cmdMcp() (+21 more)
 
 ### Community 8 - "api.ts"
-Cohesion: 0.11
-Nodes (15): openLogin(), PICK_PS, pickFolder(), addLimit(), latestLimit(), Body, clip(), entryView() (+7 more)
+Cohesion: 0.09
+Nodes (23): AuthInfo, authStatus(), cache, forgetAuth(), parseAuth(), Runner, AgentInfo, codexFromAppData() (+15 more)
 
 ### Community 9 - "index.ts"
-Cohesion: 0.15
-Nodes (24): ARCH, archDoc(), box(), build(), check(), dataDoc(), Doc, Format (+16 more)
+Cohesion: 0.14
+Nodes (25): ARCH, archDoc(), box(), build(), check(), dataDoc(), Doc, Format (+17 more)
 
 ### Community 10 - "security.mjs"
 Cohesion: 0.12
@@ -173,24 +170,24 @@ Cohesion: 0.05
 Nodes (37): 0. Document map, 10. Definition of Done (every task), 11. Risks and open questions, 12. Decisions so far (by the author), 1.1 Problem, 1.2 Product, 1.3 Users, 1.4 Goals / non-goals / anti-goals (+29 more)
 
 ### Community 12 - "install-remote.ts"
-Cohesion: 0.26
-Nodes (11): ALLOWED(), defaultTextFetcher(), planLibraryInstall(), Preview, previewComponent(), RawItem, relOk(), slug() (+3 more)
+Cohesion: 0.27
+Nodes (10): ALLOWED(), defaultTextFetcher(), planLibraryInstall(), Preview, previewComponent(), RawItem, relOk(), slug() (+2 more)
 
 ### Community 13 - "redact"
-Cohesion: 0.14
-Nodes (19): fake, run(), withFake(), Block, brief(), PERMISSION, codexAdapter, RunHandle (+11 more)
+Cohesion: 0.12
+Nodes (26): fake, run(), withFake(), Block, brief(), claudeAdapter, codexAdapter, Item (+18 more)
 
 ### Community 14 - "build-tokens.mjs"
 Cohesion: 0.29
 Nodes (6): bridge, css, root, sel, shared, themes
 
-### Community 15 - "hooks-adopt.ts"
-Cohesion: 0.25
-Nodes (9): adoptHooks(), AdoptResult, EVENT_MAP, tokenize(), classifyHooks(), ClaudeHooks, CODEX_KNOWN_EVENTS, HookReport (+1 more)
+### Community 15 - "hooks.ts"
+Cohesion: 0.47
+Nodes (5): classifyHooks(), ClaudeHooks, CODEX_KNOWN_EVENTS, HookReport, Compat
 
 ### Community 16 - "scout-remote.ts"
-Cohesion: 0.16
-Nodes (14): Candidate, AitmplItem, defaultFetcher(), fetchAitmpl(), Fetcher, GhRunner, risk(), sample (+6 more)
+Cohesion: 0.15
+Nodes (15): Candidate, AitmplItem, defaultFetcher(), fetchAitmpl(), Fetcher, GhRunner, risk(), searchGithub() (+7 more)
 
 ### Community 17 - "hub.js"
 Cohesion: 0.50
@@ -212,29 +209,25 @@ Nodes (8): db, fake, fakeAgent, fakeExe, runs, scenario, sk, stub
 Cohesion: 0.36
 Nodes (6): ProbeResult, probeStdio(), Server, dir, fakeServer, testProject()
 
-### Community 26 - "auth.ts"
-Cohesion: 0.31
-Nodes (6): AuthInfo, authStatus(), cache, forgetAuth(), parseAuth(), Runner
-
-### Community 30 - "econ.test.ts"
-Cohesion: 0.43
-Nodes (6): calibrate(), estimate, pct(), profileFromHistory(), pick(), weighted()
+### Community 26 - "probe.ts"
+Cohesion: 0.21
+Nodes (12): Capability, classify(), Ev, IS_TOOL, loadMatrix(), ModeMatrix, probeModes(), repo() (+4 more)
 
 ### Community 31 - "econ.ts"
-Cohesion: 0.10
-Nodes (27): bucket(), buildCases(), bundle(), Case, exportCases(), installId(), isoWeek(), NEVER_INCLUDED (+19 more)
+Cohesion: 0.06
+Nodes (55): advise(), Choice, EXPLORABLE, full(), GPT_EFFORT, left(), LimitState, MODEL_GUIDE (+47 more)
 
-### Community 32 - "AgentId"
-Cohesion: 0.13
-Nodes (14): AgentInfo, BenchOpts, finished(), Pick, LoadingAudit, SkillInfo, ToolRow, RootInfo (+6 more)
+### Community 32 - "RunManager"
+Cohesion: 0.17
+Nodes (8): BenchOpts, Db, runHooks(), waitEnd(), projectTypeOf(), RunManager, waitForRun(), Ctx
 
 ### Community 33 - "core/types.ts"
-Cohesion: 0.18
-Nodes (18): buildLock(), listPacks(), loadPack(), Pack, planInit(), InstallItem, planInstall(), ApplyResult (+10 more)
+Cohesion: 0.12
+Nodes (34): compileAll(), compileMcpClaude(), compileMcpCodex(), compileRules(), compileSkill(), McpJson, mcpName(), projectType() (+26 more)
 
-### Community 34 - "bench.ts"
-Cohesion: 0.08
-Nodes (40): BenchRow, CLASSES, freshRepo(), GoldenTask, gradeRepo(), loadTasks(), parsePicks(), runBench() (+32 more)
+### Community 34 - "AgentId"
+Cohesion: 0.13
+Nodes (21): BenchRow, CLASSES, freshRepo(), GoldenTask, gradeRepo(), loadTasks(), parsePicks(), Pick (+13 more)
 
 ### Community 35 - "install-remote.test.ts"
 Cohesion: 0.67
@@ -244,21 +237,17 @@ Nodes (3): catalog(), fake, fetcher()
 Cohesion: 0.67
 Nodes (3): fake, mk(), skill()
 
-### Community 37 - "history/codex.ts"
-Cohesion: 0.20
-Nodes (21): Block, clip(), isNoise(), Line, syncClaude(), SyncStats, toolSummary(), clip() (+13 more)
-
 ### Community 38 - "registry.ts"
-Cohesion: 0.21
-Nodes (17): addSkillRoot(), loadCatalog(), loadUserConfig(), removeSkillRoot(), saveUserConfig(), scanLocalSkills(), skillDirs(), skillRootInfos() (+9 more)
+Cohesion: 0.15
+Nodes (22): cmdConfig(), home(), listPlugins(), PluginInfo, skillCost(), suggest(), addSkillRoot(), loadCatalog() (+14 more)
 
 ### Community 39 - "Agent Hub v0.1 — отчёт: что сделано, как работает, как запускать"
 Cohesion: 0.11
 Nodes (18): 1. Адаптировано ли использование токенов, 1. Главный вывод про токены, 2. Выбор модели: не правило, а ближайшая точка к идеалу, 2. Как устроена «инструменты только под проект», 3. Как это выглядит в панели, 3. Сбор данных пользователей с согласия, 4. Как запустить, 5. Аудит качества: что нашёл и исправил (+10 more)
 
 ### Community 40 - "run.test.ts"
-Cohesion: 0.19
-Nodes (20): branchName(), checkpoint(), checkSparse(), createWorktree(), facts, git(), GitResult, isGitRepo() (+12 more)
+Cohesion: 0.17
+Nodes (22): branchName(), checkpoint(), checkSparse(), createWorktree(), facts, git(), GitResult, isGitRepo() (+14 more)
 
 ### Community 41 - "AGENTS.md"
 Cohesion: 0.20
@@ -269,8 +258,8 @@ Cohesion: 0.31
 Nodes (9): safeJoin(), bad(), handle(), cookieOf(), eqToken(), MIME, Started, startServer() (+1 more)
 
 ### Community 43 - "runner.ts"
-Cohesion: 0.20
-Nodes (12): claudeAdapter, Permission, pushGuardEnv(), HandoffInput, runHooks(), leanArgs(), projectTypeOf(), RunManagerOpts (+4 more)
+Cohesion: 0.26
+Nodes (8): Permission, HandoffInput, leanArgs(), RunManagerOpts, RunRow, StartReq, StoredEvent, Summary
 
 ### Community 44 - "Optimization (OPTIMIZATION.md)"
 Cohesion: 0.19
@@ -291,10 +280,6 @@ Nodes (10): approvalFile(), approvals(), approveRunnerHooks(), argvList(), diges
 ### Community 48 - "Phase PR — Mandatory thorough review (a gate, not an option)"
 Cohesion: 0.20
 Nodes (10): Phase PR — Mandatory thorough review (a gate, not an option), Phase PR review, Task PR.1: Review data model and ADR, Task PR.2: Structured reviewers (hunt + verify), Task PR.3: Filter, tag, pre-existing, Task PR.4: Checks first, security pass, risk tier, Task PR.5: Gate orchestration and convergence, Task PR.6: REVIEW.md and rule drift (+2 more)
-
-### Community 53 - "adapters/codex.ts"
-Cohesion: 0.31
-Nodes (8): Item, MONTHS, parseResetTime(), SANDBOX, codexFromAppData(), locate(), onPath(), resolveShim()
 
 ### Community 54 - "Security and vulnerability checks (SECURITY.md)"
 Cohesion: 0.36
@@ -337,21 +322,21 @@ Cohesion: 0.60
 Nodes (3): greet(), getUsr(), users
 
 ## Knowledge Gaps
-- **318 isolated node(s):** `hi`, `root`, `dist`, `root`, `themes` (+313 more)
+- **331 isolated node(s):** `hi`, `root`, `dist`, `root`, `themes` (+326 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **16 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `advise()` connect `bench.ts` to `api.ts`, `h`, `econ.test.ts`, `main.ts`?**
-  _High betweenness centrality (0.089) - this node is a cross-community bridge._
-- **Why does `tasks()` connect `h` to `bench.ts`?**
-  _High betweenness centrality (0.087) - this node is a cross-community bridge._
+- **Why does `advise()` connect `econ.ts` to `api.ts`, `h`, `main.ts`?**
+  _High betweenness centrality (0.107) - this node is a cross-community bridge._
+- **Why does `tasks()` connect `h` to `econ.ts`?**
+  _High betweenness centrality (0.105) - this node is a cross-community bridge._
 - **What connects `hi`, `root`, `dist` to the rest of the system?**
-  _318 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _331 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `h` be split into smaller, more focused modules?**
-  _Cohesion score 0.08038399259773306 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.07900347884636966 - nodes in this community are weakly interconnected._
 - **Should `Agent Hub (local-first hub for coding agents)` be split into smaller, more focused modules?**
   _Cohesion score 0.09032258064516129 - nodes in this community are weakly interconnected._
 - **Should `prompt.md (pinned reconstruction prompt S1)` be split into smaller, more focused modules?**
