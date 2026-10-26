@@ -1,0 +1,3 @@
+This is the security pass. Report only issues an attacker or a hostile input could use: injection (shell, SQL, path, HTML), path traversal and junction/symlink escapes, secrets in code, logs or output, missing authentication or origin checks, unsafe deserialization, unsafe process spawning (shell strings, unvalidated arguments), writes outside the allowed roots, weakened sandbox or permission settings, new dependencies or install scripts.
+
+For each finding name the entry point an attacker controls and the sink it reaches, and quote both in `evidence`. Use the category `risk` when exploitation needs a condition you cannot see in the diff. A finding without a reachable path is not a finding.

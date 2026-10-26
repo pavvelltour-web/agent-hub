@@ -25,6 +25,7 @@ export const claudeAdapter: AgentAdapter = {
     if (r.effort) a.push('--effort', r.effort);
     if (r.resumeId) a.push('--resume', r.resumeId);
     if (r.lean?.length) a.push(...r.lean);
+    if (r.extraArgs?.length) a.push(...r.extraArgs);
     return a;
   },
   parse(line): HubEvent[] {

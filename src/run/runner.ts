@@ -19,6 +19,7 @@ import { sanitizeEvent } from '../adapters/event-utils.ts';
 export interface StartReq {
   agent: AgentId; prompt: string; projectRoot: string; task?: string; model?: string; effort?: string; permission?: Permission;
   resumeRunId?: string; resumeNativeId?: string; resumeOfSession?: string; worktree?: boolean; sparse?: string[]; handoffOf?: string; mode?: 'chat' | 'task';
+  extraArgs?: string[];                                      // INTERNAL only (review gate): appended to the CLI args; api.ts must never forward it from a request body
   cls?: string; workMode?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
 }
 export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null }
@@ -110,7 +111,7 @@ export class RunManager {
     const note = (r: { event: string; command: string; code: number | null; output: string }[]): void => r.forEach((h) => emit({ kind: 'warn', message: `hook ${h.event}: ${h.command} → ${h.code === 0 ? 'ok' : 'exit ' + h.code}${h.output ? ' · ' + h.output.slice(0, 120) : ''}` }));
     note(runHooks('sessionStart', hooks.sessionStart, cwd, { ...env, HUB_RUN_ID: id, HUB_AGENT: req.agent }));
     const exe = this.opts.exe?.[req.agent];
-    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: leanArgs(req.agent, req.cls, { projectRoot: req.projectRoot, cwd }) }, emit,
+    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: leanArgs(req.agent, req.cls, { projectRoot: req.projectRoot, cwd }), ...(req.extraArgs?.length ? { extraArgs: req.extraArgs } : {}) }, emit,
       { env, ...(exe ? { exe } : {}) });
     const entry = { handle, stopped: false };
     this.live.set(id, entry);

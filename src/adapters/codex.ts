@@ -28,8 +28,8 @@ export const codexAdapter: AgentAdapter = {
   id: 'codex',
   exe() { const i = locate('codex'); return i.path ? { cmd: i.path, prefix: [] } : undefined; },
   args(r) {
-    if (r.resumeId) return ['exec', 'resume', r.resumeId, '--json', ...codexModeArgs(r.permission ?? 'edit', true), ...(r.model ? ['-m', r.model] : []), ...(r.effort ? ['-c', `model_reasoning_effort=${r.effort}`] : []), '-'];
-    return ['exec', '--json', ...codexModeArgs(r.permission ?? 'edit', false), ...(r.model ? ['-m', r.model] : []), ...(r.effort ? ['-c', `model_reasoning_effort=${r.effort}`] : []), '-'];
+    if (r.resumeId) return ['exec', 'resume', r.resumeId, '--json', ...codexModeArgs(r.permission ?? 'edit', true), ...(r.model ? ['-m', r.model] : []), ...(r.effort ? ['-c', `model_reasoning_effort=${r.effort}`] : []), ...(r.extraArgs ?? []), '-'];
+    return ['exec', '--json', ...codexModeArgs(r.permission ?? 'edit', false), ...(r.model ? ['-m', r.model] : []), ...(r.effort ? ['-c', `model_reasoning_effort=${r.effort}`] : []), ...(r.extraArgs ?? []), '-'];
   },
   parse(line): HubEvent[] {
     try { return parseLine(line); } catch { return []; }   // a surprising line must never take the run down

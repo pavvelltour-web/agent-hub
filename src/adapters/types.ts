@@ -26,6 +26,7 @@ export type Permission = 'plan' | 'edit' | 'full';
 export interface RunRequest {
   prompt: string; cwd: string; model?: string; effort?: string; resumeId?: string; permission?: Permission;
   lean?: string[];               // extra flags that keep the run light (see run/lean.ts)
+  extraArgs?: string[];          // INTERNAL only (review gate: structured-output flags); appended to the CLI args, never settable from the HTTP API
 }
 
 export interface AgentAdapter {

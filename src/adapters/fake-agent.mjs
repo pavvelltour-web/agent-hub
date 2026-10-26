@@ -3,7 +3,7 @@
 // (“!limit” or “лимит” → usage-limit stop). FAKE_DEMO=1 gives slower, richer streams for `hub ui --demo`. Never used by real work.
 // FAKE_SCENARIO=fixture:<name>.jsonl[+<name>.jsonl…] replays recorded CLI output line by line from src/adapters/fixtures/ (FAKE_FIXTURE_DELAY ms between lines, default 150).
 import { createInterface } from 'node:readline';
-import { existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +13,8 @@ const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 let prompt = '';
 for await (const line of createInterface({ input: process.stdin })) prompt += line + '\n';
 prompt = prompt.trim();
+// Review scenarios (src/review/agents.test.ts) are picked per call by a marker in the prompt: [[fake:review-json]].
+if (!scenario) { const m = /\[\[fake:(review-[a-z-]+)\]\]/.exec(prompt); if (m) scenario = m[1]; }
 if (!scenario) scenario = (process.env.FAKE_DEMO ? 'demo-' : '') + (/!limit|лимит/i.test(prompt) ? (isCodex ? 'codex-limit' : 'claude-limit') : (isCodex ? 'codex-ok' : 'claude-ok'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LIMIT_MSG = "You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 27th, 2026 12:03 PM.";
@@ -52,6 +54,32 @@ if (scenario.startsWith('fixture:')) {
     if (codex) out({ type: 'turn.completed', usage: { input_tokens: 240000, cached_input_tokens: 210000, output_tokens: 4200 } });
     else out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: { input_tokens: 12000, cache_creation_input_tokens: 3000, cache_read_input_tokens: 190000, output_tokens: 3100 }, total_cost_usd: 0.18 });
   }
+} else if (scenario.startsWith('review-')) {
+  // Review reviewers: one final assistant text holding the structured result, in the shape of the CLI that was started (claude / codex).
+  // The real CLIs' structured-output shapes under --json-schema / --output-schema are UNVERIFIED; these are the documented/assumed ones.
+  // FAKE_CAPTURE_FILE: append {argv, prompt, schemaFileExists} per call so tests can inspect what the hub started.
+  const argv = process.argv.slice(2);
+  if (process.env.FAKE_CAPTURE_FILE) {
+    const si = argv.indexOf('--output-schema');
+    appendFileSync(process.env.FAKE_CAPTURE_FILE, JSON.stringify({ argv, prompt, schemaFileExists: si >= 0 ? existsSync(argv[si + 1]) : null }) + '\n');
+  }
+  const codexShape = isCodex || scenario === 'review-codex-json';
+  const mi = Math.max(argv.indexOf('--model'), argv.indexOf('-m'));
+  const model = mi >= 0 ? argv[mi + 1] : '';
+  const findings = [
+    { category: 'bug', file: 'src/a.ts', line: 12, title: 'Off-by-one in loop', evidence: 'for (let i = 0; i <= n; i++)', classOfBug: 'off-by-one: src/a.ts:12, src/b.ts:40' },
+    { category: 'risk', file: 'src/b.ts', line: 7, title: 'Unchecked path join', evidence: 'join(root, name)', classOfBug: '' },
+    { category: 'bug', file: 'src/c.ts', line: 3, title: 'Claim without evidence', evidence: '', classOfBug: '' },
+    { category: 'bug', file: 'src/d.ts', title: 'Claim without a line', evidence: 'x', classOfBug: '' },
+    { category: 'bug', line: 5, title: 'Claim without a file', evidence: 'x', classOfBug: '' },
+  ];
+  const real = scenario === 'review-verify-real' || (scenario === 'review-verify-by-model' && !String(model).includes('notreal'));
+  const text = scenario === 'review-json' || scenario === 'review-codex-json' ? '```json\n' + JSON.stringify({ summary: '2 findings', findings }) + '\n```'
+    : scenario === 'review-prose' ? 'LGTM, nothing to fix.'
+    : scenario === 'review-bad' ? '{"summary": "1 finding", "findings": [{"category": "bug", "file": '
+    : JSON.stringify({ real, why: real ? 'the loop bound reads one past the end: `i <= n`' : 'no evidence in the diff' });
+  if (codexShape) { out({ type: 'thread.started', thread_id: 'review-codex' }); out({ type: 'item.completed', item: { id: 'i0', type: 'agent_message', text } }); out({ type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } }); }
+  else { out({ type: 'system', subtype: 'init', session_id: 'review-claude', model: 'claude-opus-5-5' }); out({ type: 'assistant', message: { content: [{ type: 'text', text }] } }); out({ type: 'result', subtype: 'success', is_error: false, result: text, usage: { input_tokens: 10, output_tokens: 5 } }); }
 } else if (scenario === 'claude-summary') {
   out({ type: 'system', subtype: 'init', session_id: 'sum-1', model: 'claude-haiku-4-5' });
   out({ type: 'assistant', message: { content: [{ type: 'text', text: '{"goal":"Implement T016 hooks","done":["wrote compiler"],"stoppedAt":"test SessionStart keeps PLUGIN_ROOT fails","next":["fix path substitution","run tests"],"open":["does Codex support PreToolUse?"]}' }] } });
