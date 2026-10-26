@@ -45,6 +45,8 @@ export interface HubConfig {
   agents: { id: AgentId; enabled: boolean }[];
   rules: { source: 'AGENTS.md'; claudePointer: boolean };
   limits: { handoffThresholdPercent: number; autoHandoff: boolean };
+  /** Review gate settings. Optional; unknown keys in hub.json are tolerated. `checks` are argv lists; `humanPaths` are globs that always need a human approval. */
+  review?: { effort?: string; checks?: string[][]; humanPaths?: string[] };
 }
 
 export interface LockEntry {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { diffLinesFromUnified, triage } from './triage.ts';
+import { diffLinesFromUnified, triage, unifiedLines } from './triage.ts';
 import type { VerifiedFinding } from './types.ts';
 
 const vf = (o: Partial<VerifiedFinding> = {}): VerifiedFinding => ({
@@ -183,4 +183,14 @@ test('diffLinesFromUnified: garbage and truncated input never throws', () => {
     assert.doesNotThrow(() => diffLinesFromUnified(s));
   }
   assert.deepEqual([...diffLinesFromUnified('+++ b/f\n@@ -1 +1 @@\n+a')], ['f:1']);
+});
+
+test('unifiedLines: yields every hunk line with its op, file and new-file number (removals carry 0)', () => {
+  const d = ['--- a/f', '+++ b/f', '@@ -1,3 +1,3 @@', ' keep', '-old', '+new', ' tail'].join('\n');
+  assert.deepEqual([...unifiedLines(d)], [
+    { file: 'f', op: ' ', line: 1, text: 'keep' },
+    { file: 'f', op: '-', line: 0, text: 'old' },
+    { file: 'f', op: '+', line: 2, text: 'new' },
+    { file: 'f', op: ' ', line: 3, text: 'tail' },
+  ]);
 });

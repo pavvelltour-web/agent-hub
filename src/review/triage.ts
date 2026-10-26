@@ -90,12 +90,13 @@ function plusPath(rest: string): string | null {
   return p.startsWith('b/') ? p.slice(2) : p;
 }
 
+export interface DiffLine { file: string | null; op: '+' | '-' | ' '; line: number; text: string }
+
 /**
- * Lines ADDED or CHANGED by a unified diff, as `"<file>:<new line>"`. Pure deletions have no new line number and add nothing.
+ * Every line inside a hunk of a unified diff, with its file (new path, null for /dev/null), op, new-file number (0 for removals) and text.
  * Hunk line counts decide where a hunk ends, so an added line that reads `++ x` (shown as `+++ x`) is not mistaken for a file header.
  */
-export function diffLinesFromUnified(diffText: string): Set<string> {
-  const out = new Set<string>();
+export function* unifiedLines(diffText: string): Generator<DiffLine> {
   let file: string | null = null;
   let oldLeft = 0, newLeft = 0, next = 0;
   for (const line of String(diffText).split(/\r?\n/)) {
@@ -108,13 +109,19 @@ export function diffLinesFromUnified(diffText: string): Set<string> {
     }
     if (oldLeft > 0 || newLeft > 0) {
       const c = line[0];
-      if (c === '+') { if (file !== null) out.add(`${file}:${next}`); next++; newLeft--; }
-      else if (c === '-') oldLeft--;
+      if (c === '+') { yield { file, op: '+', line: next, text: line.slice(1) }; next++; newLeft--; }
+      else if (c === '-') { yield { file, op: '-', line: 0, text: line.slice(1) }; oldLeft--; }
       else if (c === '\\') { /* "\ No newline at end of file" */ }
-      else { next++; oldLeft--; newLeft--; }
+      else { yield { file, op: ' ', line: next, text: line.slice(1) }; next++; oldLeft--; newLeft--; }
       continue;
     }
     if (line.startsWith('+++ ')) file = plusPath(line.slice(4));
   }
+}
+
+/** Lines ADDED or CHANGED by a unified diff, as `"<file>:<new line>"`. Pure deletions have no new line number and add nothing. */
+export function diffLinesFromUnified(diffText: string): Set<string> {
+  const out = new Set<string>();
+  for (const l of unifiedLines(diffText)) if (l.op === '+' && l.file !== null) out.add(`${l.file}:${l.line}`);
   return out;
 }
