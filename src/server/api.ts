@@ -30,7 +30,7 @@ import { isSecretPath } from '../lib/paths.ts';
 import { checkSparse } from '../run/git.ts';
 import { RunManager, type StartReq } from '../run/runner.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
-import { GateError, answer as answerFindingGate, approve as approveReview, canAccept, launchReview, reviewView, reviewsOfRun } from '../review/gate.ts';
+import { GateError, answer as answerFindingGate, approve as approveReview, canAccept, launchReview, reviewView, reviewsOfRun, startFix } from '../review/gate.ts';
 import { getReview } from '../review/store.ts';
 import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
 
@@ -375,6 +375,8 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (!r.headSha.startsWith(sha.toLowerCase())) return bad(409, 'this is not the commit that was reviewed: run the next review round first');
     return ok({ review: approveReview(c.db, id, r.headSha, 'human') });
   }],
+  // Interim fixer entry point: resumes the task thread with the open Important/Security BLOCKING lines as the whole prompt. No body is read: nothing from the client reaches the prompt.
+  ['POST', /^\/api\/reviews\/(\w+)\/fix$/, (c, { params }) => ok({ run: startFix(c.db, c.runs, reviewId(c, params[0])) })],
   ['GET', /^\/api\/reviews\/(\w+)\/can-accept$/, (c, { params, q }) => {
     const id = reviewId(c, params[0]);
     const sha = q.get('sha') ?? '';

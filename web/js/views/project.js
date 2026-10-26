@@ -3,6 +3,7 @@ import { agentBadge, agentName, btn, chip, dialog, closeBtn, empty, field, fmt, 
 import { go, linkProject, pageHead, pctText, runRow, sessionRow, shortModel, TASKS } from './common.js';
 import { chatPanel } from './chat.js';
 import { historyPanel } from './history.js';
+import { reviewLink, reviewLinks } from './review.js';
 import { toolsPanel } from './tools.js';
 import { logsPanel } from './logs.js';
 
@@ -70,6 +71,7 @@ function overview(id, o) {
 
 async function tasks(id, o) {
   const runs = (await api.get('/runs' + qs({ project: id, limit: 60 }))).filter((r) => r.branch);
+  const links = await reviewLinks(runs);
   const name = h('input.input', { placeholder: 'например, export-json', 'aria-label': 'Название задачи', maxLength: 40 });
   const prompt = h('textarea.textarea', { rows: 3, placeholder: 'Что нужно сделать?', 'aria-label': 'Описание задачи' });
   const cls = h('select.select', { 'aria-label': 'Тип задачи', onchange: advise }, TASKS.filter(([v]) => v !== 'summary').map(([v, t]) => h('option', { value: v }, t)));
@@ -91,7 +93,7 @@ async function tasks(id, o) {
     try { const r = await api.post('/runs', { projectId: id, prompt: prompt.value, agent: choice.agent, model: shortModel(choice.agent, choice.model), effort: choice.effort, mode: 'task', task: name.value, cls: cls.value, ...(sparseList().length ? { sparse: sparseList() } : {}) }); go(`/p/${id}/chat/${r.run.id}`); } catch { /* toast */ }
   };
   return h('div.grid-2',
-    h('section.group', sectionHead('Задачи в своих ветках', h('span.t-meta', 'ваши файлы не затрагиваются, пока вы не примете результат')), runs.length ? h('div.list', runs.map((r) => runRow(r, `#/p/${id}/chat/${r.id}`))) : empty('Задач пока нет', 'Опишите первую справа. Агент поработает в отдельной ветке git, а результат вы посмотрите и примете сами.')),
+    h('section.group', sectionHead('Задачи в своих ветках', h('span.t-meta', 'ваши файлы не затрагиваются, пока вы не примете результат')), runs.length ? h('div.list', runs.map((r) => (links.has(r.id) ? h('div.rv-task', runRow(r, `#/p/${id}/chat/${r.id}`), reviewLink(id, r, links.get(r.id))) : runRow(r, `#/p/${id}/chat/${r.id}`)))) : empty('Задач пока нет', 'Опишите первую справа. Агент поработает в отдельной ветке git, а результат вы посмотрите и примете сами.')),
     h('section.plane.card.stack', h('h3.t-heading', 'Новая задача'), field('Название', name), field('Что сделать', prompt),
       h('div.row-flex', field('Тип', cls), h('label.row-flex', { style: { alignSelf: 'flex-end', minHeight: '44px' } }, sec, h('span.t-label', 'Касается безопасности'))),
       field('Показать агенту только эти папки (необязательно)', sparse), h('b.t-label', 'Кого и зачем советуем'), adv,

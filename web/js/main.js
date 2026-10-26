@@ -6,6 +6,7 @@ prefs.set({});   // re-apply saved theme/accent/material
 const ROUTES = [
   [/^\/$/, () => import('./views/today.js')],
   [/^\/projects$/, () => import('./views/projects.js')],
+  [/^\/p\/(\d+)\/review\/(rv[0-9a-z]{2,40})$/, () => import('./views/review.js')],
   [/^\/p\/(\d+)(?:\/(chat|tasks|history|library|tools|logs))?(?:\/(\w+))?$/, () => import('./views/project.js')],
   [/^\/chat(?:\/(\w+))?$/, () => import('./views/chat.js')],
   [/^\/history$/, () => import('./views/history.js')],

@@ -2,6 +2,7 @@ import { api, qs, stream } from '../api.js';
 import { agentBadge, agentName, avatar, btn, chip, closeBtn, copy, dialog, empty, fmt, h, icon, toast } from '../ui.js';
 import { renderSafe, renderRun as trRun } from '../transcript.js';
 import { EFFORT, go, outcomeChip, pageHead, projectSelect, TASKS, threadsOf, workModePicker } from './common.js';
+import { reviewCard } from './review.js';
 
 const PERMS = [['plan', 'Только читать'], ['edit', 'Можно править файлы'], ['full', 'Без подтверждений']];
 
@@ -162,6 +163,18 @@ export async function chatPanel({ projectId, runId, q, global }) {
     if (stick()) toBottom();
   }
 
+  /** A task thread that ended "На ревью" gets the review card at its end: counts and a link, or the effort picker and «Запустить ревью». */
+  let cardSeq = 0;
+  async function drawReviewCard() {
+    transcript.querySelector('.rv-card')?.remove();
+    const t = current, mine = ++cardSeq;
+    if (!t || live || t.last.outcome !== 'review' || !t.last.branch || t.last.workMode === 'review') return;
+    let node; try { node = await reviewCard({ runs: t.runs, projectId: t.last.projectId }); } catch { return; }
+    if (mine !== cardSeq || current?.id !== t.id || live) return;
+    transcript.querySelector('.rv-card')?.remove();
+    const s = stick(); transcript.append(node); if (s) toBottom();
+  }
+
   async function open(t) {
     stopLive();
     current = t; drawHead(); drawList(); resetPerm();
@@ -176,10 +189,11 @@ export async function chatPanel({ projectId, runId, q, global }) {
       if (liveRun) attach(d.run, events.at(-1)?.seq || 0, c);
     });
     toBottom();
+    drawReviewCard();
     history.replaceState(null, '', location.hash.replace(/\/chat(\/\w+)?/, '/chat/' + t.last.id));
   }
   function attach(run, after, c) {
-    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderSafe(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); });
+    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderSafe(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); drawReviewCard(); });
     live = { runId: run.id, close }; setBusy(true);
   }
   function stopLive() { live?.close(); live = null; setBusy(false); }
@@ -213,7 +227,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
     const fresh = canResume ? { resumeRunId: last.id } : last ? (last.workMode === 'review' ? { workMode: 'review' } : {}) : { workMode: state.workMode, ...(state.workMode === 'autopilot' ? { depth: state.depth } : {}) };
     if (canResume) agent = last.agent;
     else if (current && last && agent !== 'auto' && agent !== last.agent) { note(`Новый чат: ${agentName(agent)} не видит прошлую переписку ${agentName(last.agent)}. Чтобы передать работу, дождитесь остановки по лимиту: появится кнопка «Продолжить».`); current = null; }
-    ta.value = ''; autosize();
+    ta.value = ''; autosize(); cardSeq++; transcript.querySelector('.rv-card')?.remove();
     try {
       const r = await api.post('/runs', { projectId: last ? last.projectId : pid, prompt, agent, ...(state.model ? { model: state.model } : {}), ...(state.effort ? { effort: state.effort } : {}), cls: state.cls, ...(perm ? { permission: perm } : {}), ...fresh });
       if (!current) { transcript.replaceChildren(); }

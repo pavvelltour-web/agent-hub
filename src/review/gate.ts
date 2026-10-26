@@ -6,8 +6,9 @@ import { detectAgents } from '../adapters/locate.ts';
 import type { AgentId } from '../core/types.ts';
 import { MODEL_ID } from '../econ/router.ts';
 import type { Db } from '../history/store.ts';
+import { redact } from '../lib/redact.ts';
 import { checkpoint, git } from '../run/git.ts';
-import type { RunManager } from '../run/runner.ts';
+import type { RunManager, RunRow } from '../run/runner.ts';
 import { ReviewError, hunt, verifyMany } from './agents.ts';
 import { defaultChecks, dependencyFindings, gateChecks, readReviewConfig, type CheckResult } from './checks.ts';
 import { humanPathsFromReviewMd, loadReviewMd } from './reviewmd.ts';
@@ -71,13 +72,13 @@ export function usableAgents(): { available: AgentId[]; warnings: string[] } {
 
 // ---- small helpers -------------------------------------------------------------------------------------------------------------------
 
-interface Info { completed: number; lastReviewedSha?: string; reasons: string[]; warnings: string[]; checks: CheckResult[] }
+interface Info { completed: number; lastReviewedSha?: string; reasons: string[]; warnings: string[]; checks: CheckResult[]; riskWhy: string[] }
 
 const getInfo = (db: Db, id: string): Info => {
   const row = db.prepare('SELECT info_json FROM review WHERE id = ?').get(id) as { info_json: string | null } | undefined;
   let j: Partial<Info> = {};
   try { j = row?.info_json ? (JSON.parse(row.info_json) as Partial<Info>) : {}; } catch { /* unreadable: start clean */ }
-  return { completed: Number(j.completed) || 0, ...(typeof j.lastReviewedSha === 'string' ? { lastReviewedSha: j.lastReviewedSha } : {}), reasons: Array.isArray(j.reasons) ? j.reasons.map(String) : [], warnings: Array.isArray(j.warnings) ? j.warnings.map(String) : [], checks: Array.isArray(j.checks) ? j.checks : [] };
+  return { completed: Number(j.completed) || 0, ...(typeof j.lastReviewedSha === 'string' ? { lastReviewedSha: j.lastReviewedSha } : {}), reasons: Array.isArray(j.reasons) ? j.reasons.map(String) : [], warnings: Array.isArray(j.warnings) ? j.warnings.map(String) : [], checks: Array.isArray(j.checks) ? j.checks : [], riskWhy: Array.isArray(j.riskWhy) ? j.riskWhy.map(String) : [] };
 };
 const putInfo = (db: Db, id: string, info: Info): void => { db.prepare('UPDATE review SET info_json = ? WHERE id = ?').run(JSON.stringify(info), id); };
 
@@ -170,14 +171,62 @@ export function blockingLines(db: Db, reviewId: string): string[] {
 }
 
 const SEV: Record<Severity, number> = { security: 0, important: 1, nit: 2, 'pre-existing': 3 };
-export function reviewView(db: Db, id: string): { review: Review; findings: Finding[]; checks: CheckResult[]; warnings: string[]; reasons: string[] } {
+
+/** The flagged line and up to 3 lines each side, as the commit has them. Built for the screen: redacted, each line capped; `null` when the file or line cannot be read. */
+export interface Hunk { from: number; at: number; lines: string[] }
+const HUNK_CONTEXT = 3, HUNK_LINE_CAP = 240, HUNK_FILE_CAP = 2_000_000;
+function hunkOf(cwd: string, sha: string, file: string, line: number, cache: Map<string, string[] | null>): Hunk | null {
+  if (!HEX40.test(sha) || typeof file !== 'string' || !file || file.length > 1024 || file.startsWith('-') || file.includes('\0') || file.startsWith('/') || /^[A-Za-z]:/.test(file) || file.split(/[\\/]/).includes('..')) return null;
+  const path = file.replace(/\\/g, '/');
+  if (!cache.has(path)) {
+    const r = gitText(cwd, ['show', `${sha}:${path}`]);
+    const lines = r.ok && r.out.length <= HUNK_FILE_CAP ? r.out.split(/\r?\n/) : null;
+    if (lines && lines.length > 1 && lines[lines.length - 1] === '') lines.pop();   // the file's final newline is not a line
+    cache.set(path, lines);
+  }
+  const all = cache.get(path);
+  if (!all || !Number.isInteger(line) || line < 1 || line > all.length) return null;
+  const from = Math.max(1, line - HUNK_CONTEXT), to = Math.min(all.length, line + HUNK_CONTEXT);
+  return { from, at: line - from, lines: all.slice(from - 1, to).map((l) => redact(l.slice(0, HUNK_LINE_CAP))) };
+}
+
+export type FindingView = Finding & { hunk: Hunk | null };
+export function reviewView(db: Db, id: string): { review: Review; findings: FindingView[]; checks: CheckResult[]; warnings: string[]; reasons: string[]; riskWhy: string[] } {
   const review = getReview(db, id);
   if (!review) throw new GateError(404, 'review not found');
   const info = getInfo(db, id);
-  const findings = listFindings(db, id).sort((a, b) => SEV[a.severity] - SEV[b.severity] || a.round - b.round);
-  return { review, findings, checks: info.checks, warnings: info.warnings, reasons: info.reasons };
+  const cwd = (db.prepare('SELECT cwd FROM run WHERE id = ?').get(review.runId) as { cwd: string | null } | undefined)?.cwd;
+  const cache = new Map<string, string[] | null>();
+  const findings = listFindings(db, id).sort((a, b) => SEV[a.severity] - SEV[b.severity] || a.round - b.round)
+    .map((f) => ({ ...f, hunk: cwd && existsSync(cwd) ? hunkOf(cwd, review.headSha, f.file, f.line, cache) : null }));
+  return { review, findings, checks: info.checks, warnings: info.warnings, reasons: info.reasons, riskWhy: info.riskWhy };
 }
 export const reviewsOfRun = (db: Db, runId: string): Review[] => listReviewsForRun(db, runId);
+
+/**
+ * Interim fixer entry point (the cascade does not exist yet): resumes the task thread on its own branch with the open Important/Security
+ * `blockingLines`, verbatim, as the whole prompt. The runner applies the thread's own permission; a review-mode thread is never the target.
+ */
+export function startFix(db: Db, runs: RunManager, reviewId: string): RunRow {
+  const r = getReview(db, reviewId);
+  if (!r) throw new GateError(404, 'review not found');
+  if (IN_PROGRESS.has(r.state)) throw new GateError(409, 'the review is still running');
+  const lines = blockingLines(db, reviewId);
+  if (!lines.length) throw new GateError(400, 'nothing to fix: no open important or security findings');
+  const base = runs.get(r.runId);
+  if (!base?.cwd || !base.branch?.startsWith('hub/')) throw new GateError(400, 'only task runs on a hub/… branch can be fixed');
+  if (base.workMode === 'review') throw new GateError(400, 'a review thread is read-only and cannot be fixed');
+  if (db.prepare('SELECT 1 FROM run WHERE cwd = ? AND outcome IS NULL LIMIT 1').get(base.cwd)) throw new GateError(409, 'the agent is still working in this branch');
+  const prev = db.prepare("SELECT id FROM run WHERE cwd = ? AND branch = ? AND session_native_id IS NOT NULL AND (work_mode IS NULL OR work_mode != 'review') ORDER BY started_at DESC, rowid DESC LIMIT 1").get(base.cwd, base.branch) as { id: string } | undefined;
+  const target = prev ? runs.get(prev.id) : undefined;
+  if (!target) throw new GateError(409, 'nothing to resume: the task run has no session id');
+  if (target.permission === 'plan') throw new GateError(409, 'the task thread is read-only: allow edits in the chat first');
+  const root = (db.prepare('SELECT root FROM project WHERE id = ?').get(r.projectId) as { root: string } | undefined)?.root;
+  if (!root) throw new GateError(404, 'project not found');
+  try {
+    return runs.start({ agent: target.agent as AgentId, prompt: lines.join('\n'), projectRoot: root, resumeRunId: target.id, ...(target.model ? { model: target.model } : {}), ...(target.effort ? { effort: target.effort } : {}), ...(target.cls ? { cls: target.cls } : {}) });
+  } catch (e) { throw new GateError(400, e instanceof Error ? e.message : 'could not start the fixer'); }
+}
 
 // ---- starting a round ------------------------------------------------------------------------------------------------------------------
 
@@ -211,7 +260,7 @@ function begin(o: GateOpts): { review: Review; fresh: boolean } {
 
   if (!prior) {
     const review = createReview(o.db, { runId: o.runId, projectId: run.project_id, baseSha: base, headSha: head, effort, risk: 'low', round: 1, state: 'checks' });
-    putInfo(o.db, review.id, { completed: 0, reasons: [], warnings: [], checks: [] });
+    putInfo(o.db, review.id, { completed: 0, reasons: [], warnings: [], checks: [], riskWhy: [] });
     running.add(review.id);
     return { review, fresh: true };
   }
@@ -316,7 +365,7 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     const tier = names.ok ? riskTier(changed, { humanPaths }) : { tier: 'high' as const, why: ['changed paths unreadable'] };
     updateReview(db, review.id, { risk: tier.tier });
 
-    putInfo(db, review.id, { ...info, completed: info.completed + 1, lastReviewedSha: head, reasons: [] });
+    putInfo(db, review.id, { ...info, completed: info.completed + 1, lastReviewedSha: head, reasons: [], riskWhy: tier.why.map((w) => oneLine(w, 300)).slice(0, 20) });
     updateReview(db, review.id, { state: 'open' });     // 6-7: settle() decides between open / needs-human / passed
     return finish(undefined);
   } catch (e) {
