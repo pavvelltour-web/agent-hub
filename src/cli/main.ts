@@ -29,10 +29,12 @@ import { listProjects, listSessions, openDb, search } from '../history/store.ts'
 import { RunManager } from '../run/runner.ts';
 import { approveRunnerHooks, readRunnerHooks } from '../run/hooks-run.ts';
 import { startServer } from '../server/server.ts';
+import { caseSummary, compareEval, evalReviewer, loadCases, readBaseline, writeBaseline } from '../review/eval.ts';
+import { usableAgents } from '../review/gate.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 
 interface Args { _: string[]; flags: Record<string, string | true> }
-const BOOL = new Set(['demo', 'yes', 'no-open', 'check', 'write', 'worktree', 'help', 'version', 'full', 'plan', 'dry', 'modes']);
+const BOOL = new Set(['demo', 'yes', 'no-open', 'check', 'write', 'worktree', 'help', 'version', 'full', 'plan', 'dry', 'modes', 'compare', 'save-baseline']);
 function parse(argv: string[]): Args {
   const a: Args = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -76,6 +78,7 @@ History
 Panel and checks
   hub ui [--port N] [--no-open] [--demo]  local panel on 127.0.0.1; --demo uses scripted fake agents (dev only: --token T fixes the token, --home DIR uses another data folder)
   hub diagram <${KINDS.join('|')}> [--format ascii|mermaid|json] [--entity t] [--check|--write] [path]
+  hub review-eval [--effort quick|standard|deep] [--compare] [--save-baseline] [--dry]   runs the reviewers on eval/review cases: recall, noise, rounds (real reviewers: needs a signed-in CLI; --dry lists the cases only)
   hub doctor [--modes [--agent claude|codex]]   environment check; --modes measures what each permission mode allows (short real runs)
   hub security                          dependency/secret/code checks
 `;
@@ -290,6 +293,41 @@ async function cmdBench(a: Args): Promise<void> {
   summarize(rows).forEach((s) => out(`${s.pick.padEnd(28)} solved ${s.solved}/${rows.filter((r) => `${r.agent}:${r.model}:${r.effort}` === s.pick).length}  cost per solved ${s.costPerSolved != null ? '$' + s.costPerSolved.toFixed(3) : 'n/a'}  limit % per solved ${s.pctPerSolved ?? 'n/a'}`));
 }
 
+async function cmdReviewEval(a: Args): Promise<void> {
+  const e = a.flags['effort'];
+  if (e !== undefined && e !== 'quick' && e !== 'standard' && e !== 'deep') return fail('--effort must be quick, standard or deep');
+  const effort = e ?? 'standard';
+  const dir = join(REPO_ROOT, 'eval', 'review');
+  const skipped: string[] = [];
+  const cases = loadCases(dir, skipped);
+  skipped.forEach((s) => out(`skipped case ${s}`));
+  if (!cases.length) return fail(`no review cases in ${dir}`);
+  if (a.flags['dry']) {
+    cases.forEach((c) => out(`${c.id.padEnd(26)} ${c.kind.padEnd(6)} ${(c.source ?? '-').padEnd(9)} ${c.bugs.map((b) => `${b.file}:${b.line}`).join(', ') || '-'}`));
+    const n = caseSummary(dir);
+    return out(`${n.total} cases: ${n.buggy} buggy, ${n.clean} clean (${n.seed} seed, ${n.incident} incident)`);
+  }
+  const basePath = join(HUB_HOME, 'review-eval-baseline.json');
+  const base = a.flags['compare'] ? readBaseline(basePath) : null;
+  if (a.flags['compare'] && !base) return fail(`no baseline saved yet (${basePath}): run once with --save-baseline, then repeat`);
+  const { available, warnings } = usableAgents();   // installed + signed in, the same check as hub bench: no review is started without it
+  if (!available.length) return fail(`no usable reviewer: sign in first (run \`claude\` or \`codex login\`), then repeat (${warnings.join('; ') || 'none found'})`);
+  warnings.forEach((w) => out(`note: ${w}`));
+  out(`running ${cases.length} cases at "${effort}" with ${available.join(' + ')}: this spends real limit (each buggy case takes at least 2 rounds)`);
+  const r = await evalReviewer({ cases, effort, runs: new RunManager(openDb(':memory:')), available, db: openDb() });
+  r.cases.forEach((c) => out(`${c.id.padEnd(26)} ${c.kind.padEnd(6)} ${c.kind === 'buggy' ? `found ${c.found}/${c.bugs}` : `flagged ${c.blocking}`}  rounds ${c.rounds}`));
+  out('');
+  out(`recall ${Math.round(r.recall * 100)}%   noise per clean case ${r.noiseOnClean.toFixed(2)}   rounds ${r.roundsToPass.toFixed(2)}`);
+  out(`answers to real findings: ${Object.entries(r.byAnswer).map(([k, v]) => `${k} ${v}`).join(', ')}`);
+  if (base) {
+    const c = compareEval(base, r);
+    out(`baseline (${base.savedAt.slice(0, 10)}, ${base.effort}): recall ${Math.round(base.recall * 100)}%   noise ${base.noiseOnClean.toFixed(2)}   rounds ${base.roundsToPass.toFixed(2)}`);
+    if (!c.ok) return fail(c.why);
+    out('recall did not drop');
+  }
+  if (a.flags['save-baseline']) { writeBaseline(basePath, { recall: r.recall, noiseOnClean: r.noiseOnClean, roundsToPass: r.roundsToPass, effort, cases: cases.length, savedAt: new Date().toISOString() }); out(`baseline saved: ${basePath}`); }
+}
+
 async function cmdUi(a: Args): Promise<void> {
   const db = openDb();
   const fakeAgent = join(REPO_ROOT, 'src', 'adapters', 'fake-agent.mjs');
@@ -339,6 +377,7 @@ async function main(argv: string[]): Promise<void> {
       return est.notes.forEach((n) => out('  · ' + n));
     }
     case 'bench': return cmdBench(a);
+    case 'review-eval': return cmdReviewEval(a);
     case 'scout': return cmdScout(a);
     case 'install': return cmdInstall(a);
     case 'get': return cmdGet(a);

@@ -1,0 +1,13 @@
+{
+  "id": "off-by-one-loop",
+  "title": "Loop runs one step past the end of the array",
+  "kind": "buggy",
+  "source": "seed",
+  "brief": "Rewrite average() with an explicit loop so it can later skip invalid values.",
+  "bugs": [
+    {
+      "file": "src/stats/average.ts",
+      "line": 5
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "missing-input-check",
+  "title": "Request field used without checking that it exists",
+  "kind": "buggy",
+  "source": "seed",
+  "brief": "Simplify the greeting handler: it should answer with the trimmed name.",
+  "bugs": [
+    {
+      "file": "src/api/greet.ts",
+      "line": 5
+    }
+  ]
+}

@@ -31,15 +31,26 @@ const LENS_TEXT: Record<Lens, string> = {
 
 // ---- diff and prompts ---------------------------------------------------------------------------------------------------------------------
 
-/** The hub (not the agent) runs the diff command: argument array, no shell. Redacted first, then capped, so a cut can never leave half a secret. */
+/** Redacted first, then capped, so a cut can never leave half a secret. */
+function prepareDiff(raw: string): string {
+  const text = redact(raw);
+  if (!text.trim()) throw new ReviewError('diff is empty: nothing to review');
+  return text.length > MAX_DIFF ? `${text.slice(0, MAX_DIFF)}
+[diff truncated]
+` : text;
+}
+
+/** The hub (not the agent) runs the diff command: argument array, no shell. */
 function loadDiff(cmd: string[], cwd: string): string {
   if (!Array.isArray(cmd) || cmd.length === 0 || cmd.some((a) => typeof a !== 'string' || a === '')) throw new ReviewError('diff command missing');
   const r = spawnSync(cmd[0] as string, cmd.slice(1), { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60_000, windowsHide: true });
   if (r.error || r.status !== 0) throw new ReviewError('diff command failed');
-  const text = redact(r.stdout);
-  if (!text.trim()) throw new ReviewError('diff is empty: nothing to review');
-  return text.length > MAX_DIFF ? `${text.slice(0, MAX_DIFF)}\n[diff truncated]\n` : text;
+  return prepareDiff(r.stdout);
 }
+
+/** The diff a reviewer sees: given as text (evals have no repository) or produced by the hub's own command. */
+const diffOf = (o: { diffCmd?: string[]; diffText?: string; cwd: string }): string =>
+  o.diffText !== undefined ? prepareDiff(String(o.diffText)) : loadDiff(o.diffCmd as string[], o.cwd);
 
 const ctx = (text: string | undefined, max: number): string => redact(text ?? '').slice(0, max);
 const block = (name: string, nonce: string, text: string): string => `<<<DATA:${name}:${nonce}>>>\n${text}\n<<<DATA-END:${name}:${nonce}>>>`;
@@ -130,20 +141,20 @@ async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o
   }
 }
 
-export async function hunt(o: { lens: Lens; pick: ReviewerPick; diffCmd: string[]; brief?: string; reviewMd?: string; agentsMd: string } & Common): Promise<RawFinding[]> {
-  const diff = loadDiff(o.diffCmd, o.cwd);
+export async function hunt(o: { lens: Lens; pick: ReviewerPick; diffCmd?: string[]; diffText?: string; brief?: string; reviewMd?: string; agentsMd: string } & Common): Promise<RawFinding[]> {
+  const diff = diffOf(o);
   const text = await runReviewer(o.pick, buildHuntPrompt({ lens: o.lens, diff, ...(o.brief !== undefined ? { brief: o.brief } : {}), ...(o.reviewMd !== undefined ? { reviewMd: o.reviewMd } : {}), agentsMd: o.agentsMd }), HUNT_SCHEMA, o);
   return parseHunt(text, o.lens);
 }
 
-/** `diffCmd` is optional: without it the verifier reads the file named in the finding itself. */
-export async function verify(f: RawFinding, o: { pick: ReviewerPick; diffCmd?: string[] } & Common): Promise<{ real: boolean; why: string }> {
-  const diff = o.diffCmd ? loadDiff(o.diffCmd, o.cwd) : undefined;
+/** `diffCmd` / `diffText` are optional: without either the verifier reads the file named in the finding itself. */
+export async function verify(f: RawFinding, o: { pick: ReviewerPick; diffCmd?: string[]; diffText?: string } & Common): Promise<{ real: boolean; why: string }> {
+  const diff = o.diffCmd || o.diffText !== undefined ? diffOf(o) : undefined;
   return parseVerify(await runReviewer(o.pick, buildVerifyPrompt(f, diff), VERIFY_SCHEMA, o));
 }
 
 /** K independent verifiers; kept only when STRICTLY more than half say real (K=2: one real + one not real is dropped). A failed verifier throws. */
-export async function verifyMany(f: RawFinding, o: { picks: ReviewerPick[]; diffCmd?: string[] } & Common): Promise<VerifiedFinding | null> {
+export async function verifyMany(f: RawFinding, o: { picks: ReviewerPick[]; diffCmd?: string[]; diffText?: string } & Common): Promise<VerifiedFinding | null> {
   if (o.picks.length === 0) throw new ReviewError('no verifiers');
   const { picks, ...rest } = o;
   const answers = await Promise.all(picks.map((pick) => verify(f, { ...rest, pick })));

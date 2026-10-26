@@ -1,0 +1,14 @@
+diff --git a/src/util/format.ts b/src/util/format.ts
+--- a/src/util/format.ts
++++ b/src/util/format.ts
+@@ -1,5 +1,7 @@
++const wholeCount = (count: number): number => Math.max(0, Math.trunc(count));
++
+ export function label(count: number, one: string, many: string): string {
+-  const n = Math.max(0, Math.trunc(count));
+-  const word = n === 1 ? one : many;
+-  return n + ' ' + word;
++  const n = wholeCount(count);
++  const noun = n === 1 ? one : many;
++  return `${n} ${noun}`;
+ }

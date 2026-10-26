@@ -1,0 +1,16 @@
+diff --git a/src/stats/average.ts b/src/stats/average.ts
+--- a/src/stats/average.ts
++++ b/src/stats/average.ts
+@@ -1,7 +1,11 @@
+ // Mean of a list of numbers; an empty list has mean 0.
+ export function average(values: number[]): number {
+   if (values.length === 0) return 0;
+-  return values.reduce((a, b) => a + b, 0) / values.length;
++  let total = 0;
++  for (let i = 0; i <= values.length; i++) {
++    total += values[i];
++  }
++  return total / values.length;
+ }
+ 
+ export function sum(values: number[]): number {

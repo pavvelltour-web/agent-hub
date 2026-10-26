@@ -219,3 +219,16 @@ test('extraArgs reach the CLI args but the HTTP API never forwards them', () => 
   const api = readFileSync(join(here, '..', 'server', 'api.ts'), 'utf8');
   assert.ok(!/extraArgs/.test(api), 'api.ts must not mention extraArgs: it cannot be set from a request body');
 });
+
+test('hunt and verify accept the diff as text (no git, no command): redacted and capped like a command diff', async () => {
+  const { runs, cwd, cap } = setup();
+  const text = `diff --git a/src/a.ts b/src/a.ts\n+const k = "${SECRET}";\n+for (let i = 0; i <= n; i++) {}\n`;
+  const found = await hunt({ lens: 'correctness', pick: claude(), diffText: text, brief: '[[fake:review-json]]', agentsMd: 'a', runs, cwd });
+  assert.equal(found.length, 2);
+  const prompt = cap()[0]!.prompt;
+  assert.ok(prompt.includes('i <= n') && !prompt.includes(SECRET), 'the diff reached the reviewer, the secret did not');
+  const v = await verify(raw('x', { evidence: '[[fake:review-verify-real]]' }), { pick: claude(), diffText: text, runs, cwd });
+  assert.equal(typeof v.real, 'boolean');
+  await assert.rejects(hunt({ lens: 'correctness', pick: claude(), diffText: '  \n', agentsMd: 'a', runs, cwd }), ReviewError, 'an empty diff is nothing to review');
+  await assert.rejects(hunt({ lens: 'correctness', pick: claude(), agentsMd: 'a', runs, cwd } as never), ReviewError, 'neither a command nor text');
+});

@@ -1,0 +1,13 @@
+{
+  "id": "unescaped-shell-input",
+  "title": "User-supplied folder name is pasted into a shell command",
+  "kind": "buggy",
+  "source": "seed",
+  "brief": "Let the user pick the archive name instead of a fixed one.",
+  "bugs": [
+    {
+      "file": "src/tools/archive.ts",
+      "line": 5
+    }
+  ]
+}

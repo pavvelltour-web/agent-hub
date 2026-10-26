@@ -93,6 +93,20 @@ export default async function view(ctx) {
       field('Причина', ta), h('p.t-meta', 'Причина останется в ревью. Без неё ответ не принимается.'),
       h('div.foot', btn('Отмена', { kind: 'glass', onclick: () => document.getElementById('dlg').close() }), saveBtn)));
   }
+  function caseDialog(f) {
+    const name = h('input.input', { type: 'text', maxLength: 200, value: f.title, 'aria-label': 'Название примера' });
+    const save = async (b) => {
+      b.disabled = true;
+      const r = await post('/review-eval/cases', { title: name.value.trim() || f.title, diffFrom: 'review', reviewId: rid, findingId: f.id }, 'Пример сохранён в eval/review');
+      b.disabled = false;
+      if (r) document.getElementById('dlg').close();
+    };
+    const saveBtn = btn('Сохранить пример', { kind: 'primary', onclick: () => save(saveBtn) });
+    dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Пример для проверки ревью'), closeBtn()),
+      h('p.rv-quote', f.title), h('p.t-meta.mono', `${f.file}${f.line ? ':' + f.line : ''}`),
+      field('Название', name), h('p.t-meta', 'Сохраняются изменения этого файла из ревью и место ошибки. Ключи и пароли в тексте вырезаются. Позже ревью проверят на таких примерах: нашло ли оно эту ошибку.'),
+      h('div.foot', btn('Отмена', { kind: 'glass', onclick: () => document.getElementById('dlg').close() }), saveBtn)));
+  }
   async function ruleDialog(entry) {
     let r;
     try { r = await api.post(`/projects/${projectId}/review-rules`, { line: entry.line, preview: true }, true); }
@@ -208,10 +222,11 @@ export default async function view(ctx) {
     const hunk = f.hunk ? h('pre.rv-hunk', { 'aria-label': 'Код вокруг находки', tabindex: '0' }, f.hunk.lines.map((t, i) => h('span.l' + (i === f.hunk.at ? '.hit' : ''), h('span.n', String(f.hunk.from + i)), t))) : null;
     const ev = f.evidence ? h('details.rv-ev', { open: !f.hunk }, h('summary', 'Что заметил проверяющий'), h('pre.rv-pre', f.evidence)) : null;
     let acts = null;
+    const keep = f.id && f.severity !== 'pre-existing' ? btn('Сохранить как пример для проверки ревью', { kind: 'glass', title: 'Изменения этого файла попадут в набор примеров, на которых измеряют качество ревью', onclick: () => caseDialog(f) }) : null;
     if (open && blocking && f.id) {
       const fb = btn('Исправить агентом', { kind: 'glass', icon: 'spark', title: 'Агент получит все открытые важные находки и продолжит в этой же ветке', onclick: () => fix(fb) });
-      acts = h('div.row-flex.rv-acts', fb, btn('Не баг — причина…', { kind: 'glass', onclick: () => answerDialog(f, 'rejected') }), btn('Так задумано', { kind: 'glass', onclick: () => answerDialog(f, 'intentional') }));
-    }
+      acts = h('div.row-flex.rv-acts', fb, btn('Не баг — причина…', { kind: 'glass', onclick: () => answerDialog(f, 'rejected') }), btn('Так задумано', { kind: 'glass', onclick: () => answerDialog(f, 'intentional') }), keep);
+    } else if (keep) acts = h('div.row-flex.rv-acts', keep);
     return h('article.plate.rv-finding' + (open ? '' : '.is-closed'), { 'data-severity': f.severity },
       h('div.row-flex.rv-fh', chipOf(SEV_RU, f.severity), f.classOfBug ? chip('класс ошибки: ' + f.classOfBug, 'line') : null, h('span.t-meta.mono', `строка ${f.line || '?'}`)),
       h('h4.rv-title', f.title), hunk, ev,

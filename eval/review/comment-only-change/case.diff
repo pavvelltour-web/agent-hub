@@ -1,0 +1,9 @@
+diff --git a/src/util/clock.ts b/src/util/clock.ts
+--- a/src/util/clock.ts
++++ b/src/util/clock.ts
+@@ -1,4 +1,4 @@
+-// gets the time
++/** Current time in milliseconds since the Unix epoch. Kept in one place so tests can replace it. */
+ export function now(): number {
+   return Date.now();
+ }

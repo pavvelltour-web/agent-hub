@@ -1,0 +1,20 @@
+diff --git a/src/jobs/sync.ts b/src/jobs/sync.ts
+--- a/src/jobs/sync.ts
++++ b/src/jobs/sync.ts
+@@ -1,11 +1,13 @@
+ export interface Batch { id: string; rows: string[] }
+ export type Upload = (b: Batch) => Promise<void>;
+ 
+-export async function syncAll(batches: Batch[], upload: Upload): Promise<{ sent: number }> {
++export async function syncAll(batches: Batch[], upload: Upload): Promise<{ sent: number; ok: boolean }> {
+   let sent = 0;
+   for (const b of batches) {
+-    await upload(b);
++    try {
++      await upload(b);
++    } catch { /* ignore */ }
+     sent++;
+   }
+-  return { sent };
++  return { sent, ok: true };
+ }

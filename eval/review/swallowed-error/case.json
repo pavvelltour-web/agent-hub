@@ -1,0 +1,13 @@
+{
+  "id": "swallowed-error",
+  "title": "Upload failure is caught and reported as success",
+  "kind": "buggy",
+  "source": "seed",
+  "brief": "Make the sync job keep going when a batch fails to upload, and report how many batches it sent.",
+  "bugs": [
+    {
+      "file": "src/jobs/sync.ts",
+      "line": 9
+    }
+  ]
+}

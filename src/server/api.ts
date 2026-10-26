@@ -30,11 +30,12 @@ import { isSecretPath } from '../lib/paths.ts';
 import { checkSparse } from '../run/git.ts';
 import { RunManager, type StartReq } from '../run/runner.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
-import { GateError, answer as answerFindingGate, approve as approveReview, canAccept, launchReview, reviewView, reviewsOfRun, startFix } from '../review/gate.ts';
+import { GateError, answer as answerFindingGate, approve as approveReview, canAccept, launchReview, reviewDiffText, reviewView, reviewsOfRun, startFix } from '../review/gate.ts';
+import { MAX_DIFF_BYTES, caseFromFinding, caseSummary, readBaseline, saveCase } from '../review/eval.ts';
 import { getReview } from '../review/store.ts';
 import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
 
-export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] } }
+export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; baselinePath?: string } }
 export interface Res { status: number; json?: unknown }
 type Body = Record<string, unknown>;
 type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
@@ -57,6 +58,9 @@ function reviewId(c: Ctx, raw: string | undefined): string {
   if (!raw || !REVIEW_ID.test(raw) || !getReview(c.db, raw)) throw new HttpError(404, 'review not found');
   return raw;
 }
+
+/** Where reviewer-quality cases and the baseline live (the repo's eval/review and the hub home); tests point them elsewhere. */
+const evalPaths = (c: Ctx): { casesDir: string; baselinePath: string } => ({ casesDir: c.reviewEval?.casesDir ?? join(REPO_ROOT, 'eval', 'review'), baselinePath: c.reviewEval?.baselinePath ?? join(HUB_HOME, 'review-eval-baseline.json') });
 
 let syncState: { running: boolean; last?: { at: string; claude: SyncStats; codex: SyncStats; ms: number }; error?: string } = { running: false };
 
@@ -383,6 +387,40 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (!SHA.test(sha)) return bad(400, 'sha: 7-40 hex characters');
     const r = getReview(c.db, id) as NonNullable<ReturnType<typeof getReview>>;
     return ok(canAccept(c.db, id, r.headSha.startsWith(sha.toLowerCase()) ? r.headSha : sha.toLowerCase()));
+  }],
+
+  // ---- reviewer quality: the last saved baseline and the case counts (never a diff); an incident becomes a case. The diff of a review comes from the review's own commits, never from a path in the request.
+  ['GET', /^\/api\/review-eval$/, (c) => ok({ baseline: readBaseline(evalPaths(c).baselinePath), cases: caseSummary(evalPaths(c).casesDir) })],
+  ['POST', /^\/api\/review-eval\/cases$/, (c, { body }) => {
+    const title = typeof body['title'] === 'string' ? body['title'].trim() : '';
+    if (!title || title.length > 200) return bad(400, 'title: 1-200 characters');
+    const from = body['diffFrom'];
+    let diff: string | null, file: string, line: number, brief: string | undefined;
+    if (from === 'review') {
+      const rid = reviewId(c, str(body['reviewId']));
+      const fid = str(body['findingId']);
+      if (!fid) return bad(400, 'findingId required');
+      const f = FINDING_ID.test(fid) ? c.db.prepare('SELECT file, line FROM finding WHERE id = ? AND review_id = ?').get(fid, rid) as { file: string; line: number } | undefined : undefined;
+      if (!f) return bad(404, 'finding not found in this review');
+      ({ file, line } = f);
+      diff = reviewDiffText(c.db, rid);
+      if (!diff) return bad(409, 'cannot read the diff of this review');
+      const runId = getReview(c.db, rid)?.runId;
+      brief = runId ? (c.db.prepare('SELECT prompt FROM run WHERE id = ?').get(runId) as { prompt: string | null } | undefined)?.prompt?.slice(0, 2000) ?? undefined : undefined;
+    } else if (from === 'text') {
+      diff = typeof body['diff'] === 'string' ? body['diff'] : null;
+      if (!diff || !diff.trim()) return bad(400, 'diff required');
+      if (Buffer.byteLength(diff) > MAX_DIFF_BYTES) return bad(400, 'the diff is larger than 200 KB');
+      if (typeof body['file'] !== 'string' || !body['file'].trim() || body['file'].length > 1024) return bad(400, 'file required');
+      file = body['file'];
+      const n = body['line'];
+      if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1) return bad(400, 'line must be a whole number >= 1');
+      line = n;
+      brief = typeof body['brief'] === 'string' ? body['brief'].slice(0, 2000) : undefined;
+    } else return bad(400, "diffFrom must be 'review' or 'text'");
+    if (file.split(/[\\/]/).includes('..') || /^([\\/]|[A-Za-z]:)/.test(file)) return bad(400, 'file must be a relative path inside the project');
+    try { return ok({ id: saveCase(evalPaths(c).casesDir, caseFromFinding({ title, diff, file, line, ...(brief ? { brief } : {}) })).id }); }
+    catch (e) { const m = (e as Error).message; return bad(/already exists/.test(m) ? 409 : 400, m); }
   }],
 
   ['GET', /^\/api\/logs$/, (c, { q }) => {

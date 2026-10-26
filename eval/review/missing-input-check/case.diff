@@ -1,0 +1,13 @@
+diff --git a/src/api/greet.ts b/src/api/greet.ts
+--- a/src/api/greet.ts
++++ b/src/api/greet.ts
+@@ -2,8 +2,7 @@ interface Req { body?: { name?: unknown } }
+ interface Res { status: number; text: string }
+ 
+ export function greet(req: Req): Res {
+-  const raw = req.body?.name;
+-  const name = typeof raw === 'string' ? raw.trim() : '';
++  const name = (req.body as { name: string }).name.trim();
+   if (!name) return { status: 400, text: 'name is required' };
+   return { status: 200, text: `Hello, ${name}!` };
+ }

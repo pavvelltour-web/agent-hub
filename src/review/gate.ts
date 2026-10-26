@@ -20,9 +20,9 @@ import type { Answer, Effort, Finding, Lens, RawFinding, Review, ReviewerPick, S
 
 export const RECONSIDER_MESSAGE = 'Три круга ревью не сошлись — пересмотрите подход';
 export const ROUND_CAP = 3;
-const MAX_NITS = 5;
-const MAX_VERIFIED = 30;            // raw findings sent to verifiers per round: a runaway hunter must not decide the spend
-const RUN_SLOTS = 3;                // reviewer processes at once (the RunManager allows 4: one stays free for the user)
+export const MAX_NITS = 5;
+export const MAX_VERIFIED = 30;            // raw findings sent to verifiers per round: a runaway hunter must not decide the spend
+export const RUN_SLOTS = 3;                // reviewer processes at once (the RunManager allows 4: one stays free for the user)
 const HEX40 = /^[0-9a-f]{40}$/;
 
 /** A refusal that the HTTP layer can show as-is. */
@@ -105,7 +105,7 @@ function fileAt(cwd: string, sha: string, file: string): string | null | undefin
   return s.ok ? s.out : undefined;
 }
 
-async function pool<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
+export async function pool<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
   const out = new Array<T>(tasks.length); let next = 0; let failed: { e: unknown } | undefined;
   const worker = async (): Promise<void> => {
     while (!failed) {
@@ -200,6 +200,15 @@ export function reviewView(db: Db, id: string): { review: Review; findings: Find
   const findings = listFindings(db, id).sort((a, b) => SEV[a.severity] - SEV[b.severity] || a.round - b.round)
     .map((f) => ({ ...f, hunk: cwd && existsSync(cwd) ? hunkOf(cwd, review.headSha, f.file, f.line, cache) : null }));
   return { review, findings, checks: info.checks, warnings: info.warnings, reasons: info.reasons, riskWhy: info.riskWhy };
+}
+/** The unified diff a review covers (base..head in the task's folder), read with the gate's own git helper. `null` when it cannot be read. */
+export function reviewDiffText(db: Db, reviewId: string): string | null {
+  const r = getReview(db, reviewId);
+  if (!r || !HEX40.test(r.baseSha) || !HEX40.test(r.headSha)) return null;
+  const cwd = (db.prepare('SELECT cwd FROM run WHERE id = ?').get(r.runId) as { cwd: string | null } | undefined)?.cwd;
+  if (!cwd || !existsSync(cwd)) return null;
+  const d = gitText(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', `${r.baseSha}..${r.headSha}`]);
+  return d.ok && d.out.trim() ? d.out : null;
 }
 export const reviewsOfRun = (db: Db, runId: string): Review[] => listReviewsForRun(db, runId);
 

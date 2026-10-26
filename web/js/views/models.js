@@ -26,7 +26,7 @@ export default async function view(ctx) {
 }
 
 async function overview() {
-  const [m, oc, rt] = await Promise.all([api.get('/models'), api.get('/outcomes'), api.get('/routing')]);
+  const [m, oc, rt, rq] = await Promise.all([api.get('/models'), api.get('/outcomes'), api.get('/routing'), api.get('/review-eval', true).catch(() => null)]);
   const guide = m.guide;
 
   // ---- limits
@@ -85,8 +85,25 @@ async function overview() {
         h('li', 'Если шаг не получается дважды, добавляется мышление; трижды — переход на Opus.'),
         h('li', 'Код, написанный Claude, проверяет GPT, и наоборот: чужие ошибки видно лучше.'),
         h('li', 'Если у Claude лимит почти кончился, а у Codex запас есть, работа уходит в Codex. Если кончились оба, hub предложит подождать сброса.')))),
+    reviewQuality(rq),
     h('section.group', sectionHead('Расход за 30 дней', h('span.t-meta', `цены Claude проверены ${m.pricesVerifiedAt}; цены GPT не известны`)), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, usage)),
     h('details.group', h('summary', h('span.t-heading', 'Точность прогнозов')), h('p.t-meta', 'Прогноз и факт в миллионах токенов с учётом кэша. Чем больше запусков, тем точнее советы.'), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, outcomes))) };
+}
+
+/** «Качество ревью»: the last saved measurement of the reviewers on the known cases (numbers only, never the diffs). Hostile or missing data shows «не измерялось». */
+function reviewQuality(ev) {
+  const n = (v, max = 1e6) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.min(v, max) : 0);
+  const b = ev && typeof ev.baseline === 'object' && ev.baseline ? ev.baseline : null, c = ev && typeof ev.cases === 'object' && ev.cases ? ev.cases : {};
+  const tile = (label, value, hint) => h('div.plate.card.tight.stack', h('span.t-meta', label), h('b.t-heading', value), h('span.t-meta', hint));
+  const date = b && typeof b.savedAt === 'string' ? b.savedAt.slice(0, 10) : '';
+  return h('section.group', sectionHead('Качество ревью'), h('div.plane.card.stack',
+    b ? h('div.grid-2', { style: { gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' } },
+      tile('Находит известные ошибки', Math.round(n(b.recall, 1) * 100) + '%', 'доля ошибок в примерах, которые ревью заметило'),
+      tile('Лишних замечаний', n(b.noiseOnClean, 100).toFixed(2), 'в среднем на пример без ошибок'),
+      tile('Кругов ревью', n(b.roundsToPass, 10).toFixed(1), 'пока ревью перестаёт находить новое'))
+      : h('p', 'не измерялось'),
+    h('p.t-meta', `Примеров: ${n(c.total)} (встроенных ${n(c.seed)}, из ваших случаев ${n(c.incident)}). С ошибкой: ${n(c.buggy)}, без ошибок: ${n(c.clean)}.`),
+    h('p.t-meta', b ? `Замер от ${date || '—'}. Если поменять подсказки или модели ревью, замер повторяют командой hub review-eval --compare: число найденных ошибок не должно упасть.` : 'Чтобы замерить, выполните в терминале: hub review-eval --save-baseline (тратит лимит подписки, нужен вход в Claude или Codex). Любое замечание ревью можно сохранить как пример на экране ревью.')));
 }
 
 function manual() {

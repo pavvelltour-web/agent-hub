@@ -1,0 +1,8 @@
+{
+  "id": "comment-only-change",
+  "title": "Comment and documentation wording only",
+  "kind": "clean",
+  "source": "seed",
+  "brief": "Improve the wording of the comments and the usage note. No code change.",
+  "bugs": []
+}

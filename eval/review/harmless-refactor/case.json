@@ -1,0 +1,8 @@
+{
+  "id": "harmless-refactor",
+  "title": "Extract a helper and rename a local variable",
+  "kind": "clean",
+  "source": "seed",
+  "brief": "Refactor only: no change in behaviour.",
+  "bugs": []
+}

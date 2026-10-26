@@ -1,0 +1,15 @@
+diff --git a/src/tools/archive.ts b/src/tools/archive.ts
+--- a/src/tools/archive.ts
++++ b/src/tools/archive.ts
+@@ -1,7 +1,7 @@
+-import { execFileSync } from 'node:child_process';
++import { execSync } from 'node:child_process';
+ 
+-export function archive(dir: string): string {
+-  const name = 'backup.tgz';
+-  execFileSync('tar', ['-czf', name, dir]);
++export function archive(dir: string, archiveName: string): string {
++  const name = `${archiveName}.tgz`;
++  execSync(`tar -czf ${name} ${dir}`);
+   return name;
+ }
