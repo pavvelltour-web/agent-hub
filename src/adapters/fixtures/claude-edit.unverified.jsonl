@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"fx-edit-1","model":"claude-sonnet-5-5"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_edit1","name":"Edit","input":{"file_path":"src/demo/greet.ts","old_string":"const a = 1;\nconst b = 2;\nreturn a + b;","new_string":"const a = 1;\nconst b = 3;\nconst c = 4;\nreturn a + b + c;","replace_all":false}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_edit1","content":"The file src/demo/greet.ts has been updated."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_multi1","name":"MultiEdit","input":{"file_path":"src/demo/util.ts","edits":[{"old_string":"foo","new_string":"foo\nbar"},{"old_string":"x\ny\nz","new_string":"x"}]}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_multi1","content":[{"type":"text","text":"Applied 2 edits."}]}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":4321,"result":"ok","usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.01}

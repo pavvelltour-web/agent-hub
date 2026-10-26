@@ -52,6 +52,16 @@ if (scenario.startsWith('demo-')) {
   out({ type: 'user', message: { content: [{ type: 'tool_result', content: '1 failing', is_error: true }] } });
   out({ type: 'assistant', message: { content: [{ type: 'text', text: 'fixed' }] } });
   out({ type: 'result', subtype: 'success', is_error: false, result: 'fixed', usage: { input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 900, output_tokens: 40 }, total_cost_usd: 0.01 });
+} else if (scenario === 'claude-rich') {
+  // Event model v2: thinking, a secret inside a tool input, a big tool output, an edit (diff), live partial text.
+  const key = 'sk-' + 'Q1w2E3r4T5y6U7i8O9p0A1s2D3f4';
+  out({ type: 'system', subtype: 'init', session_id: 'rich-1', model: 'claude-sonnet-5-5' });
+  out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Working' } } });
+  out({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'plan the change' }, { type: 'text', text: 'Working' }] } });
+  out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'deploy --token ' + key } }] } });
+  out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'row key ' + key + '\n' + 'line of output\n'.repeat(20000) }] } });
+  out({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu2', name: 'Edit', input: { file_path: 'a.txt', old_string: 'one', new_string: 'two' } }] } });
+  out({ type: 'result', subtype: 'success', is_error: false, duration_ms: 1500, result: 'ok', usage: { input_tokens: 1, output_tokens: 1 } });
 } else if (scenario === 'claude-login') {
   out({ type: 'system', subtype: 'init', session_id: 's', model: 'claude-haiku-4-5' });
   out({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login', usage: { input_tokens: 0, output_tokens: 0 } });

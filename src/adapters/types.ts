@@ -4,13 +4,21 @@ import type { AgentId } from '../core/types.ts';
 export type HubEvent =
   | { kind: 'session'; nativeId: string; model?: string }
   | { kind: 'text'; text: string }
-  | { kind: 'tool'; name: string; summary: string }
-  | { kind: 'tool_result'; summary: string; isError?: boolean }
-  | { kind: 'usage'; uncachedIn: number; cachedIn: number; out: number; reasoning?: number; costUsd?: number }
+  | { kind: 'thinking'; text: string; tokens?: number }
+  | { kind: 'partial'; text: string }                                                    // live text delta: shown, never persisted (the final `text` is)
+  | { kind: 'tool'; id: string; name: string; summary: string; input: Record<string, unknown> }
+  | { kind: 'tool_result'; id: string; summary: string; body: string; lines: number; truncated: boolean; isError?: boolean }
+  | { kind: 'diff'; path: string; added: number; removed: number; hunks: string }
+  | { kind: 'todo'; items: { text: string; state: 'pending' | 'active' | 'done' }[] }
+  | { kind: 'usage'; uncachedIn: number; cachedIn: number; out: number; reasoning?: number; costUsd?: number; ms?: number }
+  | { kind: 'unknown'; type: string }
   | { kind: 'limit'; reached: boolean; message: string; resetsAt?: string; usedPercent?: number }
   | { kind: 'warn'; message: string }
   | { kind: 'error'; message: string; needsLogin?: boolean }
   | { kind: 'done'; ok: boolean };
+
+/** Most characters one event body/text/string may hold, applied AFTER redaction. What is stored and rendered never exceeds it per field. */
+export const MAX_BODY = 64_000;
 
 export type Permission = 'plan' | 'edit' | 'full';
 

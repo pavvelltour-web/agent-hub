@@ -1,0 +1,1 @@
+{"type":"item.completed","item":{"id":"item_3","type":"file_change","changes":[{"path":"src/demo/a.ts","kind":"update"},{"path":"src/demo/b.ts","kind":"add"}],"status":"completed"}}

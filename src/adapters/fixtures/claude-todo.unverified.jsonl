@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_todo1","name":"TodoWrite","input":{"todos":[{"content":"Write the parser","activeForm":"Writing the parser","status":"completed"},{"content":"Add tests","activeForm":"Adding tests","status":"in_progress"},{"content":"Update docs","activeForm":"Updating docs","status":"pending"}]}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_todo1","content":"Todos have been modified successfully."}]}}

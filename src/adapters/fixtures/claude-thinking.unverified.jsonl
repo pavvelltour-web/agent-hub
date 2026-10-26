@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Plan: read the file, then change one line and run the tests.","signature":"sig-synthetic"},{"type":"text","text":"Starting."}]}}
+{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"","signature":"sig-empty"}]}}

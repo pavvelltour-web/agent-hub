@@ -1,0 +1,2 @@
+{"type":"item.completed","item":{"id":"item_4","type":"reasoning","text":"Check the config first, then edit."}}
+{"type":"item.completed","item":{"id":"item_5","type":"todo_list","items":[{"text":"Read config","completed":true},{"text":"Edit config","completed":false}]}}

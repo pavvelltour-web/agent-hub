@@ -85,8 +85,12 @@ export class RunManager {
     const emit = (e: HubEvent): void => {
       if (e.kind === 'limit' && e.reached && limit) return;   // Codex reports the same limit as `error` and `turn.failed`: keep one
       const row: StoredEvent = { seq: ++seq, ts: new Date().toISOString(), kind: e.kind, data: e };
+      // Live text deltas are shown but never stored: a secret split across two deltas cannot be redacted per piece, and the
+      // final `text` event (redacted whole) is the record. The gap in `seq` is harmless for replay (`seq > after`).
+      if (e.kind === 'partial') { this.subs.get(id)?.forEach((cb) => cb(row)); return; }
       this.db.prepare('INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES (?,?,?,?,?)').run(id, row.seq, row.ts, e.kind, JSON.stringify(e));
-      if (events.length < MAX_KEEP) events.push(e); else { events.shift(); events.push(e); }
+      const kept = e.kind === 'tool_result' ? { ...e, body: '' } : e.kind === 'tool' ? { ...e, input: {} } : e;   // handoff/summaries read summaries only: keep RAM small
+      if (events.length < MAX_KEEP) events.push(kept); else { events.shift(); events.push(kept); }
       if (e.kind === 'session') { this.db.prepare('UPDATE run SET session_native_id = ?, model = COALESCE(model, ?) WHERE id = ?').run(e.nativeId, e.model ?? null, id); }
       if (e.kind === 'usage') { tokIn += e.uncachedIn + e.cachedIn; cached += e.cachedIn; tokOut += e.out; cost += e.costUsd ?? 0; this.db.prepare('UPDATE run SET tokens_in = ?, tokens_cached = ?, tokens_out = ?, cost_usd = ? WHERE id = ?').run(tokIn, cached, tokOut, cost || null, id); }
       if (e.kind === 'limit') {

@@ -211,3 +211,21 @@ test('resume by native session id inherits permission and work mode from the hub
   assert.equal(rv.get(r2.id)?.workMode, 'review');
   assert.equal(rv.start({ agent: 'claude', prompt: 'x', projectRoot: root, workMode: 'review', permission: 'full' }).permission, 'plan', 'workMode review always means plan (handoff passes to.permission)');
 });
+
+test('event model v2 in the index: bodies capped, secrets redacted before storing, live partials shown but not stored', async () => {
+  const db = openDb(':memory:'); const root = repo();
+  const rm = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-rich' }, summarize: false });
+  const run = rm.start({ agent: 'claude', prompt: 'go', projectRoot: root, worktree: false });
+  const live: string[] = [];
+  rm.subscribe(run.id, (e) => live.push(e.kind));
+  await waitEnd(rm, run.id);
+  const raw = (db.prepare('SELECT data FROM run_event WHERE run_id = ?').all(run.id) as { data: string }[]).map((r) => r.data).join('\n');
+  assert.ok(!raw.includes('sk-' + 'Q1w2E3r4T5y6U7i8O9p0A1s2D3f4'), 'secret never stored');
+  const stored = rm.events(run.id);
+  assert.ok(!stored.some((e) => e.kind === 'partial'), 'partials are not persisted');
+  assert.ok(live.includes('partial'), 'but subscribers see them');
+  const res = stored.find((e) => e.kind === 'tool_result')!.data as { body: string; truncated: boolean; lines: number };
+  assert.deepEqual([res.body.length, res.truncated, res.lines], [64_000, true, 20_001]);
+  assert.ok(stored.every((e) => JSON.stringify(e.data).length < 200_000));
+  assert.ok(stored.some((e) => e.kind === 'thinking') && stored.some((e) => e.kind === 'diff'));
+});

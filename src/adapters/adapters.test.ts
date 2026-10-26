@@ -22,7 +22,8 @@ test('claude args: prompt is not an argument; permission/model/effort/resume map
   assert.ok(!a.includes('SECRET PROMPT'));
   assert.deepEqual(a.slice(0, 5), ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode']);
   assert.equal(a[5], 'auto');
-  assert.deepEqual(a.slice(-6), ['--model', 'sonnet', '--effort', 'medium', '--resume', 'abc']);
+  assert.equal(a[6], '--include-partial-messages', 'live text deltas (Task 2.1)');
+  assert.deepEqual(a.slice(-6),['--model', 'sonnet', '--effort', 'medium', '--resume', 'abc']);
   assert.equal(claudeAdapter.args({ prompt: '', cwd: '.', permission: 'plan' })[5], 'plan');
 });
 

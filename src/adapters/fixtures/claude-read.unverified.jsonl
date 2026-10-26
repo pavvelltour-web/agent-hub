@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_read1","name":"Read","input":{"file_path":"src/demo/greet.ts"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_read1","content":[{"type":"text","text":"1\tconst a = 1;"},{"type":"text","text":"2\tconst b = 2;"}]}]}}
