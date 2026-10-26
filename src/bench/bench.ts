@@ -7,6 +7,7 @@ import type { Tokens } from '../econ/econ.ts';
 import { agentOf, modelKey, type TaskClass } from '../econ/router.ts';
 import { git } from '../run/git.ts';
 import type { RunManager } from '../run/runner.ts';
+import { waitForRun } from '../run/wait.ts';
 
 export interface GoldenTask { id: string; cls: TaskClass; prompt: string; fixture: string; verify: string[] }
 export interface Pick { agent: AgentId; model: string; effort: string }
@@ -66,14 +67,6 @@ export function runVerify(argv: string[], cwd: string): boolean {
   return spawnSync(cmd === 'node' ? process.execPath : cmd, args, { cwd, env, stdio: 'ignore', timeout: 120_000 }).status === 0;
 }
 
-function finished(runs: RunManager, id: string, timeoutMs: number): Promise<void> {
-  return new Promise((done) => {
-    const un = runs.subscribe(id, (e) => { if (e.kind === 'end') { clearTimeout(t); un(); done(); } });
-    const t = setTimeout(() => { runs.stop(id); un(); done(); }, timeoutMs);
-    if (runs.get(id)?.outcome != null) { clearTimeout(t); un(); done(); }
-  });
-}
-
 export async function runBench(o: BenchOpts): Promise<BenchRow[]> {
   const rows: BenchRow[] = [];
   for (const task of o.tasks) for (const pick of o.picks) for (let i = 0; i < o.repeat; i++) {
@@ -82,7 +75,7 @@ export async function runBench(o: BenchOpts): Promise<BenchRow[]> {
     try {
       const repo = freshRepo(task.fixture);
       const run = o.runs.start({ agent: pick.agent, prompt: task.prompt, projectRoot: repo, model: pick.model, effort: pick.effort, cls: task.cls });
-      await finished(o.runs, run.id, o.runTimeoutMs ?? 15 * 60_000);
+      await waitForRun(o.runs, run.id, o.runTimeoutMs ?? 15 * 60_000);
       const r = o.runs.get(run.id);
       if (r) {
         row.tokens = { uncachedIn: (r.tokensIn ?? 0) - (r.tokensCached ?? 0), cachedIn: r.tokensCached ?? 0, out: r.tokensOut ?? 0 };

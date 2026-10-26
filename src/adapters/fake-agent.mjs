@@ -67,6 +67,23 @@ if (scenario.startsWith('demo-')) {
   out({ type: 'thread.started', thread_id: 'fake-codex-2' });
   out({ type: 'item.completed', item: { id: 'i0', type: 'agent_message', text: 'done' } });
   out({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 60, reasoning_output_tokens: 20 } });
+} else if (scenario === 'probe') {
+  // Mode probe double: what a step does depends on the permission mode passed on the command line (claude: --permission-mode).
+  const mode = process.argv[process.argv.indexOf('--permission-mode') + 1];
+  const step = (name, input, ok, msg) => {
+    out({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
+    out({ type: 'user', message: { content: [{ type: 'tool_result', content: msg, ...(ok ? {} : { is_error: true }) }] } });
+  };
+  out({ type: 'system', subtype: 'init', session_id: 'probe-' + mode, model: 'claude-sonnet-5-5' });
+  step('Read', { file_path: 'a.txt' }, true, 'one');
+  if (mode === 'plan') step('Write', { file_path: 'b.txt' }, false, "Claude requested permissions to write to b.txt, but you haven't granted it yet.");
+  else { (await import('node:fs')).writeFileSync('b.txt', 'ok'); step('Write', { file_path: 'b.txt' }, true, 'File created'); }
+  if (mode === 'plan') step('Bash', { command: 'git status' }, false, 'Permission to use Bash has been denied.');
+  else step('Bash', { command: 'git status' }, true, 'On branch main');
+  if (mode === 'bypassPermissions') step('WebFetch', { url: 'https://example.com' }, true, 'Example Domain');
+  else if (mode === 'auto') step('WebFetch', { url: 'https://example.com' }, false, 'This command requires approval');
+  else step('WebFetch', { url: 'https://example.com' }, false, 'Permission to use WebFetch has been denied.');
+  out({ type: 'result', subtype: 'success', is_error: false, result: 'done', usage: { input_tokens: 1, output_tokens: 1 }, total_cost_usd: 0 });
 } else if (scenario === 'slow') {
   out({ type: 'system', subtype: 'init', session_id: 'slow-1' });
   await sleep(60000);

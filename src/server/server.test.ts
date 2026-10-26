@@ -282,3 +282,14 @@ test('learning loop: rating a finished run, routing preferences, consent gate fo
   assert.equal((await api('/api/cases/export', { method: 'POST', body: {} })).status, 403, 'withdrawing consent stops exports at once');
   assert.ok('claude' in (await api('/api/overhead')).json);
 });
+
+test('GET /api/modes/matrix: "not verified" until a probe ran on this CLI version; a different version is not verified again', async () => {
+  const empty = await api('/api/modes/matrix');
+  assert.equal(empty.status, 200); assert.equal(empty.json.claude.verified, false); assert.equal(empty.json.claude.matrix, null);
+  const home = process.env['AGENT_HUB_HOME'] as string; mkdirSync(home, { recursive: true });
+  const m = { plan: { read: 'allowed', write: 'denied', shell: 'denied', network: 'denied' }, edit: { read: 'allowed', write: 'allowed', shell: 'allowed', network: 'asked' }, full: { read: 'allowed', write: 'allowed', shell: 'allowed', network: 'allowed' } };
+  writeFileSync(join(home, 'modes-matrix.json'), JSON.stringify({ claude: { cliVersion: 'fake', at: '2026-10-26T00:00:00Z', matrix: m }, codex: { cliVersion: 'old', at: '2026-10-26T00:00:00Z', matrix: m } }));
+  const r = await api('/api/modes/matrix');
+  assert.equal(r.json.claude.verified, true); assert.deepEqual(r.json.claude.matrix, m);
+  assert.equal(r.json.codex.verified, false, 'the CLI is now "fake", the matrix was measured on "old"');
+});

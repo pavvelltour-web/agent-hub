@@ -12,7 +12,7 @@ export default async function view(ctx) {
 
 /** Shared chat UI. `global` shows a project picker; inside a project the project is fixed. */
 export async function chatPanel({ projectId, runId, q, global }) {
-  const [projects, runs0, models] = await Promise.all([api.get('/projects'), api.get('/runs' + qs({ project: projectId, limit: 150 })), api.get('/models')]);
+  const [projects, runs0, models, matrix] = await Promise.all([api.get('/projects'), api.get('/runs' + qs({ project: projectId, limit: 150 })), api.get('/models'), api.get('/modes/matrix').catch(() => ({}))]);
   let runs = runs0;
   let pid = projectId ?? (q?.get('project') ? Number(q.get('project')) : (projects.find((p) => p.exists)?.id));
   let threads = threadsOf(runs);
@@ -66,12 +66,20 @@ export async function chatPanel({ projectId, runId, q, global }) {
       h('div', { style: { maxHeight: '55vh', overflow: 'auto' } }, all.map((e) => h('div.log-row', { style: { gridTemplateColumns: '90px 90px 90px minmax(0,1fr)' } }, h('span.t-meta.mono', fmt.time(e.ts)), h('span.lv.' + (e.kind === 'error' ? 'error' : e.kind === 'limit' || e.kind === 'warn' ? 'warn' : 'info'), e.kind), h('span.t-meta', e.agent), h('span.msg-t', String(sum(e)).slice(0, 300))))),
       h('div.foot', h('a.btn.btn-glass', { href: blob(), download: 'chat-log.json' }, icon('file', 'sm'), 'Скачать JSON'))), { wide: true });
   }
+  const CAP = { read: 'читает', write: 'пишет', shell: 'команды', network: 'сеть' }, RES = { allowed: 'да', denied: 'нет', asked: 'спросит', unknown: '?' };
+  /** What was measured for the chosen agent + mode on this CLI version; honest about "not measured". */
+  function permStatus() {
+    const m = matrix[state.agent];
+    if (!m?.verified || !m.matrix?.[perm]) return chip('права не проверены', 'line', 'Запустите «hub doctor --modes», чтобы измерить, что этот режим реально разрешает');
+    return chip('проверено на этой версии', 'ok', Object.entries(m.matrix[perm]).map(([k, v]) => `${CAP[k]}: ${RES[v]}`).join(' · '));
+  }
   function drawOpts() {
     const sel = (key, items, label) => h('div.field', h('label', label), h('select.select', { 'aria-label': label, onchange: (e) => { state[key] = e.target.value; if (key === 'agent') { state.model = ''; drawOpts(); } } }, items.map(([v, t]) => h('option', { value: v, selected: state[key] === v }, t))));
     opts.replaceChildren(
       sel('agent', [['auto', 'Выберет hub'], ['claude', 'Claude'], ['codex', 'Codex (GPT)']], 'Кто работает'),
       sel('model', modelOpts(state.agent), 'Модель'), sel('cls', TASKS, 'Тип задачи'), sel('effort', EFFORT, 'Глубина мышления'),
       h('div.pills.glass', { role: 'group', 'aria-label': 'Права агента' }, PERMS.map(([k, t]) => h('button.pill', { type: 'button', 'aria-pressed': String(perm === k), title: k === 'plan' ? 'Агент только читает и планирует' : k === 'edit' ? 'Агент правит файлы проекта, опасные команды спрашивает' : 'Агент делает всё без вопросов: опасно', onclick: () => pickPerm(k) }, t))),
+      state.agent === 'claude' || state.agent === 'codex' ? permStatus() : null,
       claudeLogin && !claudeLogin.installed ? chip('Claude Code не установлен', 'warn') : null);
   }
   function pickPerm(k) {

@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { join, resolve } from 'node:path';
 import { authStatus } from '../adapters/auth.ts';
+import { probeModes } from '../adapters/probe.ts';
 import { detectAgents } from '../adapters/locate.ts';
 import { loadTasks, parsePicks, runBench, summarize } from '../bench/bench.ts';
 import { applyPlan, describe, listBackups, undoBackup, effective } from '../core/plan.ts';
@@ -31,7 +32,7 @@ import { startServer } from '../server/server.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 
 interface Args { _: string[]; flags: Record<string, string | true> }
-const BOOL = new Set(['demo', 'yes', 'no-open', 'check', 'write', 'worktree', 'help', 'version', 'full', 'plan', 'dry']);
+const BOOL = new Set(['demo', 'yes', 'no-open', 'check', 'write', 'worktree', 'help', 'version', 'full', 'plan', 'dry', 'modes']);
 function parse(argv: string[]): Args {
   const a: Args = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -75,7 +76,7 @@ History
 Panel and checks
   hub ui [--port N] [--no-open] [--demo]  local panel on 127.0.0.1; --demo uses scripted fake agents (dev only: --token T fixes the token, --home DIR uses another data folder)
   hub diagram <${KINDS.join('|')}> [--format ascii|mermaid|json] [--entity t] [--check|--write] [path]
-  hub doctor                            environment check
+  hub doctor [--modes [--agent claude|codex]]   environment check; --modes measures what each permission mode allows (short real runs)
   hub security                          dependency/secret/code checks
 `;
 
@@ -261,6 +262,18 @@ async function cmdRun(a: Args, chat: boolean): Promise<void> {
   rl.close();
 }
 
+async function cmdModes(a: Args, ag: ReturnType<typeof detectAgents>): Promise<void> {
+  const ids = (flag(a, 'agent') ? [flag(a, 'agent') as AgentId] : (['claude', 'codex'] as AgentId[])).filter((id) => id === 'claude' || id === 'codex');
+  const runs = new RunManager(openDb());
+  for (const id of ids) {
+    if (!ag[id].installed) { out(`${id}: CLI not found, skipped`); continue; }
+    if (authStatus(id, ag[id]).loggedIn === false) { out(`${id}: not signed in: sign in first, then repeat`); continue; }
+    out(`${id}: probing plan, edit, full (three short real runs in a temp folder; this uses a little of your limit)…`);
+    const m = await probeModes({ agent: id, runs, cliVersion: ag[id].version ?? null, ...(id === 'claude' ? { model: 'haiku' } : {}) });
+    for (const [mode, row] of Object.entries(m)) out(`  ${mode.padEnd(5)} read ${row.read.padEnd(8)} write ${row.write.padEnd(8)} shell ${row.shell.padEnd(8)} network ${row.network}`);
+  }
+}
+
 async function cmdBench(a: Args): Promise<void> {
   const tasks = loadTasks(join(REPO_ROOT, 'eval', 'golden'));
   if (a.flags['dry']) return tasks.forEach((t) => out(`${t.id.padEnd(26)} ${t.cls.padEnd(11)} verify: ${t.verify.join(' ')}`));
@@ -341,7 +354,8 @@ async function main(argv: string[]): Promise<void> {
       return out(render(build(kind, { root, ...(flag(a, 'entity') ? { entity: flag(a, 'entity') as string } : {}), ...(flag(a, 'file') ? { file: flag(a, 'file') as string } : {}) }), (flag(a, 'format') ?? 'ascii') as Format));
     }
     case 'doctor': {
-      const ag = detectAgents(); const major = Number(process.versions.node.split('.')[0]);
+      const ag = detectAgents();
+      if (a.flags['modes']) return cmdModes(a, ag); const major = Number(process.versions.node.split('.')[0]);
       out(`node        ${process.version} ${major >= 24 ? '✔' : '✖ need ≥ 24 (node:sqlite, TypeScript stripping)'}`);
       for (const id of ['claude', 'codex'] as const) out(`${id.padEnd(11)} ${ag[id].installed ? `✔ ${ag[id].version ?? ''}  ${ag[id].path}` : '✖ not found'}`);
       out('login       claude CLI login is checked on the first run (message: "Not logged in" → run `claude` and /login)');

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { detectAgents, type AgentInfo } from '../adapters/locate.ts';
 import { authStatus, forgetAuth, type AuthInfo } from '../adapters/auth.ts';
 import { openLogin, pickFolder } from '../adapters/native.ts';
+import { loadMatrix } from '../adapters/probe.ts';
 import { applyPlan, describe, listBackups, undoBackup } from '../core/plan.ts';
 import { planInit, listPacks } from '../core/init.ts';
 import { addSkillRoot, HUB_HOME, library, loadUserConfig, removeSkillRoot, REPO_ROOT, saveUserConfig, skillRoots } from '../core/registry.ts';
@@ -77,6 +78,10 @@ const ROUTES: [string, RegExp, Handler][] = [
     return ok({ version: JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version, home: HUB_HOME, agents: Object.fromEntries((['claude', 'codex'] as AgentId[]).map((id) => [id, { ...agents[id], auth: (c.auth ?? authStatus)(id, agents[id]) }])), packs: listPacks().map((p) => ({ id: p.id, title: p.title })), sync: syncState });
   }],
   ['GET', /^\/api\/sync$/, () => ok(syncState)],
+  ['GET', /^\/api\/modes\/matrix$/, (c) => {
+    const agents = (c.agents ?? detectAgents)(); const saved = loadMatrix();
+    return ok(Object.fromEntries((['claude', 'codex'] as AgentId[]).map((id) => [id, { verified: !!saved[id] && saved[id]?.cliVersion === (agents[id].version ?? null), cliVersion: agents[id].version ?? null, at: saved[id]?.at ?? null, matrix: saved[id]?.matrix ?? null }])));
+  }],
   ['POST', /^\/api\/sync$/, (c) => {
     if (syncState.running) return ok(syncState);
     syncState = { running: true };
