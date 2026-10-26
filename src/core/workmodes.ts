@@ -57,7 +57,8 @@ export function applyWorkMode(m: WorkMode, req: StartReq, o: { home?: string } =
   return {
     ...req, prompt,
     permission: m.id === 'review' ? 'plan' : req.permission ?? m.permission,
-    cls: req.cls ?? m.cls,
+    cls: m.autopilot ? m.cls : req.cls ?? m.cls,   // a lighter class would switch slash commands off and strand the /autopilot prefix
     mode: m.worktree ? 'task' : 'chat',
+    workMode: m.id,
   };
 }

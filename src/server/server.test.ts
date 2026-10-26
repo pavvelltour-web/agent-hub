@@ -309,3 +309,22 @@ test('work modes over the API: list with availability, review forces read-only t
   const t = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'do', workMode: 'task', task: 'wm1' } });
   assert.equal(t.status, 200); assert.match(t.json.run.branch, /^hub\/wm1\/claude$/, 'task mode runs in its own branch');
 });
+
+test('work mode permissions over the API: a mode\'s own permission applies unless one is chosen; resume keeps it; a review thread stays plan; workMode is ignored on resume', async () => {
+  scenario.v = 'claude-ok'; env();
+  const root = mkRepo();
+  const id = (await api('/api/projects', { method: 'POST', body: { path: root } })).json.id;
+  const iv = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'idea', workMode: 'interview' } });
+  assert.equal(iv.status, 200); assert.equal(iv.json.run.permission, 'plan', 'interview is read-only unless the user picked something else');
+  await new Promise((r) => setTimeout(r, 400));
+  const again = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'next', resumeRunId: iv.json.run.id, workMode: 'task' } });
+  assert.equal(again.status, 200); assert.equal(again.json.run.permission, 'plan', 'resume keeps the thread\'s permission');
+  assert.equal(again.json.run.branch, null, 'workMode=task on a resumed thread does not open a branch'); assert.ok(!again.json.run.prompt.startsWith('Before doing anything'), 'the prefix is not applied twice');
+  const chosen = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'go', workMode: 'interview', permission: 'edit' } });
+  assert.equal(chosen.json.run.permission, 'edit', 'an explicit choice wins over a non-review mode');
+  const rv = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'look', workMode: 'review' } });
+  await new Promise((r) => setTimeout(r, 400));
+  const rv2 = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'again', resumeRunId: rv.json.run.id, permission: 'full' } });
+  assert.equal(rv2.json.run.permission, 'plan', 'a review thread cannot be escalated on resume');
+  assert.equal((await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'x' } })).json.run.permission, 'edit');
+});

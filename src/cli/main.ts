@@ -264,12 +264,13 @@ async function cmdRun(a: Args, chat: boolean): Promise<void> {
 
 async function cmdModes(a: Args, ag: ReturnType<typeof detectAgents>): Promise<void> {
   const ids = (flag(a, 'agent') ? [flag(a, 'agent') as AgentId] : (['claude', 'codex'] as AgentId[])).filter((id) => id === 'claude' || id === 'codex');
-  const runs = new RunManager(openDb());
+  const runs = new RunManager(openDb(':memory:'));   // probe runs must not become projects/history in the real index, nor mark panel runs as interrupted
   for (const id of ids) {
     if (!ag[id].installed) { out(`${id}: CLI not found, skipped`); continue; }
     if (authStatus(id, ag[id]).loggedIn === false) { out(`${id}: not signed in: sign in first, then repeat`); continue; }
     out(`${id}: probing plan, edit, full (three short real runs in a temp folder; this uses a little of your limit)…`);
     const m = await probeModes({ agent: id, runs, cliVersion: ag[id].version ?? null, ...(id === 'claude' ? { model: 'haiku' } : {}) });
+    if (Object.values(m).every((r) => Object.values(r).every((v) => v === 'unknown'))) { out(`  nothing could be classified (the CLI wording is not recognised yet): matrix not saved`); continue; }
     for (const [mode, row] of Object.entries(m)) out(`  ${mode.padEnd(5)} read ${row.read.padEnd(8)} write ${row.write.padEnd(8)} shell ${row.shell.padEnd(8)} network ${row.network}`);
   }
 }
@@ -283,7 +284,7 @@ async function cmdBench(a: Args): Promise<void> {
     if (!ag[id].installed) return fail(`${id} CLI not found (hub doctor)`);
     if (authStatus(id, ag[id]).loggedIn === false) return fail(`${id} is not signed in: sign in first (run \`${id === 'claude' ? 'claude' : 'codex login'}\`), then repeat`);
   }
-  const rows = await runBench({ tasks, picks, runs: new RunManager(openDb()), repeat: Math.max(1, Number(flag(a, 'repeat') ?? 1) || 1) });
+  const rows = await runBench({ tasks, picks, runs: new RunManager(openDb(':memory:')), repeat: Math.max(1, Number(flag(a, 'repeat') ?? 1) || 1) });
   rows.forEach((r) => out(`${r.taskId.padEnd(26)} ${r.agent}:${r.model}:${r.effort}  ${r.solved ? 'solved' : 'unsolved'}  ${r.costUsd != null ? '$' + r.costUsd.toFixed(3) : '$?'}  ${r.seconds}s`));
   out('');
   summarize(rows).forEach((s) => out(`${s.pick.padEnd(28)} solved ${s.solved}/${rows.filter((r) => `${r.agent}:${r.model}:${r.effort}` === s.pick).length}  cost per solved ${s.costPerSolved != null ? '$' + s.costPerSolved.toFixed(3) : 'n/a'}  limit % per solved ${s.pctPerSolved ?? 'n/a'}`));

@@ -18,7 +18,9 @@ export async function chatPanel({ projectId, runId, q, global }) {
   let threads = threadsOf(runs);
   let current = null;              // { runs: [...] } being shown, or null for a new chat
   let live = null;                 // { runId, close }
-  let perm = 'edit', fullOk = false;
+  let permChoice = null, fullOk = false;   // permChoice: only what the user clicked; everything else comes from the thread or the work mode
+  /** What will really apply: a review is always read-only; else the click, else the thread's last run, else the work mode, else edit. */
+  const effPerm = () => (state.workMode === 'review' && !current ? 'plan' : permChoice ?? (current ? current.last.permission : workModes.find((x) => x.id === state.workMode)?.permission) ?? 'edit');
   const closers = [];
   const state = { agent: q?.get('agent') || 'auto', model: q?.get('model') || '', effort: q?.get('effort') || '', cls: q?.get('cls') || 'implement', workMode: q?.get('workMode') || 'chat', depth: q?.get('depth') || 'normal' };
   let workModes = [];
@@ -71,8 +73,8 @@ export async function chatPanel({ projectId, runId, q, global }) {
   /** What was measured for the chosen agent + mode on this CLI version; honest about "not measured". */
   function permStatus() {
     const m = matrix[state.agent];
-    if (!m?.verified || !m.matrix?.[perm]) return chip('права не проверены', 'line', 'Запустите «hub doctor --modes», чтобы измерить, что этот режим реально разрешает');
-    return chip('проверено на этой версии', 'ok', Object.entries(m.matrix[perm]).map(([k, v]) => `${CAP[k]}: ${RES[v]}`).join(' · '));
+    if (!m?.verified || !m.matrix?.[effPerm()]) return chip('права не проверены', 'line', 'Запустите «hub doctor --modes», чтобы измерить, что этот режим реально разрешает');
+    return chip('проверено на этой версии', 'ok', Object.entries(m.matrix[effPerm()]).map(([k, v]) => `${CAP[k]}: ${RES[v]}`).join(' · '));
   }
   async function loadWorkModes() {
     workModes = await api.get(`/workmodes?project=${current ? current.last.projectId : pid}&agent=${state.agent === 'codex' ? 'codex' : 'claude'}`, true).catch(() => workModes);
@@ -83,15 +85,16 @@ export async function chatPanel({ projectId, runId, q, global }) {
     opts.replaceChildren(
       sel('agent', [['auto', 'Выберет hub'], ['claude', 'Claude'], ['codex', 'Codex (GPT)']], 'Кто работает'),
       sel('model', modelOpts(state.agent), 'Модель'), sel('cls', TASKS, 'Тип задачи'), sel('effort', EFFORT, 'Глубина мышления'),
-      h('div.pills.glass', { role: 'group', 'aria-label': 'Права агента' }, PERMS.map(([k, t]) => h('button.pill', { type: 'button', 'aria-pressed': String(perm === k), title: k === 'plan' ? 'Агент только читает и планирует' : k === 'edit' ? 'Агент правит файлы проекта, опасные команды спрашивает' : 'Агент делает всё без вопросов: опасно', onclick: () => pickPerm(k) }, t))),
+      h('div.pills.glass', { role: 'group', 'aria-label': 'Права агента' }, PERMS.map(([k, t]) => h('button.pill', { type: 'button', 'aria-pressed': String(effPerm() === k), title: k === 'plan' ? 'Агент только читает и планирует' : k === 'edit' ? 'Агент правит файлы проекта; что ещё он может, показывает пометка «проверено / не проверено»' : 'Агент делает всё без вопросов: опасно', onclick: () => pickPerm(k) }, t))),
       state.agent === 'claude' || state.agent === 'codex' ? permStatus() : null,
-      workModes.length && !current ? workModePicker(workModes, state.workMode, (k) => { state.workMode = k; const m = workModes.find((x) => x.id === k); if (m) { state.cls = m.cls; perm = m.permission; } drawOpts(); }, state.depth, (d) => { state.depth = d; drawOpts(); }) : null,
+      workModes.length && !current ? workModePicker(workModes, state.workMode, (k) => { state.workMode = k; const m = workModes.find((x) => x.id === k); if (m) state.cls = m.cls; permChoice = null; drawOpts(); }, state.depth, (d) => { state.depth = d; drawOpts(); }) : null,
       claudeLogin && !claudeLogin.installed ? chip('Claude Code не установлен', 'warn') : null);
   }
   function pickPerm(k) {
-    if (k !== 'full' || fullOk) { perm = k; drawOpts(); return; }
+    if (state.workMode === 'review' && !current) return toast('В режиме «Ревью» агент только читает', 'err');
+    if (k !== 'full' || fullOk) { permChoice = k; drawOpts(); return; }
     dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Без подтверждений'), closeBtn()), h('p', 'Агент будет выполнять любые команды сам и ничего не спросит. Включайте только в отдельной ветке и в проекте, который не жалко.'),
-      h('div.foot', btn('Отмена', { kind: 'glass', onclick: () => document.getElementById('dlg').close() }), btn('Всё равно включить', { kind: 'danger', onclick: () => { fullOk = true; perm = 'full'; document.getElementById('dlg').close(); drawOpts(); } }))));
+      h('div.foot', btn('Отмена', { kind: 'glass', onclick: () => document.getElementById('dlg').close() }), btn('Всё равно включить', { kind: 'danger', onclick: () => { fullOk = true; permChoice = 'full'; document.getElementById('dlg').close(); drawOpts(); } }))));
   }
 
   // ---------- transcript ----------
@@ -199,7 +202,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
     else if (current && last && agent !== 'auto' && agent !== last.agent) { note(`Новый чат: ${agentName(agent)} не видит прошлую переписку ${agentName(last.agent)}. Чтобы передать работу, дождитесь остановки по лимиту: появится кнопка «Продолжить».`); current = null; }
     ta.value = ''; autosize();
     try {
-      const r = await api.post('/runs', { projectId: current ? current.last.projectId : pid, prompt, agent, ...(state.model ? { model: state.model } : {}), ...(state.effort ? { effort: state.effort } : {}), cls: state.cls, permission: perm, ...(canResume ? { resumeRunId: last.id } : { workMode: state.workMode, ...(state.workMode === 'autopilot' ? { depth: state.depth } : {}) }) });
+      const r = await api.post('/runs', { projectId: current ? current.last.projectId : pid, prompt, agent, ...(state.model ? { model: state.model } : {}), ...(state.effort ? { effort: state.effort } : {}), cls: state.cls, ...(permChoice ? { permission: permChoice } : {}), ...(canResume ? { resumeRunId: last.id } : !current ? { workMode: state.workMode, ...(state.workMode === 'autopilot' ? { depth: state.depth } : {}) } : {}) });
       if (!current) { transcript.replaceChildren(); }
       runs = [r.run, ...runs]; threads = threadsOf(runs);
       current = threads.find((t) => t.runs.some((x) => x.id === r.run.id));

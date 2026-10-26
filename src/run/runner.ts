@@ -18,12 +18,12 @@ import { modelSummary, type Summary } from './summarize.ts';
 export interface StartReq {
   agent: AgentId; prompt: string; projectRoot: string; task?: string; model?: string; effort?: string; permission?: Permission;
   resumeRunId?: string; resumeNativeId?: string; resumeOfSession?: string; worktree?: boolean; sparse?: string[]; handoffOf?: string; mode?: 'chat' | 'task';
-  cls?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
+  cls?: string; workMode?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
 }
-export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null }
+export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null }
 export interface StoredEvent { seq: number; ts: string; kind: string; data: unknown }
 
-const COLS = 'id, agent, model, effort, prompt, cwd, branch, started_at AS startedAt, ended_at AS endedAt, outcome, session_native_id AS sessionNativeId, tokens_in AS tokensIn, tokens_out AS tokensOut, cost_usd AS costUsd, handoff_of AS handoffOf, resume_of AS resumeOf, error, project_id AS projectId, tokens_cached AS tokensCached, cls, est_json AS estJson, rating, project_type AS projectType';
+const COLS = 'id, agent, model, effort, prompt, cwd, branch, started_at AS startedAt, ended_at AS endedAt, outcome, session_native_id AS sessionNativeId, tokens_in AS tokensIn, tokens_out AS tokensOut, cost_usd AS costUsd, handoff_of AS handoffOf, resume_of AS resumeOf, error, project_id AS projectId, tokens_cached AS tokensCached, cls, est_json AS estJson, rating, project_type AS projectType, permission, work_mode AS workMode';
 const MAX_CONCURRENT = 4;
 const MAX_KEEP = 400;
 
@@ -52,12 +52,12 @@ export class RunManager {
     if (!adapter) throw new Error(`unknown agent: ${req.agent}`);
     const id = `r${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
 
-    let cwd = req.projectRoot, branch: string | null = null, resumeId: string | undefined, baseSha: string | undefined;
+    let cwd = req.projectRoot, branch: string | null = null, resumeId: string | undefined, baseSha: string | undefined, prevPerm: string | null = null, prevMode: string | null = null;
     if (req.resumeRunId) {
       const prev = this.get(req.resumeRunId);
       if (!prev?.sessionNativeId) throw new Error('nothing to resume: the previous run has no session id');
       if (prev.agent !== req.agent) throw new Error('resume works inside one agent; use handoff to switch agents');
-      resumeId = prev.sessionNativeId; cwd = prev.cwd ?? cwd; branch = prev.branch;
+      resumeId = prev.sessionNativeId; cwd = prev.cwd ?? cwd; branch = prev.branch; prevPerm = prev.permission; prevMode = prev.workMode;
     } else if (req.resumeNativeId) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{5,79}$/.test(req.resumeNativeId)) throw new Error('session id has an unexpected shape; not resuming');
       resumeId = req.resumeNativeId;
@@ -69,9 +69,12 @@ export class RunManager {
       const wt = createWorktree(req.projectRoot, req.task ?? id, req.agent, { ...(req.sparse ? { sparse: req.sparse } : {}) });
       cwd = wt.path; branch = wt.branch; baseSha = wt.baseSha;
     }
+    // A resumed thread keeps the permission it had unless the user chose another one; a review thread never leaves plan.
+    const permission: Permission = prevMode === 'review' ? 'plan' : req.permission ?? (prevPerm === 'plan' || prevPerm === 'full' || prevPerm === 'edit' ? prevPerm : 'edit');
+    const workMode = req.workMode ?? prevMode;
     tx(this.db, () => {
-      this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(id, projectId(this.db, req.projectRoot), req.agent, req.model ?? null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot));
+      this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type, permission, work_mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(id, projectId(this.db, req.projectRoot), req.agent, req.model ?? null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode);
     });
 
     const events: HubEvent[] = [];
@@ -98,7 +101,7 @@ export class RunManager {
     const note = (r: { event: string; command: string; code: number | null; output: string }[]): void => r.forEach((h) => emit({ kind: 'warn', message: `hook ${h.event}: ${h.command} → ${h.code === 0 ? 'ok' : 'exit ' + h.code}${h.output ? ' · ' + h.output.slice(0, 120) : ''}` }));
     note(runHooks('sessionStart', hooks.sessionStart, cwd, { ...env, HUB_RUN_ID: id, HUB_AGENT: req.agent }));
     const exe = this.opts.exe?.[req.agent];
-    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission: req.permission ?? 'edit', lean: leanArgs(req.agent, req.cls, { projectRoot: req.projectRoot, cwd }) }, emit,
+    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: leanArgs(req.agent, req.cls, { projectRoot: req.projectRoot, cwd }) }, emit,
       { env, ...(exe ? { exe } : {}) });
     const entry = { handle, stopped: false };
     this.live.set(id, entry);
@@ -164,6 +167,7 @@ export class RunManager {
     const root = prev.cwd ?? '';
     const projectRoot = (this.db.prepare('SELECT root FROM project WHERE id = ?').get(prev.projectId) as { root: string } | undefined)?.root ?? root;
     const c = { markdown: card.markdown, facts: { branch: card.branch } } as unknown as Card;
-    return this.start({ agent: to.agent, prompt: handoffPrompt(c, prev.prompt ?? ''), projectRoot: existsSync(projectRoot) ? projectRoot : root, handoffOf: runId, task: 'handoff', ...(to.model ? { model: to.model } : {}), ...(to.effort ? { effort: to.effort } : {}), ...(to.permission ? { permission: to.permission } : {}) });
+    const prevPerm = prev.workMode === 'review' ? 'plan' : prev.permission === 'plan' || prev.permission === 'full' || prev.permission === 'edit' ? prev.permission : undefined;
+    return this.start({ agent: to.agent, prompt: handoffPrompt(c, prev.prompt ?? ''), projectRoot: existsSync(projectRoot) ? projectRoot : root, handoffOf: runId, task: 'handoff', ...(to.model ? { model: to.model } : {}), ...(to.effort ? { effort: to.effort } : {}), ...(to.permission ?? prevPerm ? { permission: (to.permission ?? prevPerm) as Permission } : {}), ...(prev.workMode ? { workMode: prev.workMode } : {}) });
   }
 }

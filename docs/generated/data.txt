@@ -86,6 +86,8 @@
   est_json         TEXT
   rating           INTEGER
   project_type     TEXT
+  permission       TEXT
+  work_mode        TEXT
 
 [run_event]
 # id               INTEGER

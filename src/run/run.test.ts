@@ -170,3 +170,24 @@ test('runner hooks (hub.json): run around the session as argv arrays, outcome pa
   const plain = repo(); const x = r2.start({ agent: 'claude', prompt: 'hi', projectRoot: plain }); await waitEnd(r2, x.id);
   assert.ok(!r2.events(x.id).some((e) => e.kind === 'warn'));
 });
+
+test('permission is stored per run; resume and handoff default to the earlier run\'s permission; a review thread never leaves plan', async () => {
+  const db = openDb(':memory:'); const root = repo();
+  const rm = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-ok' }, summarize: false });
+  const a = rm.start({ agent: 'claude', prompt: 'think', projectRoot: root, permission: 'plan' });
+  await waitEnd(rm, a.id);
+  assert.equal(rm.get(a.id)?.permission, 'plan');
+  const b = rm.start({ agent: 'claude', prompt: 'more', projectRoot: root, resumeRunId: a.id });
+  await waitEnd(rm, b.id);
+  assert.equal(rm.get(b.id)?.permission, 'plan', 'resume without a choice keeps the earlier permission');
+  const c = rm.start({ agent: 'claude', prompt: 'now do it', projectRoot: root, resumeRunId: a.id, permission: 'edit' });
+  await waitEnd(rm, c.id);
+  assert.equal(rm.get(c.id)?.permission, 'edit', 'an explicit choice on a plain thread is honoured');
+  assert.equal(rm.start({ agent: 'claude', prompt: 'x', projectRoot: root }).permission, 'edit', 'a new run without a choice is edit');
+  const r = rm.start({ agent: 'claude', prompt: 'review', projectRoot: root, permission: 'plan', workMode: 'review' });
+  await waitEnd(rm, r.id);
+  assert.equal(rm.get(r.id)?.workMode, 'review');
+  const r2 = rm.start({ agent: 'claude', prompt: 'again', projectRoot: root, resumeRunId: r.id, permission: 'full' });
+  await waitEnd(rm, r2.id);
+  assert.equal(rm.get(r2.id)?.permission, 'plan', 'a review thread stays read-only even if full is asked');
+});

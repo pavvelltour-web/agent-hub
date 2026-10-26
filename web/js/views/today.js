@@ -39,7 +39,7 @@ function start(projects, models, state) {
   let modes = [];
   async function drawWay() {
     modes = await api.get(`/workmodes?project=${pid}&agent=${s.agent === 'codex' ? 'codex' : 'claude'}`, true).catch(() => modes);
-    wayBox.replaceChildren(workModePicker(modes, s.workMode, (k) => { s.workMode = k; const m = modes.find((x) => x.id === k); if (m) s.cls = m.cls; drawWay(); }, s.depth, (d) => { s.depth = d; drawWay(); }));
+    wayBox.replaceChildren(workModePicker(modes, s.workMode, (k) => { s.workMode = k; const m = modes.find((x) => x.id === k); if (m) s.cls = m.cls; drawWay(); if (s.agent === 'auto') ask(); }, s.depth, (d) => { s.depth = d; drawWay(); }));
   }
 
   const drawProject = () => {

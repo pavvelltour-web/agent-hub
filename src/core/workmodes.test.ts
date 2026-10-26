@@ -60,3 +60,10 @@ test('review forces plan whatever was asked; other modes keep an explicit permis
   assert.equal(applyWorkMode(mode('task'), base, { home }).mode, 'task'); assert.equal(applyWorkMode(mode('chat'), base, { home }).mode, 'chat');
   assert.equal(applyWorkMode(mode('interview'), base, { home }).permission, 'plan');
 });
+
+test('autopilot keeps its own class (a lighter class would switch slash commands off); the applied request remembers the work mode', () => {
+  const { root, home } = proj();
+  link(join(root, '.claude', 'skills'), 'autopilot');
+  const r = applyWorkMode(mode('autopilot'), { agent: 'claude', prompt: 'x', projectRoot: root, cls: 'mechanical' }, { home });
+  assert.equal(r.cls, 'implement'); assert.equal(r.workMode, 'autopilot');
+});

@@ -61,6 +61,7 @@ export async function probeModes(o: { agent: AgentId; runs: RunManager; home?: s
     } catch { /* a mode that cannot be probed stays unknown */ }
     matrix[mode] = row;
   }
+  if (Object.values(matrix).every((row) => Object.values(row).every((v) => v === 'unknown'))) return matrix;   // nothing classified: saving it would read as "verified"
   const all = loadMatrix(home);
   all[o.agent] = { cliVersion: o.cliVersion ?? null, at: new Date().toISOString(), matrix };
   mkdirSync(home, { recursive: true });

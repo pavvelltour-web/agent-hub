@@ -31,10 +31,18 @@ test('probeModes: classifies read/write/shell/network per mode from events, chec
   assert.deepEqual(m.full, { read: 'allowed', write: 'allowed', shell: 'allowed', network: 'allowed' });
   const saved = loadMatrix(home);
   assert.equal(saved.claude?.cliVersion, '9.9.9'); assert.deepEqual(saved.claude?.matrix, m);
-  assert.ok(existsSync(join(home, 'modes-matrix.json')) && !readFileSync(join(home, 'modes-matrix.json'), 'utf8').includes(tmpdir()), 'no temp paths in the saved file');
+  assert.ok(existsSync(join(home, 'modes-matrix.json')) && !readFileSync(join(home, 'modes-matrix.json'), 'utf8').includes(JSON.stringify(tmpdir()).slice(1, -1)), 'no temp paths in the saved file');
 });
 
 test('loadMatrix: a missing or corrupt file is an empty matrix, never a crash', () => {
   const home = mkdtempSync(join(tmpdir(), 'hub-home-'));
   assert.deepEqual(loadMatrix(home), {});
+});
+
+test('probeModes: a probe that classified nothing is not saved (all unknown must not read as "verified")', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'hub-home-'));
+  const runs = new RunManager(openDb(':memory:'), { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-ok' }, summarize: false, home });
+  const m = await probeModes({ agent: 'claude', runs, home, cliVersion: '1.0.0' });
+  assert.ok(Object.values(m.plan).every((v) => v === 'unknown' || v === 'denied' || v === 'allowed'));
+  assert.deepEqual(loadMatrix(home), {}, 'claude-ok has no read/write/shell/network tool calls the probe recognises');
 });
