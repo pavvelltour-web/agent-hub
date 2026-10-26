@@ -229,3 +229,16 @@ test('event model v2 in the index: bodies capped, secrets redacted before storin
   assert.ok(stored.every((e) => JSON.stringify(e.data).length < 200_000));
   assert.ok(stored.some((e) => e.kind === 'thinking') && stored.some((e) => e.kind === 'diff'));
 });
+
+test('hostile event shapes from a CLI (object name, numeric id, non-numeric cost) are stored as safe strings/numbers', async () => {
+  const db = openDb(':memory:'); const root = repo();
+  const rm = new RunManager(db, { exe: { claude: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'fixture:claude-hostile.unverified.jsonl', FAKE_FIXTURE_DELAY: '0' }, summarize: false, home: mkdtempSync(join(tmpdir(), 'hub-home-')) });
+  const run = rm.start({ agent: 'claude', prompt: 'x', projectRoot: root });
+  await waitEnd(rm, run.id);
+  const ev = rm.events(run.id).map((e) => e.data as Record<string, unknown>);
+  const tools = ev.filter((e) => e['kind'] === 'tool');
+  assert.deepEqual(tools.map((t) => [typeof t['id'], t['name']]), [['string', 'unknown'], ['string', 'unknown']]);
+  assert.ok(ev.filter((e) => e['kind'] === 'tool_result').every((e) => typeof e['id'] === 'string'));
+  assert.ok(ev.filter((e) => e['kind'] === 'unknown').every((e) => typeof e['type'] === 'string'));
+  assert.ok(ev.filter((e) => e['kind'] === 'usage').every((e) => e['costUsd'] === undefined || typeof e['costUsd'] === 'number'));
+});

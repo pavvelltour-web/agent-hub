@@ -23,8 +23,8 @@ export default async function view(ctx) {
       const r = await api.get(`/sessions/${enc}/events?limit=${PAGE}&offset=${next}`, true);
       if (r.moved) { note('warn', h('div.stack', h('b', 'Файл разговора перемещён или удалён'), h('span.t-meta', `Hub читает историю прямо из файла ${who}, а его больше нет на прежнем месте. В списке остались только название и счётчики.`))); return; }
       tctx ||= renderRun(list, { agent: s.agent, prompt: '' }, []);
-      for (const e of r.events) renderEvent(list, e, tctx);
-      next = r.next;
+      next = r.next;   // advance first: a row that throws must not make "Повторить" draw the page twice
+      for (const e of r.events) { try { renderEvent(list, e, tctx); } catch { /* one odd row must not stop the page */ } }
       if (!list.childElementCount) list.append(h('div.note', 'В файле нет сообщений, которые можно показать'));
       if (next != null) more.replaceChildren(btn('Показать ещё', { kind: 'glass', onclick: loadMore }));
     } catch (e) {

@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","session_id":"hostile-1","model":"claude-sonnet-5-5"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":123,"name":{"innerHTML":"<a href=\"https://example.invalid\">x</a>"},"input":{"k":"v"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":["Bash"],"input":{}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":{"a":1},"content":"ok"}]}}
+{"type":{"x":1}}
+{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":"not a number","duration_ms":5}

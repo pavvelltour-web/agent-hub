@@ -1,4 +1,5 @@
 import { stat } from 'node:fs/promises';
+import { sanitizeEvent } from '../adapters/event-utils.ts';
 import { readJsonl } from '../lib/jsonl.ts';
 import type { HubEvent } from '../adapters/types.ts';
 import type { StoredEvent } from '../run/runner.ts';
@@ -36,7 +37,7 @@ export async function pageEvents(path: string, o: { offset: number; limit: numbe
   let lineStart = Math.floor(offset / SLOT), skip = offset % SLOT;
   for await (const { obj, endByte } of readJsonl(path, lineStart)) {
     let evs: HubEvent[] = [];
-    try { evs = map(obj).slice(0, SLOT - 1); } catch { /* a surprising line must not break the page */ }
+    try { evs = map(obj).slice(0, SLOT - 1).map(sanitizeEvent); } catch { /* a surprising line must not break the page */ }
     const ts = obj && typeof obj === 'object' && typeof (obj as { timestamp?: unknown }).timestamp === 'string' ? (obj as { timestamp: string }).timestamp : '';
     for (let i = skip; i < evs.length; i++) {
       if (events.length >= limit) return { events, next: lineStart * SLOT + i };

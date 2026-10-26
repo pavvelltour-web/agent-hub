@@ -153,3 +153,17 @@ test('known but ignorable lines still produce no event', () => {
   assert.deepEqual(codexAdapter.parse({ type: 'item.started', item: { id: 'i', type: 'command_execution', command: 'ls' } }), []);
   assert.deepEqual(claudeAdapter.parse({ type: 'system', subtype: 'init', session_id: 's1', model: 'm' }), [{ kind: 'session', nativeId: 's1', model: 'm' }]);
 });
+
+import { asInput, sanitizeEvent } from './event-utils.ts';
+test('sanitizeEvent: names, ids, unknown types and costs from hostile lines become safe strings/numbers; keys and sizes are bounded', () => {
+  const t = sanitizeEvent({ kind: 'tool', id: 123 as unknown as string, name: { innerHTML: '<a>' } as unknown as string, summary: 's', input: {} });
+  assert.equal(t.kind, 'tool'); assert.equal((t as { name: string }).name, 'unknown'); assert.equal((t as { id: string }).id, '');
+  assert.equal((sanitizeEvent({ kind: 'tool', id: 'x', name: ['Bash'] as unknown as string, summary: '', input: {} }) as { name: string }).name, 'unknown');
+  assert.equal((sanitizeEvent({ kind: 'tool', id: 'x'.repeat(500), name: 'N'.repeat(500), summary: '', input: {} }) as { id: string; name: string }).id.length, 200);
+  assert.equal((sanitizeEvent({ kind: 'unknown', type: { x: 1 } as unknown as string }) as { type: string }).type, '(none)');
+  assert.equal('costUsd' in sanitizeEvent({ kind: 'usage', uncachedIn: 1, cachedIn: 0, out: 1, costUsd: 'x' as unknown as number }), false);
+  assert.equal((sanitizeEvent({ kind: 'usage', uncachedIn: 1, cachedIn: 0, out: 1, costUsd: 0.5 }) as { costUsd: number }).costUsd, 0.5);
+  assert.equal((sanitizeEvent({ kind: 'error', message: 'e'.repeat(10_000) }) as { message: string }).message.length, 2000);
+  const big = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => ['k'.repeat(300) + i, i]));
+  const kept = asInput(big); assert.ok(Object.keys(kept).length <= 200 && Object.keys(kept).every((k) => k.length <= 100));
+});

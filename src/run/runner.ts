@@ -14,6 +14,7 @@ import { leanArgs } from './lean.ts';
 import { handoffPrompt, writeCard, type Card, type HandoffInput } from './handoff.ts';
 import { readRunnerHooks, runHooks } from './hooks-run.ts';
 import { modelSummary, type Summary } from './summarize.ts';
+import { sanitizeEvent } from '../adapters/event-utils.ts';
 
 export interface StartReq {
   agent: AgentId; prompt: string; projectRoot: string; task?: string; model?: string; effort?: string; permission?: Permission;
@@ -82,7 +83,8 @@ export class RunManager {
 
     const events: HubEvent[] = [];
     let seq = 0, limit: Extract<HubEvent, { kind: 'limit' }> | undefined, tokIn = 0, tokOut = 0, cost = 0, cached = 0;
-    const emit = (e: HubEvent): void => {
+    const emit = (raw: HubEvent): void => {
+      const e = sanitizeEvent(raw);
       if (e.kind === 'limit' && e.reached && limit) return;   // Codex reports the same limit as `error` and `turn.failed`: keep one
       const row: StoredEvent = { seq: ++seq, ts: new Date().toISOString(), kind: e.kind, data: e };
       // Live text deltas are shown but never stored: a secret split across two deltas cannot be redacted per piece, and the

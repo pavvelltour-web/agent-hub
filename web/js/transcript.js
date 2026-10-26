@@ -100,7 +100,8 @@ function todoRow(ctx, items, at) {
   at.append(h('div.tx-row.tx-todo', mark(), h('div.tx-main', head, list)));
 }
 
-function labelFor(fam, name, codex) {
+function labelFor(fam, name0, codex) {
+  const name = typeof name0 === 'string' ? name0 : '';
   if (fam === 'read') return 'Прочитал';
   if (fam === 'search') return codex ? 'Искал' : 'Поиск';
   if (fam === 'bash') return codex ? 'Выполнил' : name && name.toLowerCase() !== 'shell' ? name : 'Bash';
@@ -178,7 +179,7 @@ function diffRow(ctx, d, at) {
   const counts = () => h('span', '(', h('span.tx-add', '+' + (d.added || 0)), ' ', h('span.tx-del', '−' + (d.removed || 0)), ')');
   if (known && r.diffs === 0 && r.path) r.cnt.replaceChildren(counts());
   const separate = !r.path || r.diffs > 0;
-  const kind = KIND[r.changes.find((c) => c && c.path === d.path)?.kind];
+  const kind = Object.hasOwn(KIND, r.changes.find((c) => c && c.path === d.path)?.kind) ? KIND[r.changes.find((c) => c && c.path === d.path).kind] : undefined;
   const box = h('div.tx-diff');
   if (separate) box.append(h('div.tx-file', h('code', d.path), known ? counts() : null, kind ? h('span.tx-meta', kind) : null));
   if (d.hunks) box.append(lineView(textLines(d.hunks), { head: DIFF_HEAD, mk: diffLine }));
@@ -193,7 +194,7 @@ function footer(ctx, d) {
   const parts = [ms ? `${label} за ${duration(ms)}` : label];
   if (u) {
     parts.push(`вход ${fmt.tok(u.uncachedIn + u.cachedIn)}${u.cachedIn ? ` (кэш ${fmt.tok(u.cachedIn)})` : ''}`, `выход ${fmt.tok(u.out)}`);
-    if (u.costUsd) parts.push('$' + u.costUsd.toFixed(3));
+    if (typeof u.costUsd === 'number' && u.costUsd) parts.push('$' + u.costUsd.toFixed(3));
   }
   return h('div.tx-foot' + (d.outcome && d.outcome !== 'done' ? '.is-bad' : ''), parts.join(' · '));
 }

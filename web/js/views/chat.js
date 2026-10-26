@@ -223,7 +223,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
   sendBtn.addEventListener('click', send);
   /** Esc stops a live run, like in the CLIs. Only while this chat is on screen, no dialog is open and nothing else took the key. */
   const onEsc = (e) => {
-    if (e.key !== 'Escape' || e.defaultPrevented || !live || !node.isConnected || document.getElementById('dlg')?.open) return;
+    if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented || !live || !node.isConnected || document.getElementById('dlg')?.open) return;
     e.preventDefault(); api.post(`/runs/${live.runId}/stop`).catch(() => {});
   };
   document.addEventListener('keydown', onEsc);

@@ -9,8 +9,8 @@ export function redactDeep(v: unknown, depth = 0): unknown {
   if (typeof v === 'string') return safe(v);
   if (v === null || typeof v !== 'object') return v;
   if (depth >= 8) return '[…]';
-  if (Array.isArray(v)) return v.map((x) => redactDeep(x, depth + 1));
-  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redactDeep(x, depth + 1)]));
+  if (Array.isArray(v)) return v.slice(0, 500).map((x) => redactDeep(x, depth + 1));
+  return Object.fromEntries(Object.entries(v).slice(0, 200).map(([k, x]) => [k.slice(0, 100), redactDeep(x, depth + 1)]));
 }
 
 export const asInput = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (redactDeep(v) as Record<string, unknown>) : {});
@@ -51,4 +51,21 @@ export function editDiff(name: string, input: Record<string, unknown> | undefine
     added += d.added; removed += d.removed; hunks.push(d.hunks);
   }
   return { kind: 'diff', path: safe(path), added, removed, hunks: safe(hunks.join('\n')) };
+}
+
+const text = (v: unknown, n: number, fallback = ''): string => (typeof v === 'string' ? safe(v).slice(0, n) : fallback);
+
+/**
+ * Last line of defence before an event is stored or sent to the panel: CLI output and history files are untrusted, so a name, id or type that
+ * is not a string (an object here would reach the DOM helper as "properties") becomes a capped string, a cost that is not a number is dropped.
+ */
+export function sanitizeEvent(e: HubEvent): HubEvent {
+  switch (e.kind) {
+    case 'tool': return { ...e, id: text(e.id, 200), name: text(e.name, 200) || 'unknown', summary: typeof e.summary === 'string' ? e.summary : '' };
+    case 'tool_result': return { ...e, id: text(e.id, 200) };
+    case 'unknown': return { ...e, type: text(e.type, 60, '(none)') };
+    case 'usage': { if (typeof e.costUsd === 'number' && Number.isFinite(e.costUsd)) return e; const { costUsd: _drop, ...rest } = e; return rest; }
+    case 'error': case 'limit': case 'warn': return { ...e, message: text(e.message, 2000) };
+    default: return e;
+  }
 }

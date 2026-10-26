@@ -240,3 +240,12 @@ test('history: Codex exec_command (cmd argument) is shown as a shell command', a
   const t = ev[0] as unknown as { name: string; input: { command: string } };
   assert.equal(t.name, 'shell'); assert.equal(t.input.command, 'git status');
 });
+
+test('history pager: a tool line with an object name / numeric id yields safe strings', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'hub-hist-'));
+  const f = join(d, 's.jsonl');
+  writeFileSync(f, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 123, name: { innerHTML: '<a href=x>x</a>' }, input: {} }] } }) + '\n');
+  const r = await readClaudeEvents(f, { offset: 0, limit: 10 });
+  const t = r.events.find((e) => e.kind === 'tool')?.data as { name: unknown; id: unknown };
+  assert.equal(t.name, 'unknown'); assert.equal(typeof t.id, 'string');
+});
