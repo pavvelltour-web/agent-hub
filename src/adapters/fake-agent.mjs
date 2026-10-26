@@ -1,7 +1,11 @@
 // Test double for the claude / codex CLIs: reads the prompt from stdin, prints a scripted JSONL stream.
 // Scenario comes from FAKE_SCENARIO; without it the scenario is derived from the CLI shape (codex has `exec`) and the prompt
 // (“!limit” or “лимит” → usage-limit stop). FAKE_DEMO=1 gives slower, richer streams for `hub ui --demo`. Never used by real work.
+// FAKE_SCENARIO=fixture:<name>.jsonl[+<name>.jsonl…] replays recorded CLI output line by line from src/adapters/fixtures/ (FAKE_FIXTURE_DELAY ms between lines, default 150).
 import { createInterface } from 'node:readline';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const isCodex = process.argv.includes('exec');
 let scenario = process.env.FAKE_SCENARIO;
@@ -13,7 +17,17 @@ if (!scenario) scenario = (process.env.FAKE_DEMO ? 'demo-' : '') + (/!limit|ли
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LIMIT_MSG = "You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 27th, 2026 12:03 PM.";
 
-if (scenario.startsWith('demo-')) {
+if (scenario.startsWith('fixture:')) {
+  // Only plain lower-case names ending in .jsonl: no separators, no `..` path, no drive letters, so nothing outside the fixtures folder can be read.
+  const dir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
+  const names = scenario.slice('fixture:'.length).split('+');
+  const bad = names.find((n) => !/^[a-z0-9.-]+\.jsonl$/.test(n) || !existsSync(join(dir, n)));
+  if (bad !== undefined) { process.stderr.write(`fake-agent: not a fixture name: ${JSON.stringify(bad)}\n`); process.exitCode = 2; }
+  else {
+    const delay = Number(process.env.FAKE_FIXTURE_DELAY ?? 150);
+    for (const n of names) for (const line of readFileSync(join(dir, n), 'utf8').split(/\r?\n/)) { if (!line.trim()) continue; process.stdout.write(line + '\n'); if (delay > 0) await sleep(delay); }
+  }
+} else if (scenario.startsWith('demo-')) {
   const codex = scenario.includes('codex');
   const limit = scenario.endsWith('limit');
   const ask = prompt.replace(/\s+/g, ' ').slice(0, 90);

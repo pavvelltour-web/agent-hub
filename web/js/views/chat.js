@@ -1,5 +1,6 @@
 import { api, qs, stream } from '../api.js';
-import { agentBadge, agentName, avatar, btn, chip, closeBtn, copy, dialog, empty, fmt, h, icon, md, toast } from '../ui.js';
+import { agentBadge, agentName, avatar, btn, chip, closeBtn, copy, dialog, empty, fmt, h, icon, toast } from '../ui.js';
+import { renderEvent, renderRun as trRun } from '../transcript.js';
 import { EFFORT, go, outcomeChip, pageHead, projectSelect, TASKS, threadsOf, workModePicker } from './common.js';
 
 const PERMS = [['plan', 'Только читать'], ['edit', 'Можно править файлы'], ['full', 'Без подтверждений']];
@@ -106,31 +107,28 @@ export async function chatPanel({ projectId, runId, q, global }) {
   const toBottom = () => { transcript.scrollTop = transcript.scrollHeight; };
   const note = (t) => transcript.append(h('div.note', t));
 
-  function renderRun(run, events, liveRun) {
-    const isHandoff = !!run.handoffOf;
-    if (run.resumeOf?.startsWith('session:')) note('Продолжение разговора из истории: агент помнит, что было раньше');
-    if (isHandoff) note(`Продолжение после лимита: ${agentName(run.agent)} получил короткую запись о сделанном, а не весь чат`);
-    if (!isHandoff) transcript.append(h('div.msg.user', h('div.bubble', run.prompt || '')));
-    const ctxr = { tool: null, usage: null };
-    events.forEach((e) => renderEvent(run, e, ctxr));
-    if (liveRun && !events.some((e) => e.kind === 'end')) { const t = h('div.msg.assistant.typing-row', avatar(run.agent), h('div.bubble', h('span.typing', h('i'), h('i'), h('i')))); transcript.append(t); }
+  /** Rows are drawn by transcript.js; this only adds what belongs to the chat: the login/limit cards, the handoff and the rating. */
+  function hooks(run) {
+    return {
+      override(e) {
+        const d = e.data || {};
+        if (e.kind === 'warn') { if (!String(d.message).startsWith('handoff_ready')) note(d.message); return true; }
+        if (e.kind === 'error') { transcript.append(errorCard(d)); return true; }
+        if (e.kind === 'limit') { if (d.reached) transcript.append(h('div.alert.warn', icon('alert'), h('div.stack', h('b', `${agentName(run.agent)}: лимит исчерпан`), h('span', d.message.slice(0, 220)), d.resetsAt ? h('span.t-meta', 'Сброс ' + fmt.until(d.resetsAt)) : null))); return true; }
+        return false;
+      },
+      after(e) {
+        if (e.kind !== 'end') return;
+        const outcome = e.data?.outcome;
+        if (outcome === 'limit') showHandoff(run);
+        if (outcome === 'done' || outcome === 'failed') rateRow(run);
+      },
+    };
   }
-  function renderEvent(run, e, c) {
-    transcript.querySelector('.typing-row')?.remove();
-    const d = e.data || {};
-    if (e.kind === 'text') transcript.append(h('div.msg.assistant', avatar(run.agent), h('div.bubble', md(d.text))));
-    else if (e.kind === 'tool') { c.tool = h('details.tool', h('summary', h('span.nm', d.name), h('span.sm', d.summary || '')), h('div.res')); transcript.append(c.tool); }
-    else if (e.kind === 'tool_result') { if (c.tool) { c.tool.querySelector('.res').textContent = d.summary || '(пусто)'; if (d.isError) c.tool.classList.add('bad'); } }
-    else if (e.kind === 'usage') c.usage = d;
-    else if (e.kind === 'warn' && !String(d.message).startsWith('handoff_ready')) note(d.message);
-    else if (e.kind === 'error') transcript.append(errorCard(d));
-    else if (e.kind === 'limit' && d.reached) transcript.append(h('div.alert.warn', icon('alert'), h('div.stack', h('b', `${agentName(run.agent)}: лимит исчерпан`), h('span', d.message.slice(0, 220)), d.resetsAt ? h('span.t-meta', 'Сброс ' + fmt.until(d.resetsAt)) : null)));
-    else if (e.kind === 'end') {
-      const u = c.usage;
-      note(`${({ done: 'готово', failed: 'ошибка', limit: 'остановлено лимитом', stopped: 'остановлено вами', interrupted: 'прервано' })[d.outcome] || d.outcome}${u ? ` · ${fmt.tok(u.uncachedIn + u.cachedIn)} токенов на входе, ${fmt.tok(u.out)} на выходе${u.costUsd ? ` · $${u.costUsd.toFixed(3)}` : ''}` : ''}`);
-      if (d.outcome === 'limit') showHandoff(run);
-      if (d.outcome === 'done' || d.outcome === 'failed') rateRow(run);
-    }
+  function renderRun(run, events, liveRun) {
+    const ctx = trRun(transcript, run, events, hooks(run));
+    if (liveRun && !events.some((e) => e.kind === 'end')) { const t = h('div.msg.assistant.typing-row', avatar(run.agent), h('div.bubble', h('span.typing', h('i'), h('i'), h('i')))); transcript.append(t); }
+    return ctx;
   }
   /** One tap that tells hub whether the model did the job. It is the only quality signal that is not a guess. */
   function rateRow(run) {
@@ -168,19 +166,18 @@ export async function chatPanel({ projectId, runId, q, global }) {
     transcript.replaceChildren(h('div.skeleton', { style: { height: '60px' } }));
     const detail = await Promise.all(t.runs.map((r) => api.get('/runs/' + r.id, true).catch(() => ({ run: r, events: [] }))));
     transcript.replaceChildren();
-    detail.forEach((d, i) => { const liveRun = d.run.live && i === detail.length - 1; renderRun(d.run, d.events, liveRun); if (liveRun) attach(d.run, d.events.at(-1)?.seq || 0); });
+    detail.forEach((d, i) => { const liveRun = d.run.live && i === detail.length - 1; const c = renderRun(d.run, d.events, liveRun); if (liveRun) attach(d.run, d.events.at(-1)?.seq || 0, c); });
     toBottom();
     history.replaceState(null, '', location.hash.replace(/\/chat(\/\w+)?/, '/chat/' + t.last.id));
   }
-  function attach(run, after) {
-    const c = { tool: transcript.querySelector('details.tool:last-of-type'), usage: null };
-    const close = stream(run.id, after, (e) => { const s = stick(); renderEvent(run, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); });
+  function attach(run, after, c) {
+    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderEvent(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); });
     live = { runId: run.id, close }; setBusy(true);
   }
   function stopLive() { live?.close(); live = null; setBusy(false); }
   function setBusy(b) {
     sendBtn.replaceChildren(icon(b ? 'stop' : 'send'));
-    sendBtn.setAttribute('aria-label', b ? 'Остановить' : 'Отправить');
+    sendBtn.setAttribute('aria-label', b ? 'Остановить' : 'Отправить'); sendBtn.title = b ? 'Остановить (Esc)' : '';
     sendBtn.classList.toggle('btn-primary', !b); sendBtn.classList.toggle('btn-danger', b);
     ta.disabled = false;
   }
@@ -215,15 +212,22 @@ export async function chatPanel({ projectId, runId, q, global }) {
       runs = [r.run, ...runs]; threads = threadsOf(runs);
       current = threads.find((t) => t.runs.some((x) => x.id === r.run.id));
       drawList(); drawHead(); resetPerm();
-      renderRun(r.run, [], true); toBottom();
+      const rc = renderRun(r.run, [], true); toBottom();
       if (r.advice) note(`hub выбрал ${agentName(r.advice.agent)} · ${fmt.model(r.advice.model)}. ${r.advice.reason}`);
-      attach(r.run, 0);
+      attach(r.run, 0, rc);
     } catch { current = thread; ta.value = prompt; autosize(); }
   }
   const autosize = () => { ta.style.height = 'auto'; ta.style.height = Math.min(220, ta.scrollHeight) + 'px'; };
   ta.addEventListener('input', autosize);
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
   sendBtn.addEventListener('click', send);
+  /** Esc stops a live run, like in the CLIs. Only while this chat is on screen, no dialog is open and nothing else took the key. */
+  const onEsc = (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || !live || !node.isConnected || document.getElementById('dlg')?.open) return;
+    e.preventDefault(); api.post(`/runs/${live.runId}/stop`).catch(() => {});
+  };
+  document.addEventListener('keydown', onEsc);
+  closers.push(() => document.removeEventListener('keydown', onEsc));
 
   drawOpts(); loadWorkModes(); drawList(); drawHead();
   const start = runId ? threads.find((t) => t.runs.some((r) => r.id === runId)) : null;

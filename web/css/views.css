@@ -82,14 +82,6 @@
 .bubble ul, .bubble ol { margin: 0; padding-left: 22px; }
 .bubble h4 { font: var(--hub-type-heading); }
 .note { align-self: center; font: var(--hub-type-meta); color: var(--hub-muted); padding: 4px 12px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--hub-line); text-align: center; max-width: 100%; }
-details.tool { margin-left: 44px; border-radius: 12px; background: color-mix(in srgb, var(--hub-ink) 5%, transparent); font: 13px/1.5 var(--hub-font-mono); max-width: min(760px, calc(100% - 44px)); }
-details.tool summary { padding: 7px 12px; cursor: pointer; list-style: none; display: flex; gap: 8px; align-items: center; min-width: 0; color: var(--hub-muted); }
-details.tool summary::-webkit-details-marker { display: none; }
-details.tool summary .nm { color: var(--hub-accent-text); font-weight: 500; flex: none; }
-details.tool summary .sm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-details.tool[open] summary .sm { white-space: normal; }
-details.tool .res { padding: 0 12px 10px; color: var(--hub-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
-details.tool.bad summary .sm { color: var(--hub-danger-ink); }
 .composer { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid color-mix(in srgb, var(--hub-line) 55%, transparent); }
 .composer .box { display: flex; gap: 10px; align-items: flex-end; }
 .composer .textarea { flex: 1; max-height: 220px; }
@@ -158,7 +150,6 @@ details.tool.bad summary .sm { color: var(--hub-danger-ink); }
   .route-row { grid-template-columns: 1fr; }
   .composer .opts .field > label { display: none; }
   .transcript { padding: 14px 12px 8px; }
-  details.tool { margin-left: 0; max-width: 100%; }
   .chat-main { height: calc(100vh - 190px); }
   .tbl .hide-s { display: none; }
 }
