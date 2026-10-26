@@ -1,5 +1,5 @@
 import { api, prefs } from '../api.js';
-import { agentBadge, agentName, avatar, btn, chip, closeBtn, dialog, fmt, h, icon, meter, toast } from '../ui.js';
+import { agentBadge, agentName, avatar, btn, chip, closeBtn, dialog, fmt, h, icon, meter, pills, toast } from '../ui.js';
 
 export const go = (path) => { location.hash = '#' + path; };
 const themeBtn = (t, ic, label) => h('button', { type: 'button', 'aria-pressed': String((prefs.get().theme || 'dark') === t), 'aria-label': label, title: label, onclick: () => { prefs.set({ theme: t }); render(); } }, icon(ic, 'sm'));
@@ -163,3 +163,16 @@ export function linkProject(projectId, onDone) {
 export const pctText = (p) => (!p ? '' : p.low >= 90 ? 'может съесть почти весь недельный лимит' : p.high > 100 ? `≈ ${p.low}% недельного лимита и больше` : `≈ ${p.low}–${p.high}% недельного лимита`);
 
 export const shortModel = (agent, model) => (agent === 'claude' ? String(model || '').replace(/^claude-/, '').replace(/-\d.*$/, '') : model);
+
+export const DEPTHS = [['strict', 'Строго'], ['normal', 'Обычно'], ['deep', 'Глубоко']];
+/** "Как работаем": one pill per work mode, a plain hint under it, a warning when the mode cannot start here, depth pills for the autopilot only. */
+export function workModePicker(modes, cur, onpick, depth, ondepth) {
+  const m = modes.find((x) => x.id === cur) || modes[0];
+  if (!m) return h('div');
+  const why = m.unavailable ? (/\((.+)\)$/.exec(m.unavailable)?.[1] ?? m.unavailable) : null;
+  return h('div.stack', { style: { gap: '8px' } },
+    pills(modes.map((x) => [x.id, x.title]), m.id, onpick, 'Как работаем'),
+    h('span.t-meta', m.hint),
+    why ? chip('Недоступно: ' + why, 'warn', m.unavailable) : null,
+    m.id === 'autopilot' ? pills(DEPTHS, depth, ondepth, 'Глубина автопилота') : null);
+}

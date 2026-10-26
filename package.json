@@ -30,6 +30,7 @@
     "!src/**/*.test.ts",
     "web",
     "packs",
+    "modes",
     "rules",
     "registry",
     "stages",

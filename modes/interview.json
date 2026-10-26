@@ -1,0 +1,11 @@
+{
+  "id": "interview",
+  "title": "Интервью",
+  "hint": "Агент сначала задаёт вопросы по одному и только потом предлагает план. Файлы не меняются.",
+  "permission": "plan",
+  "cls": "plan",
+  "worktree": false,
+  "skills": [],
+  "review": "none",
+  "promptPrefix": "Before doing anything, interview me: ask one question at a time until the goal, the limits and the definition of done are clear. Do not write or change any file yet. Then propose a short plan and wait for my answer. Reply in the language I write in.\n\n"
+}

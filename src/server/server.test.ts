@@ -293,3 +293,19 @@ test('GET /api/modes/matrix: "not verified" until a probe ran on this CLI versio
   assert.equal(r.json.claude.verified, true); assert.deepEqual(r.json.claude.matrix, m);
   assert.equal(r.json.codex.verified, false, 'the CLI is now "fake", the matrix was measured on "old"');
 });
+
+test('work modes over the API: list with availability, review forces read-only text, autopilot refuses without its skill, unknown mode is 400', async () => {
+  scenario.v = 'claude-ok'; env();
+  const root = mkRepo();
+  const id = (await api('/api/projects', { method: 'POST', body: { path: root } })).json.id;
+  const list = await api(`/api/workmodes?project=${id}&agent=claude`);
+  assert.deepEqual(list.json.map((m: { id: string }) => m.id), ['chat', 'task', 'interview', 'autopilot', 'review']);
+  assert.equal(list.json.find((m: { id: string }) => m.id === 'chat').unavailable, null);
+  assert.match(list.json.find((m: { id: string }) => m.id === 'autopilot').unavailable, /install the autopilot skill/);
+  const rev = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'look at it', workMode: 'review', permission: 'full' } });
+  assert.equal(rev.status, 200); assert.match(rev.json.run.prompt, /^Review the current changes read-only\./); assert.equal(rev.json.run.cls, 'review');
+  assert.equal((await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'go', workMode: 'autopilot' } })).status, 400);
+  assert.equal((await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'go', workMode: 'nope' } })).status, 400);
+  const t = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'do', workMode: 'task', task: 'wm1' } });
+  assert.equal(t.status, 200); assert.match(t.json.run.branch, /^hub\/wm1\/claude$/, 'task mode runs in its own branch');
+});

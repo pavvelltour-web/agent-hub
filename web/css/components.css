@@ -17,6 +17,7 @@
 
 .pills { display: inline-flex; gap: 4px; padding: 4px; border-radius: 999px; max-width: 100%; overflow-x: auto; }
 .pill { text-decoration: none; min-height: 36px; padding: 0 14px; border-radius: 999px; border: 0; background: transparent; color: var(--hub-muted); font: var(--hub-type-label); cursor: pointer; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+@media (pointer: coarse), (max-width: 720px) { .pill { min-height: 44px; } }   /* touch targets ≥ 44 px (AGENTS.md) */
 .pill .n { font: var(--hub-type-meta); opacity: .8; font-variant-numeric: tabular-nums; }
 .pill[aria-pressed="true"], .pill[aria-selected="true"] { background: var(--hub-pill-on-bg); color: var(--hub-pill-on-ink); }
 .pill:hover:not([aria-pressed="true"]):not([aria-selected="true"]) { color: var(--hub-ink); }

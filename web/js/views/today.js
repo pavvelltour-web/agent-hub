@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { agentBadge, agentName, btn, chip, closeBtn, copy, dialog, empty, field, fmt, h, icon, pills, sectionHead, toast } from '../ui.js';
-import { addProjectDialog, agentCard, EFFORT, go, limitLine, linkProject, modelName, openFolder, pageHead, pctText, runRow, sessionRow, shortModel, TASKS } from './common.js';
+import { addProjectDialog, agentCard, EFFORT, go, limitLine, linkProject, modelName, openFolder, pageHead, pctText, runRow, sessionRow, shortModel, TASKS, workModePicker } from './common.js';
 
 export default async function view() {
   const [runs, models, sessions, projects, state] = await Promise.all([api.get('/runs?limit=60'), api.get('/models'), api.get('/sessions?limit=6'), api.get('/projects'), api.get('/state')]);
@@ -34,19 +34,24 @@ function start(projects, models, state) {
   const usable = projects.filter((p) => p.exists);
   const guide = models.guide;
   let pid = usable.find((p) => p.id === Number(sessionStorage.getItem('hub.lastProject')))?.id ?? usable[0]?.id;
-  const s = { agent: 'auto', model: '', effort: '', cls: 'implement' };
-  const projBox = h('div.stack'), whoBox = h('div.stack'), advice = h('div.plate.card.tight.stack');
+  const s = { agent: 'auto', model: '', effort: '', cls: 'implement', workMode: 'chat', depth: 'normal' };
+  const projBox = h('div.stack'), whoBox = h('div.stack'), wayBox = h('div.stack'), advice = h('div.plate.card.tight.stack');
+  let modes = [];
+  async function drawWay() {
+    modes = await api.get(`/workmodes?project=${pid}&agent=${s.agent === 'codex' ? 'codex' : 'claude'}`, true).catch(() => modes);
+    wayBox.replaceChildren(workModePicker(modes, s.workMode, (k) => { s.workMode = k; const m = modes.find((x) => x.id === k); if (m) s.cls = m.cls; drawWay(); }, s.depth, (d) => { s.depth = d; drawWay(); }));
+  }
 
   const drawProject = () => {
     const cur = usable.find((p) => p.id === pid);
-    const sel = h('select.select', { 'aria-label': 'Проект', onchange: (e) => { pid = Number(e.target.value); sessionStorage.setItem('hub.lastProject', String(pid)); drawProject(); } }, usable.map((p) => h('option', { value: p.id, selected: p.id === pid }, p.slug)));
+    const sel = h('select.select', { 'aria-label': 'Проект', onchange: (e) => { pid = Number(e.target.value); sessionStorage.setItem('hub.lastProject', String(pid)); drawProject(); drawWay(); } }, usable.map((p) => h('option', { value: p.id, selected: p.id === pid }, p.slug)));
     projBox.replaceChildren(
       h('div.row-flex', sel, btn('Открыть папку…', { kind: 'glass', icon: 'folder', onclick: async () => { try { const id = await openFolder(); if (id) { sessionStorage.setItem('hub.lastProject', String(id)); location.reload(); } } catch { /* toast */ } } })),
       cur ? h('div.row-flex', h('span.t-meta.mono.clamp1', { title: cur.root }, cur.root), cur.linked ? chip('Claude и Codex связаны', 'ok') : btn('Связать Claude и Codex', { kind: 'glass', icon: 'handoff', title: 'Одни правила и одни скиллы для обоих агентов', onclick: () => linkProject(cur.id, () => location.reload()) })) : null);
   };
 
   const drawWho = () => {
-    const pickAgent = (k) => { s.agent = k; s.model = ''; drawWho(); if (k === 'auto') ask(); };
+    const pickAgent = (k) => { s.agent = k; s.model = ''; drawWho(); drawWay(); if (k === 'auto') ask(); };
     const opts = guide.filter((g) => g.agent === s.agent);
     whoBox.replaceChildren(
       h('div.row-flex', pills([['auto', 'Выбрать самому hub'], ['claude', 'Claude'], ['codex', 'Codex (GPT)']], s.agent, pickAgent, 'Кто работает'),
@@ -71,16 +76,17 @@ function start(projects, models, state) {
     if (!t) return toast('Напишите, что нужно сделать', 'err');
     const bad = s.agent !== 'auto' && state.agents[s.agent]?.auth?.loggedIn === false;
     if (bad) return toast(`${agentName(s.agent)} не подключён: нажмите «Войти» в блоке «Агенты» справа`, 'err');
-    const q = new URLSearchParams({ project: String(pid), prompt: t, send: '1', agent: s.agent, cls: s.cls });
+    const q = new URLSearchParams({ project: String(pid), prompt: t, send: '1', agent: s.agent, cls: s.cls, workMode: s.workMode });
+    if (s.workMode === 'autopilot') q.set('depth', s.depth);
     if (s.model) q.set('model', s.model); if (s.effort) q.set('effort', s.effort);
     go(`/chat?${q}`);
   };
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); go2(); } });
 
-  drawProject(); drawWho(); ask();
+  drawProject(); drawWho(); drawWay(); ask();
   const step = (n, title, ...body) => h('div.step', h('span.step-n', n), h('div.stack.grow', h('b.t-label', title), ...body));
   return h('section.compose-hero.plane.stack', h('h2.t-title', 'Что делаем сегодня?'),
-    step('1', 'Где работаем', projBox), step('2', 'Кто работает', whoBox), step('3', 'Что нужно сделать', ta),
+    step('1', 'Где работаем', projBox), step('2', 'Кто работает', whoBox), step('3', 'Как работаем', wayBox), step('4', 'Что нужно сделать', ta),
     h('div.row-flex', { style: { justifyContent: 'flex-end' } }, h('span.t-meta', 'Ctrl+Enter'), btn('Начать', { kind: 'primary', icon: 'send', disabled: !usable.length, onclick: go2 })));
 }
 

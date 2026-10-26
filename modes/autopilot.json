@@ -1,0 +1,11 @@
+{
+  "id": "autopilot",
+  "title": "Автопилот",
+  "hint": "Агент ведёт работу сам по этапам и останавливается только на вопросах, которые нельзя решить за вас. Нужен навык autopilot.",
+  "permission": "edit",
+  "cls": "implement",
+  "worktree": true,
+  "skills": ["autopilot"],
+  "review": "phase",
+  "autopilot": { "mode": "semi", "depth": "normal" }
+}

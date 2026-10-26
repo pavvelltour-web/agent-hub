@@ -1,6 +1,6 @@
 import { api, qs, stream } from '../api.js';
 import { agentBadge, agentName, avatar, btn, chip, closeBtn, copy, dialog, empty, fmt, h, icon, md, toast } from '../ui.js';
-import { EFFORT, go, outcomeChip, pageHead, projectSelect, TASKS, threadsOf } from './common.js';
+import { EFFORT, go, outcomeChip, pageHead, projectSelect, TASKS, threadsOf, workModePicker } from './common.js';
 
 const PERMS = [['plan', 'Только читать'], ['edit', 'Можно править файлы'], ['full', 'Без подтверждений']];
 
@@ -20,7 +20,8 @@ export async function chatPanel({ projectId, runId, q, global }) {
   let live = null;                 // { runId, close }
   let perm = 'edit', fullOk = false;
   const closers = [];
-  const state = { agent: q?.get('agent') || 'auto', model: q?.get('model') || '', effort: q?.get('effort') || '', cls: q?.get('cls') || 'implement' };
+  const state = { agent: q?.get('agent') || 'auto', model: q?.get('model') || '', effort: q?.get('effort') || '', cls: q?.get('cls') || 'implement', workMode: q?.get('workMode') || 'chat', depth: q?.get('depth') || 'normal' };
+  let workModes = [];
   const modelOpts = (agent) => (agent === 'auto' ? [['', 'выберет hub']] : [['', 'по умолчанию'], ...models.guide.filter((g) => g.agent === agent).map((g) => [g.id, g.name])]);
 
   const list = h('div.list');
@@ -73,13 +74,18 @@ export async function chatPanel({ projectId, runId, q, global }) {
     if (!m?.verified || !m.matrix?.[perm]) return chip('права не проверены', 'line', 'Запустите «hub doctor --modes», чтобы измерить, что этот режим реально разрешает');
     return chip('проверено на этой версии', 'ok', Object.entries(m.matrix[perm]).map(([k, v]) => `${CAP[k]}: ${RES[v]}`).join(' · '));
   }
+  async function loadWorkModes() {
+    workModes = await api.get(`/workmodes?project=${current ? current.last.projectId : pid}&agent=${state.agent === 'codex' ? 'codex' : 'claude'}`, true).catch(() => workModes);
+    drawOpts();
+  }
   function drawOpts() {
-    const sel = (key, items, label) => h('div.field', h('label', label), h('select.select', { 'aria-label': label, onchange: (e) => { state[key] = e.target.value; if (key === 'agent') { state.model = ''; drawOpts(); } } }, items.map(([v, t]) => h('option', { value: v, selected: state[key] === v }, t))));
+    const sel = (key, items, label) => h('div.field', h('label', label), h('select.select', { 'aria-label': label, onchange: (e) => { state[key] = e.target.value; if (key === 'agent') { state.model = ''; drawOpts(); loadWorkModes(); } } }, items.map(([v, t]) => h('option', { value: v, selected: state[key] === v }, t))));
     opts.replaceChildren(
       sel('agent', [['auto', 'Выберет hub'], ['claude', 'Claude'], ['codex', 'Codex (GPT)']], 'Кто работает'),
       sel('model', modelOpts(state.agent), 'Модель'), sel('cls', TASKS, 'Тип задачи'), sel('effort', EFFORT, 'Глубина мышления'),
       h('div.pills.glass', { role: 'group', 'aria-label': 'Права агента' }, PERMS.map(([k, t]) => h('button.pill', { type: 'button', 'aria-pressed': String(perm === k), title: k === 'plan' ? 'Агент только читает и планирует' : k === 'edit' ? 'Агент правит файлы проекта, опасные команды спрашивает' : 'Агент делает всё без вопросов: опасно', onclick: () => pickPerm(k) }, t))),
       state.agent === 'claude' || state.agent === 'codex' ? permStatus() : null,
+      workModes.length && !current ? workModePicker(workModes, state.workMode, (k) => { state.workMode = k; const m = workModes.find((x) => x.id === k); if (m) { state.cls = m.cls; perm = m.permission; } drawOpts(); }, state.depth, (d) => { state.depth = d; drawOpts(); }) : null,
       claudeLogin && !claudeLogin.installed ? chip('Claude Code не установлен', 'warn') : null);
   }
   function pickPerm(k) {
@@ -193,7 +199,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
     else if (current && last && agent !== 'auto' && agent !== last.agent) { note(`Новый чат: ${agentName(agent)} не видит прошлую переписку ${agentName(last.agent)}. Чтобы передать работу, дождитесь остановки по лимиту: появится кнопка «Продолжить».`); current = null; }
     ta.value = ''; autosize();
     try {
-      const r = await api.post('/runs', { projectId: current ? current.last.projectId : pid, prompt, agent, ...(state.model ? { model: state.model } : {}), ...(state.effort ? { effort: state.effort } : {}), cls: state.cls, permission: perm, ...(canResume ? { resumeRunId: last.id } : {}) });
+      const r = await api.post('/runs', { projectId: current ? current.last.projectId : pid, prompt, agent, ...(state.model ? { model: state.model } : {}), ...(state.effort ? { effort: state.effort } : {}), cls: state.cls, permission: perm, ...(canResume ? { resumeRunId: last.id } : { workMode: state.workMode, ...(state.workMode === 'autopilot' ? { depth: state.depth } : {}) }) });
       if (!current) { transcript.replaceChildren(); }
       runs = [r.run, ...runs]; threads = threadsOf(runs);
       current = threads.find((t) => t.runs.some((x) => x.id === r.run.id));
@@ -208,7 +214,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
   sendBtn.addEventListener('click', send);
 
-  drawOpts(); drawList(); drawHead();
+  drawOpts(); loadWorkModes(); drawList(); drawHead();
   const start = runId ? threads.find((t) => t.runs.some((r) => r.id === runId)) : null;
   if (start) await open(start);
   else { transcript.replaceChildren(emptyState()); if (q?.get('prompt')) { ta.value = q.get('prompt'); autosize(); if (q.get('send')) setTimeout(send, 50); } }

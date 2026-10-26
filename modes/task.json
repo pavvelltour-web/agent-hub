@@ -1,0 +1,10 @@
+{
+  "id": "task",
+  "title": "Задача в ветке",
+  "hint": "Одна задача в отдельной ветке hub/…: основная ветка не тронута, результат можно принять или выбросить.",
+  "permission": "edit",
+  "cls": "implement",
+  "worktree": true,
+  "skills": [],
+  "review": "on-stuck"
+}

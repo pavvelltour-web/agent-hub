@@ -1,0 +1,10 @@
+{
+  "id": "chat",
+  "title": "Чат",
+  "hint": "Свободный разговор с агентом: спросить, объяснить, поправить файл.",
+  "permission": "edit",
+  "cls": "implement",
+  "worktree": false,
+  "skills": [],
+  "review": "none"
+}

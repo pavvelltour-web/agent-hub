@@ -4,6 +4,7 @@ import { detectAgents, type AgentInfo } from '../adapters/locate.ts';
 import { authStatus, forgetAuth, type AuthInfo } from '../adapters/auth.ts';
 import { openLogin, pickFolder } from '../adapters/native.ts';
 import { loadMatrix } from '../adapters/probe.ts';
+import { applyWorkMode, loadWorkModes } from '../core/workmodes.ts';
 import { applyPlan, describe, listBackups, undoBackup } from '../core/plan.ts';
 import { planInit, listPacks } from '../core/init.ts';
 import { addSkillRoot, HUB_HOME, library, loadUserConfig, removeSkillRoot, REPO_ROOT, saveUserConfig, skillRoots } from '../core/registry.ts';
@@ -26,7 +27,7 @@ import { addLimit, getSession, latestLimit, listProjects, listSessions, projectI
 import { parseFrontmatter } from '../lib/frontmatter.ts';
 import { isSecretPath } from '../lib/paths.ts';
 import { checkSparse } from '../run/git.ts';
-import { RunManager } from '../run/runner.ts';
+import { RunManager, type StartReq } from '../run/runner.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 
 export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string } }
@@ -78,6 +79,11 @@ const ROUTES: [string, RegExp, Handler][] = [
     return ok({ version: JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).version, home: HUB_HOME, agents: Object.fromEntries((['claude', 'codex'] as AgentId[]).map((id) => [id, { ...agents[id], auth: (c.auth ?? authStatus)(id, agents[id]) }])), packs: listPacks().map((p) => ({ id: p.id, title: p.title })), sync: syncState });
   }],
   ['GET', /^\/api\/sync$/, () => ok(syncState)],
+  ['GET', /^\/api\/workmodes$/, (c, { q }) => {
+    const agent = q.get('agent') === 'codex' ? 'codex' : 'claude'; const pid = num(q.get('project'));
+    const root = pid != null ? (c.db.prepare('SELECT root FROM project WHERE id = ?').get(pid) as { root: string } | undefined)?.root : undefined;
+    return ok(loadWorkModes().map((m) => { let unavailable: string | null = null; if (root) { try { applyWorkMode(m, { agent, prompt: 'x', projectRoot: root }); } catch (e) { unavailable = (e as Error).message; } } return { ...m, unavailable }; }));
+  }],
   ['GET', /^\/api\/modes\/matrix$/, (c) => {
     const agents = (c.agents ?? detectAgents)(); const saved = loadMatrix();
     return ok(Object.fromEntries((['claude', 'codex'] as AgentId[]).map((id) => [id, { verified: !!saved[id] && saved[id]?.cliVersion === (agents[id].version ?? null), cliVersion: agents[id].version ?? null, at: saved[id]?.at ?? null, matrix: saved[id]?.matrix ?? null }])));
@@ -272,15 +278,19 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (sid && !sess?.projectId) return bad(400, 'this session has no project folder: add the folder as a project first');
     const root = rootOf(c, sess?.projectId ?? num(body['projectId']));
     let agent = (sess ? sess.agent : str(body['agent'])) as AgentId | 'auto' | undefined; let model = str(body['model']); let effort = str(body['effort']); let advice: unknown;
-    if (!agent || agent === 'auto') { const ch = advise({ cls: (str(body['cls']) as TaskClass) ?? 'implement', limits: limitsFor(c), ...learned(c), ...(body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? { implementedBy: body['implementedBy'] } : {}) }); agent = ch.agent; model ??= ch.model; effort ??= ch.effort; advice = ch; }
+    if (!agent || agent === 'auto') { const ch = advise({ cls: (str(body['cls']) as TaskClass) ?? (loadWorkModes().find((m) => m.id === body['workMode'])?.cls) ?? 'implement', limits: limitsFor(c), ...learned(c), ...(body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? { implementedBy: body['implementedBy'] } : {}) }); agent = ch.agent; model ??= ch.model; effort ??= ch.effort; advice = ch; }
     if (agent !== 'claude' && agent !== 'codex') return bad(400, 'agent must be claude, codex or auto');
-    const cls = str(body['cls']) && (str(body['cls']) as string) in ROUTING ? (str(body['cls']) as TaskClass) : undefined;
+    const wm = str(body['workMode']) ? loadWorkModes().find((m) => m.id === body['workMode']) : undefined;
+    if (str(body['workMode']) && !wm) return bad(400, 'unknown work mode');
+    const cls = str(body['cls']) && (str(body['cls']) as string) in ROUTING ? (str(body['cls']) as TaskClass) : wm?.cls;
     const est = cls && model ? estimate(profileFromHistory(c.db, agent), model, calibrate(c.db, agent), 1) : undefined;
     let sparse: string[] | undefined;
     try { if (Array.isArray(body['sparse']) && body['sparse'].length) sparse = checkSparse((body['sparse'] as unknown[]).filter((x): x is string => typeof x === 'string')); } catch (e) { return bad(400, (e as Error).message); }
-    const permission = body['permission'] === 'plan' || body['permission'] === 'full' ? body['permission'] : 'edit';
+    const askedPerm = body['permission'] === 'plan' || body['permission'] === 'full' || body['permission'] === 'edit' ? body['permission'] : undefined;
     try {
-      const run = c.runs.start({ agent, prompt, projectRoot: root, ...(model ? { model } : {}), ...(effort ? { effort } : {}), permission, mode: body['mode'] === 'task' ? 'task' : 'chat', ...(sparse ? { sparse } : {}), ...(cls ? { cls } : {}), ...(est ? { est } : {}), ...(str(body['task']) ? { task: str(body['task']) as string } : {}), ...(str(body['resumeRunId']) ? { resumeRunId: str(body['resumeRunId']) as string } : {}), ...(sess && sid ? { resumeNativeId: sess.nativeId, resumeOfSession: sid } : {}) });
+      let req: StartReq = { agent, prompt, projectRoot: root, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(wm ? (askedPerm ? { permission: askedPerm } : {}) : { permission: askedPerm ?? 'edit', mode: body['mode'] === 'task' ? 'task' : 'chat' }), ...(sparse ? { sparse } : {}), ...(cls ? { cls } : {}), ...(est ? { est } : {}), ...(str(body['task']) ? { task: str(body['task']) as string } : {}), ...(str(body['resumeRunId']) ? { resumeRunId: str(body['resumeRunId']) as string } : {}), ...(sess && sid ? { resumeNativeId: sess.nativeId, resumeOfSession: sid } : {}) };
+      if (wm) { const depth = str(body['depth']); req = applyWorkMode(depth && wm.autopilot && ['strict', 'normal', 'deep'].includes(depth) ? { ...wm, autopilot: { ...wm.autopilot, depth: depth as 'strict' | 'normal' | 'deep' } } : wm, req); }
+      const run = c.runs.start(req);
       return ok({ run, advice });
     } catch (e) { return bad(400, (e as Error).message); }
   }],
