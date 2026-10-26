@@ -97,5 +97,36 @@
   kind             TEXT
   data             TEXT
 
+[review]
+# id               TEXT
+  run_id           TEXT
+  project_id       INTEGER
+  base_sha         TEXT
+  head_sha         TEXT
+  effort           TEXT
+  risk             TEXT
+  round            INTEGER
+  state            TEXT
+  approval_sha     TEXT
+  approval_at      TEXT
+
+[finding]
+# id               TEXT
+  fingerprint      TEXT
+  review_id        TEXT  → review
+  round            INTEGER
+  severity         TEXT
+  lens             TEXT
+  file             TEXT
+  line             INTEGER
+  title            TEXT
+  evidence         TEXT
+  class_of_bug     TEXT
+  votes_real       INTEGER
+  votes_not_real   INTEGER
+  answer           TEXT
+  reason           TEXT
+  cleared_by       TEXT
+
 [FTS]
 message_fts (FTS5) — поиск по тексту сообщений

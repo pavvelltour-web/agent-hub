@@ -20,6 +20,7 @@ export const ARCH = [
   { id: 'econ', label: 'Экономика и советчик', dir: 'src/econ', feeds: [] },
   { id: 'run', label: 'Запуск: worktree · раннер · карточка передачи', dir: 'src/run', feeds: ['adapters', 'history'] },
   { id: 'bench', label: 'Замер: golden-задачи и цена решённой задачи', dir: 'src/bench', feeds: ['run', 'econ'] },
+  { id: 'review', label: 'Ревью-ворота: проверка и находки', dir: 'src/review', feeds: ['history', 'econ'] },
   { id: 'adapters', label: 'Адаптеры агентов (claude, codex)', dir: 'src/adapters', feeds: [] },
   { id: 'history', label: 'Журнал: импорт, индекс, поиск (SQLite)', dir: 'src/history', feeds: [] },
   { id: 'diagram', label: 'Схемы (этот вывод)', dir: 'src/diagram', feeds: [] },

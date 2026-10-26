@@ -27,6 +27,7 @@ src/stages     Этапы проекта и ворота
 src/econ       Экономика и советчик
 src/run        Запуск: worktree · раннер · карточка передачи
 src/bench      Замер: golden-задачи и цена решённой задачи
+src/review     Ревью-ворота: проверка и находки
 src/adapters   Адаптеры агентов (claude, codex)
 src/history    Журнал: импорт, индекс, поиск (SQLite)
 src/diagram    Схемы (этот вывод)
