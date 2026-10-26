@@ -71,24 +71,36 @@ test('loadTasks: a fixture must stay inside fixtures/ (no .., no absolute path, 
   assert.throws(() => loadTasks(d), /fixture/, 'a junction pointing out of fixtures/');
 });
 
-test('grading: deleted or edited tests cannot make a task solved; hidden graders are outside the workspace until grading', () => {
-  const fx = mkdtempSync(join(tmpdir(), 'hub-fx-grade-'));
-  const spec = (n: number): string => `import { test } from 'node:test';
+const spec = (n: number): string => `import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { v } from './lib.js';
 test('v is ${n}', () => assert.equal(v, ${n}));
 `;
+const specFixture = (withGrader: boolean): string => {
+  const fx = mkdtempSync(join(tmpdir(), 'hub-fx-grade-'));
   writeFileSync(join(fx, 'package.json'), '{"type":"module"}'); writeFileSync(join(fx, 'lib.js'), 'export const v = 1;\n'); writeFileSync(join(fx, 'a.test.js'), spec(2));
-  mkdirSync(join(fx, 'grader')); writeFileSync(join(fx, 'grader', 'g.test.js'), spec(2));
-  const task = { id: 't', cls: 'implement' as const, prompt: 'p', fixture: fx, verify: ['node', '--test'] };
+  if (withGrader) { mkdirSync(join(fx, 'grader')); writeFileSync(join(fx, 'grader', 'g.test.js'), spec(2)); }
+  return fx;
+};
+const specTask = (fixture: string): GoldenTask => ({ id: 't', cls: 'implement', prompt: 'p', fixture, verify: ['node', '--test'] });
+
+test('grading: a deleted or rewritten test cannot make a task solved (no grader involved, so only the restore can catch it)', () => {
+  const fx = specFixture(false); const task = specTask(fx);
   const repo = freshRepo(fx);
-  assert.equal(existsSync(join(repo, 'grader')) || existsSync(join(repo, 'g.test.js')), false, 'the grader is not in the agent workspace');
   rmSync(join(repo, 'a.test.js'));
   assert.equal(gradeRepo(task, repo), false, 'deleting the failing test is not a solution');
   writeFileSync(join(repo, 'a.test.js'), spec(1));
   assert.equal(gradeRepo(task, repo), false, 'rewriting the test to match the bug is not a solution');
   writeFileSync(join(repo, 'lib.js'), 'export const v = 2;\n');
   assert.equal(gradeRepo(task, repo), true, 'a real fix passes');
+});
+
+test('grading: grader/ stays out of the agent workspace and is applied only at grading time', () => {
+  const fx = specFixture(true); const task = specTask(fx);
+  const repo = freshRepo(fx);
+  assert.equal(existsSync(join(repo, 'grader')) || existsSync(join(repo, 'g.test.js')), false, 'the grader is not in the agent workspace');
+  assert.equal(gradeRepo(task, repo), false);
+  assert.ok(existsSync(join(repo, 'g.test.js')), 'the grader was copied in for grading');
 });
 
 test('summarize: runs that report no cost give costPerSolved null, never 0', () => {
