@@ -11,6 +11,8 @@ function killTree(pid: number): void {
   else { try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } } }
 }
 
+const BAD_LINE = 'hub skipped one line of agent output it could not process';
+
 export interface StartOpts { env?: NodeJS.ProcessEnv; timeoutMs?: number; exe?: { cmd: string; prefix: string[] } }
 
 /**
@@ -22,15 +24,22 @@ export function startAgent(adapter: AgentAdapter, req: RunRequest, onEvent: (e: 
   if (!exe) { onEvent({ kind: 'error', message: `${adapter.id} CLI not found on this PC` }); onEvent({ kind: 'done', ok: false }); return { done: Promise.resolve({ code: null, events: 2 }), stop: () => {}, pid: undefined }; }
   const child = spawn(exe.cmd, [...exe.prefix, ...adapter.args(req)], { cwd: req.cwd, env: opts.env ?? process.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let events = 0, sawDone = false, stopped = false, sawProblem = false;
-  const emit = (e: HubEvent): void => { events++; if (e.kind === 'done') { if (sawDone) return; sawDone = true; } if (e.kind === 'error' || (e.kind === 'limit' && e.reached)) sawProblem = true; onEvent(e); };
+  // Agent output is untrusted: whatever one line does to the parser or to the consumer, it must not throw out of a stream listener
+  // (that would be an uncaughtException and take the whole hub down). The failure becomes a fixed warn; the exception text is not shown.
+  const skipped = (): void => { try { onEvent({ kind: 'warn', message: BAD_LINE }); } catch { /* never rethrow from a listener */ } };
+  const emit = (e: HubEvent): void => {
+    events++; if (e.kind === 'done') { if (sawDone) return; sawDone = true; } if (e.kind === 'error' || (e.kind === 'limit' && e.reached)) sawProblem = true;
+    try { onEvent(e); } catch { skipped(); }
+  };
   child.stdin.on('error', () => { /* process exited before reading stdin */ });
   child.stdin.end(req.prompt);
   createInterface({ input: child.stdout }).on('line', (line) => {
     const t = line.trim();
     if (!t.startsWith('{')) return;
-    let obj: unknown;
+    let obj: unknown, evs: HubEvent[];
     try { obj = JSON.parse(t); } catch { return; }
-    for (const e of adapter.parse(obj)) emit(e);
+    try { evs = adapter.parse(obj); } catch { skipped(); return; }
+    try { for (const e of evs) emit(e); } catch { skipped(); }
   });
   let err = '';
   child.stderr.on('data', (d: Buffer) => { if (err.length < 4000) err += d.toString('utf8'); });

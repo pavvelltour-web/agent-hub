@@ -249,3 +249,35 @@ test('history pager: a tool line with an object name / numeric id yields safe st
   const t = r.events.find((e) => e.kind === 'tool')?.data as { name: unknown; id: unknown };
   assert.equal(t.name, 'unknown'); assert.equal(typeof t.id, 'string');
 });
+
+test('index sync: an object tool name, object arguments/input or object token counts cannot abort the sync', async () => {
+  const X = { toString: 1 };
+  const t2 = mkdtempSync(join(tmpdir(), 'hub-hist-bad-'));
+  const cd = join(t2, '.claude'); mkdirSync(join(cd, 'projects', 'p'), { recursive: true });
+  writeFileSync(join(cd, 'projects', 'p', 'bad-1.jsonl'),
+    L({ type: 'user', sessionId: 'bad-1', cwd, timestamp: '2026-10-20T10:00:00Z', message: { role: 'user', content: 'hello' } }) +
+    L({ type: 'assistant', sessionId: 'bad-1', cwd, timestamp: '2026-10-20T10:00:05Z', message: { role: 'assistant', model: 'claude-sonnet-5-5', content: [{ type: 'tool_use', name: X, input: { command: X } }], usage: { input_tokens: X, cache_read_input_tokens: '9', output_tokens: X } } }) +
+    L({ type: 'assistant', sessionId: 'bad-1', cwd, timestamp: '2026-10-20T10:00:06Z', message: { role: 'assistant', content: [{ type: 'text', text: 'still here' }] } }));
+  const db = openDb(':memory:');
+  const c = await syncClaude(db, cd);
+  assert.equal(c.changed, 1);
+  const s = getSession(db, 'claude:bad-1')!;
+  assert.ok(s.messages.some((m) => m.text === 'still here'));
+  assert.ok(s.messages.filter((m) => m.role === 'tool').every((m) => typeof m.toolName === 'string'));
+
+  const xd = join(t2, '.codex'); mkdirSync(join(xd, 'sessions'), { recursive: true });
+  const ro = join(xd, 'sessions', 'rollout-bad.jsonl');
+  writeFileSync(ro,
+    L({ type: 'response_item', timestamp: '2026-10-21T08:00:04Z', payload: { type: 'function_call', name: X, arguments: X } }) +
+    L({ type: 'event_msg', timestamp: '2026-10-21T08:00:06Z', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: X, cached_input_tokens: '1', output_tokens: X } } } }) +
+    L({ type: 'response_item', timestamp: '2026-10-21T08:00:05Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'codex still here' }] } }));
+  const sdb = new DatabaseSync(join(xd, 'state_5.sqlite'));
+  sdb.exec('CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, title TEXT, source TEXT, created_at INTEGER, updated_at INTEGER);');
+  sdb.prepare('INSERT INTO threads VALUES (?,?,?,?,?,?,?)').run('B1', ro, cwd, 'bad', 'cli', 1792000000, 1792000100);
+  sdb.close();
+  const x = await syncCodex(db, xd);
+  assert.equal(x.sessions, 1);
+  const cs = getSession(db, 'codex:B1')!;
+  assert.ok(cs.messages.some((m) => m.text === 'codex still here'));
+  assert.ok(cs.messages.filter((m) => m.role === 'tool').every((m) => typeof m.toolName === 'string'));
+});

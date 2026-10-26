@@ -167,3 +167,41 @@ test('sanitizeEvent: names, ids, unknown types and costs from hostile lines beco
   const big = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => ['k'.repeat(300) + i, i]));
   const kept = asInput(big); assert.ok(Object.keys(kept).length <= 200 && Object.keys(kept).every((k) => k.length <= 100));
 });
+
+test('sanitizeEvent: every non-text field of every kind is coerced (numbers finite, booleans real, strings capped, lists bounded)', () => {
+  const X = { toString: 1 } as unknown;      // String(X), X + 1 and `${X}` all throw
+  const S = (e: unknown): Record<string, unknown> => sanitizeEvent(e as HubEvent) as unknown as Record<string, unknown>;
+  const u = S({ kind: 'usage', uncachedIn: X, cachedIn: '5', out: NaN, reasoning: -3, ms: Infinity, costUsd: X });
+  assert.deepEqual(u, { kind: 'usage', uncachedIn: 0, cachedIn: 0, out: 0 });
+  assert.deepEqual(S({ kind: 'usage', uncachedIn: 10, cachedIn: 2, out: 3, reasoning: 4, ms: 5, costUsd: 0.1 }), { kind: 'usage', uncachedIn: 10, cachedIn: 2, out: 3, reasoning: 4, ms: 5, costUsd: 0.1 });
+  assert.doesNotThrow(() => { const v = u as { uncachedIn: number; cachedIn: number; out: number }; return v.uncachedIn + v.cachedIn + v.out; });
+
+  assert.deepEqual(S({ kind: 'limit', reached: 'yes', message: X, usedPercent: X, resetsAt: 'junk' }), { kind: 'limit', reached: false, message: '' });
+  assert.deepEqual(S({ kind: 'limit', reached: true, message: 'm', usedPercent: NaN, resetsAt: { a: 1 } }), { kind: 'limit', reached: true, message: 'm' });
+  assert.deepEqual(S({ kind: 'limit', reached: false, message: 'm', usedPercent: 42, resetsAt: '2026-10-27T12:03:00.000Z' }), { kind: 'limit', reached: false, message: 'm', usedPercent: 42, resetsAt: '2026-10-27T12:03:00.000Z' });
+
+  assert.deepEqual(S({ kind: 'session', nativeId: X, model: X }), { kind: 'session', nativeId: '' });
+  assert.deepEqual(S({ kind: 'session', nativeId: 'n'.repeat(500), model: 'm'.repeat(500) }), { kind: 'session', nativeId: 'n'.repeat(200), model: 'm'.repeat(200) });
+
+  assert.deepEqual(S({ kind: 'diff', path: X, added: '3', removed: -1, hunks: ['x'] }), { kind: 'diff', path: '', added: 0, removed: 0, hunks: '' });
+  assert.deepEqual(S({ kind: 'diff', path: 'a', added: 2.7, removed: 1, hunks: '@@' }), { kind: 'diff', path: 'a', added: 2, removed: 1, hunks: '@@' });
+
+  const todo = S({ kind: 'todo', items: [{ text: X, state: 'weird' }, null, 'str', { text: 't', state: 'done' }, ...Array.from({ length: 500 }, () => ({ text: 'x', state: 'active' }))] }) as { items: { text: string; state: string }[] };
+  assert.deepEqual(todo.items.slice(0, 2), [{ text: '', state: 'pending' }, { text: 't', state: 'done' }]);
+  assert.ok(todo.items.length <= 200);
+  assert.deepEqual(S({ kind: 'todo', items: X }), { kind: 'todo', items: [] });
+
+  assert.deepEqual(S({ kind: 'tool_result', id: 'i', summary: X, body: 7, lines: X, truncated: 'no', isError: 'yes' }), { kind: 'tool_result', id: 'i', summary: '', body: '', lines: 0, truncated: false });
+  assert.deepEqual(S({ kind: 'tool_result', id: 'i', summary: 's', body: 'b', lines: 3, truncated: true, isError: true }), { kind: 'tool_result', id: 'i', summary: 's', body: 'b', lines: 3, truncated: true, isError: true });
+  assert.deepEqual(S({ kind: 'error', message: X, needsLogin: 'x' }), { kind: 'error', message: '' });
+  assert.deepEqual(S({ kind: 'error', message: 'e', needsLogin: true }), { kind: 'error', message: 'e', needsLogin: true });
+  assert.deepEqual(S({ kind: 'done', ok: 'true' }), { kind: 'done', ok: false });
+  assert.deepEqual(S({ kind: 'text', text: X }), { kind: 'text', text: '' });
+  assert.deepEqual(S({ kind: 'thinking', text: 't', tokens: X }), { kind: 'thinking', text: 't' });
+  assert.deepEqual(S({ kind: 'tool', id: 'i', name: 'Edit', summary: X, input: ['a'] }), { kind: 'tool', id: 'i', name: 'Edit', summary: '', input: {} });
+  assert.deepEqual(S({ kind: 'warn', message: X }), { kind: 'warn', message: '' });
+  assert.deepEqual(S({ kind: 'bogus', x: 1 }), { kind: 'unknown', type: 'bogus' });
+  assert.deepEqual(S({ kind: X }), { kind: 'unknown', type: '(none)' });
+  // Everything that comes out survives JSON and string building
+  for (const e of [u, todo]) assert.doesNotThrow(() => `${JSON.stringify(e)}`);
+});

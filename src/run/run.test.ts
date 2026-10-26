@@ -242,3 +242,25 @@ test('hostile event shapes from a CLI (object name, numeric id, non-numeric cost
   assert.ok(ev.filter((e) => e['kind'] === 'unknown').every((e) => typeof e['type'] === 'string'));
   assert.ok(ev.filter((e) => e['kind'] === 'usage').every((e) => e['costUsd'] === undefined || typeof e['costUsd'] === 'number'));
 });
+
+test('hostile numbers and ids from a live CLI (usage objects, object session id, junk limits) cannot crash the hub: the run ends, numbers stay finite', async () => {
+  const db = openDb(':memory:'); const root = repo();
+  const rm = new RunManager(db, { exe: { claude: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'fixture:claude-hostile2.unverified.jsonl', FAKE_FIXTURE_DELAY: '0' }, summarize: false, home: mkdtempSync(join(tmpdir(), 'hub-home-')) });
+  const run = rm.start({ agent: 'claude', prompt: 'x', projectRoot: root });
+  await waitEnd(rm, run.id);
+  const row = rm.get(run.id)!;
+  assert.ok(row.outcome === 'done' || row.outcome === 'failed', `outcome: ${row.outcome}`);
+  for (const k of ['tokensIn', 'tokensOut', 'tokensCached', 'costUsd'] as const) assert.ok(row[k] === null || (typeof row[k] === 'number' && Number.isFinite(row[k])), `${k}: ${row[k]}`);
+  assert.ok(row.sessionNativeId === null || typeof row.sessionNativeId === 'string');
+  assert.ok(row.model === null || typeof row.model === 'string');
+  const ev = rm.events(run.id);
+  const texts = ev.filter((e) => e.kind === 'text').map((e) => (e.data as { text: string }).text);
+  assert.deepEqual(texts, ['before the bad rows', 'after the bad rows'], 'rows after the hostile ones are still stored');
+  assert.equal(ev.at(-1)?.kind, 'end');
+  const usage = ev.filter((e) => e.kind === 'usage').map((e) => e.data as Record<string, unknown>);
+  assert.equal(usage.length, 1);
+  for (const u of usage) for (const k of ['uncachedIn', 'cachedIn', 'out']) assert.ok(typeof u[k] === 'number' && Number.isFinite(u[k]), `${k}: ${String(u[k])}`);
+  for (const l of ev.filter((e) => e.kind === 'limit').map((e) => e.data as Record<string, unknown>)) assert.ok(l['usedPercent'] === undefined || Number.isFinite(l['usedPercent']));
+  const lim = db.prepare('SELECT used_percent AS p, resets_at AS r FROM limit_snapshot').all() as { p: unknown; r: unknown }[];
+  assert.ok(lim.every((x) => (x.p === null || Number.isFinite(x.p)) && (x.r === null || Number.isFinite(x.r))));
+});

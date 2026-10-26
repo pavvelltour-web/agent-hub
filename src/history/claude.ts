@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { readJsonl } from '../lib/jsonl.ts';
 import { redact } from '../lib/redact.ts';
 import { claudeAdapter } from '../adapters/claude.ts';
-import { safe } from '../adapters/event-utils.ts';
+import { count, safe, text as capText } from '../adapters/event-utils.ts';
 import type { HubEvent } from '../adapters/types.ts';
 import { pageEvents, type EventPage } from './events.ts';
 import { addMessage, addUsage, getState, resetSession, setState, tx, upsertSession, type Db } from './store.ts';
@@ -21,8 +21,8 @@ interface Line {
 /** Short, redacted description of a tool call for the transcript (never the full input). */
 const toolSummary = (b: Block): string => {
   const i = b.input ?? {};
-  const v = i['command'] ?? i['file_path'] ?? i['path'] ?? i['pattern'] ?? i['url'] ?? i['description'] ?? JSON.stringify(i);
-  return clip(redact(String(v)), 400);
+  const v = i['command'] ?? i['file_path'] ?? i['path'] ?? i['pattern'] ?? i['url'] ?? i['description'] ?? i;
+  return clip(redact(typeof v === 'string' ? v : JSON.stringify(v) ?? ''), 400);     // never String(v): `{toString:1}` throws
 };
 
 const isNoise = (t: string): boolean => /^<(system-reminder|command-|local-command|task-notification|ide_|user-prompt)/.test(t.trimStart()) || t.startsWith('Caveat:');
@@ -65,11 +65,11 @@ export async function syncClaude(db: Db, claudeDir = join(homedir(), '.claude'))
         if (l.type === 'assistant') {
           if (m.model && !m.model.startsWith('<')) model = m.model;
           const u = m.usage;
-          if (u) usage.push({ ts: l.timestamp ?? null, model: m.model && !m.model.startsWith('<') ? m.model : null, u: { uncachedIn: (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cachedIn: u.cache_read_input_tokens ?? 0, out: u.output_tokens ?? 0 } });
+          if (u) usage.push({ ts: l.timestamp ?? null, model: m.model && !m.model.startsWith('<') ? m.model : null, u: { uncachedIn: count(u.input_tokens) + count(u.cache_creation_input_tokens), cachedIn: count(u.cache_read_input_tokens), out: count(u.output_tokens) } });
           if (l.isSidechain || !Array.isArray(m.content)) continue;
           const text = m.content.filter((b) => b.type === 'text' && b.text).map((b) => b.text).join('\n').trim();
           if (text) rows.push({ role: 'assistant', ts: l.timestamp ?? null, text: clip(redact(text)) });
-          for (const b of m.content) if (b.type === 'tool_use' && b.name) rows.push({ role: 'tool', ts: l.timestamp ?? null, text: toolSummary(b), tool: b.name });
+          for (const b of m.content) if (b.type === 'tool_use' && b.name) rows.push({ role: 'tool', ts: l.timestamp ?? null, text: toolSummary(b), tool: capText(b.name, 200) || 'unknown' });
         } else if (l.type === 'user' && !l.isSidechain) {
           const text = (typeof m.content === 'string' ? m.content : (m.content ?? []).filter((b) => b.type === 'text' && b.text).map((b) => b.text).join('\n')).trim();
           if (!text || isNoise(text)) continue;

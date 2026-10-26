@@ -86,3 +86,17 @@ test('stop kills the process tree; crash reports stderr; missing exe is a clean 
   await h.done;
   assert.deepEqual(none.map((e) => e.kind), ['error', 'done']);
 });
+
+test('a line that makes parse or the consumer throw cannot escape the stdout listener: a warn is emitted and the next lines still arrive', async () => {
+  const ev: HubEvent[] = [];
+  let parsed = 0, threw = false;
+  const hostile: AgentAdapter = { ...withFake(claudeAdapter), parse: (o) => { if (++parsed === 1) throw new Error('parse blew up'); return claudeAdapter.parse(o); } };
+  const h = startAgent(hostile, { prompt: 'x', cwd: process.cwd() }, (e) => { if (e.kind === 'tool_result' && !threw) { threw = true; throw new TypeError('consumer blew up'); } ev.push(e); },
+    { env: { ...process.env, FAKE_SCENARIO: 'fixture:claude-read.unverified.jsonl+claude-bash.unverified.jsonl', FAKE_FIXTURE_DELAY: '0' } });
+  await h.done;
+  assert.equal(threw, true);
+  const warns = ev.filter((e) => e.kind === 'warn');
+  assert.equal(warns.length, 2, 'one warn per swallowed failure');
+  assert.ok(warns.every((w) => w.kind === 'warn' && !/blew up/.test(w.message)), 'fixed message, no exception text');
+  assert.deepEqual(ev.filter((e) => e.kind !== 'warn').map((e) => e.kind), ['tool', 'tool_result', 'done'], 'later lines are still parsed and delivered');
+});

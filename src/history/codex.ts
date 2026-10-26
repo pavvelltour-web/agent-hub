@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { readJsonl } from '../lib/jsonl.ts';
 import { redact } from '../lib/redact.ts';
-import { asInput, resultEvent, safe, thinkingEvent } from '../adapters/event-utils.ts';
+import { asInput, count, resultEvent, safe, text as capText, thinkingEvent } from '../adapters/event-utils.ts';
 import type { HubEvent } from '../adapters/types.ts';
 import { pageEvents, type EventPage } from './events.ts';
 import { norm } from '../lib/paths.ts';
@@ -33,6 +33,8 @@ function openCodexState(codexDir: string): { db: DatabaseSync; cleanup: () => vo
 }
 
 const INJECTED = /^(<(app-context|environment_context|permissions|collaboration_mode|skills|plugins|user_instructions|turn_aborted|subagent_notification)|# AGENTS\.md instructions|<INSTRUCTIONS>)/;
+
+const fin = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
 interface RolloutLine { type?: string; timestamp?: string; payload?: any }
 
@@ -72,17 +74,17 @@ export async function syncCodex(db: Db, codexDir = join(homedir(), '.codex')): P
         else if (l.type === 'turn_context') { model = p.model ?? model; effort = p.effort ?? p.reasoning_effort ?? effort; }
         else if (l.type === 'event_msg' && p.type === 'token_count') {
           const lu = p.info?.last_token_usage;
-          if (lu) usage.push({ ts: l.timestamp ?? null, model, u: { uncachedIn: Math.max(0, (lu.input_tokens ?? 0) - (lu.cached_input_tokens ?? 0)), cachedIn: lu.cached_input_tokens ?? 0, out: lu.output_tokens ?? 0, reasoning: lu.reasoning_output_tokens ?? 0 } });
+          if (lu) usage.push({ ts: l.timestamp ?? null, model, u: { uncachedIn: Math.max(0, count(lu.input_tokens) - count(lu.cached_input_tokens)), cachedIn: count(lu.cached_input_tokens), out: count(lu.output_tokens), reasoning: count(lu.reasoning_output_tokens) } });
           const pr = p.rate_limits?.primary;
-          if (pr && l.timestamp) { plan = p.rate_limits?.plan_type ?? plan; limits.push({ ts: l.timestamp, windowMinutes: pr.window_minutes ?? null, usedPercent: pr.used_percent ?? null, resetsAt: pr.resets_at ?? null, planType: plan }); }
+          if (pr && l.timestamp) { plan = p.rate_limits?.plan_type ?? plan; limits.push({ ts: l.timestamp, windowMinutes: fin(pr.window_minutes), usedPercent: fin(pr.used_percent), resetsAt: fin(pr.resets_at), planType: plan }); }
         } else if (l.type === 'response_item' && p.type === 'message' && (p.role === 'user' || p.role === 'assistant')) {
           const text = (p.content as { text?: string }[] | undefined)?.map((c) => c.text ?? '').join('\n').trim() ?? '';
           if (!text || (p.role === 'user' && INJECTED.test(text.trimStart()))) continue;
           rows.push({ role: p.role, ts: l.timestamp ?? null, text: clip(redact(text)) });
         } else if (l.type === 'response_item' && p.type === 'function_call' && p.name) {
-          let arg = String(p.arguments ?? '');
-          try { const j = JSON.parse(arg) as Record<string, unknown>; arg = String(j['command'] ?? j['cmd'] ?? j['path'] ?? arg); } catch { /* keep raw */ }
-          rows.push({ role: 'tool', ts: l.timestamp ?? null, text: clip(redact(arg), 400), tool: p.name });
+          let arg = typeof p.arguments === 'string' ? p.arguments : '';     // never String(x): `{toString:1}` throws and would abort the sync
+          try { const j = JSON.parse(arg) as Record<string, unknown>; const v = j['command'] ?? j['cmd'] ?? j['path']; if (typeof v === 'string') arg = v; else if (Array.isArray(v)) arg = v.map((x) => (typeof x === 'string' ? x : '')).join(','); else if (v != null) arg = JSON.stringify(v); } catch { /* keep raw */ }
+          rows.push({ role: 'tool', ts: l.timestamp ?? null, text: clip(redact(arg), 400), tool: capText(p.name, 200) || 'unknown' });
         }
       }
       const parent = parents.get(t.id);

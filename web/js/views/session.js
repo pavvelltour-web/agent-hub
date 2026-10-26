@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { renderEvent, renderRun } from '../transcript.js';
+import { renderRun, renderSafe } from '../transcript.js';
 import { agentBadge, agentName, btn, chip, fmt, h, toast } from '../ui.js';
 import { go, pageHead } from './common.js';
 
@@ -24,7 +24,7 @@ export default async function view(ctx) {
       if (r.moved) { note('warn', h('div.stack', h('b', 'Файл разговора перемещён или удалён'), h('span.t-meta', `Hub читает историю прямо из файла ${who}, а его больше нет на прежнем месте. В списке остались только название и счётчики.`))); return; }
       tctx ||= renderRun(list, { agent: s.agent, prompt: '' }, []);
       next = r.next;   // advance first: a row that throws must not make "Повторить" draw the page twice
-      for (const e of r.events) { try { renderEvent(list, e, tctx); } catch { /* one odd row must not stop the page */ } }
+      for (const e of r.events) renderSafe(list, e, tctx);      // one odd row becomes a neutral line, the page goes on
       if (!list.childElementCount) list.append(h('div.note', 'В файле нет сообщений, которые можно показать'));
       if (next != null) more.replaceChildren(btn('Показать ещё', { kind: 'glass', onclick: loadMore }));
     } catch (e) {

@@ -53,19 +53,44 @@ export function editDiff(name: string, input: Record<string, unknown> | undefine
   return { kind: 'diff', path: safe(path), added, removed, hunks: safe(hunks.join('\n')) };
 }
 
-const text = (v: unknown, n: number, fallback = ''): string => (typeof v === 'string' ? safe(v).slice(0, n) : fallback);
+/** A string from untrusted data, redacted and capped; anything else becomes `fallback` (never String(x): `{toString:1}` throws). */
+export const text = (v: unknown, n: number, fallback = ''): string => (typeof v === 'string' ? safe(v).slice(0, n) : fallback);
+/** A token count / duration from untrusted data: finite and non-negative, else 0. */
+export const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+const s0 = (v: unknown): string => (typeof v === 'string' ? v : '');
+const optCount = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+const TODO_STATES = new Set(['pending', 'active', 'done']);
 
 /**
- * Last line of defence before an event is stored or sent to the panel: CLI output and history files are untrusted, so a name, id or type that
- * is not a string (an object here would reach the DOM helper as "properties") becomes a capped string, a cost that is not a number is dropped.
+ * Last line of defence before an event is stored or sent to the panel: CLI output and history files are untrusted. Every field is rebuilt
+ * from its expected type: strings stay strings (capped), numbers are finite (the runner sums them), booleans are real booleans, lists are
+ * bounded. A kind outside the HubEvent union becomes `unknown`. Nothing here can throw on a hostile value.
  */
-export function sanitizeEvent(e: HubEvent): HubEvent {
-  switch (e.kind) {
-    case 'tool': return { ...e, id: text(e.id, 200), name: text(e.name, 200) || 'unknown', summary: typeof e.summary === 'string' ? e.summary : '' };
-    case 'tool_result': return { ...e, id: text(e.id, 200) };
-    case 'unknown': return { ...e, type: text(e.type, 60, '(none)') };
-    case 'usage': { if (typeof e.costUsd === 'number' && Number.isFinite(e.costUsd)) return e; const { costUsd: _drop, ...rest } = e; return rest; }
-    case 'error': case 'limit': case 'warn': return { ...e, message: text(e.message, 2000) };
-    default: return e;
+export function sanitizeEvent(raw: HubEvent): HubEvent {
+  const e = raw as unknown as Record<string, unknown>;
+  switch (e['kind']) {
+    case 'session': { const model = text(e['model'], 200); return { kind: 'session', nativeId: text(e['nativeId'], 200), ...(model ? { model } : {}) }; }
+    case 'user': case 'text': case 'partial': return { kind: e['kind'], text: s0(e['text']) } as HubEvent;
+    case 'thinking': { const tokens = optCount(e['tokens']); return { kind: 'thinking', text: s0(e['text']), ...(tokens !== undefined ? { tokens } : {}) }; }
+    case 'tool': { const input = e['input']; return { kind: 'tool', id: text(e['id'], 200), name: text(e['name'], 200) || 'unknown', summary: s0(e['summary']), input: input && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>) : {} }; }
+    case 'tool_result': return { kind: 'tool_result', id: text(e['id'], 200), summary: s0(e['summary']), body: s0(e['body']), lines: Math.floor(count(e['lines'])), truncated: e['truncated'] === true, ...(e['isError'] === true ? { isError: true } : {}) };
+    case 'diff': return { kind: 'diff', path: text(e['path'], 4096), added: Math.floor(count(e['added'])), removed: Math.floor(count(e['removed'])), hunks: s0(e['hunks']) };
+    case 'todo': {
+      const items = Array.isArray(e['items']) ? (e['items'] as unknown[]).filter((i): i is Record<string, unknown> => !!i && typeof i === 'object' && !Array.isArray(i)).slice(0, 200) : [];
+      return { kind: 'todo', items: items.map((i) => ({ text: text(i['text'], 2000), state: typeof i['state'] === 'string' && TODO_STATES.has(i['state']) ? (i['state'] as 'pending' | 'active' | 'done') : 'pending' })) };
+    }
+    case 'usage': {
+      const reasoning = optCount(e['reasoning']), ms = optCount(e['ms']), cost = e['costUsd'];
+      return { kind: 'usage', uncachedIn: count(e['uncachedIn']), cachedIn: count(e['cachedIn']), out: count(e['out']), ...(reasoning !== undefined ? { reasoning } : {}), ...(typeof cost === 'number' && Number.isFinite(cost) ? { costUsd: cost } : {}), ...(ms !== undefined ? { ms } : {}) };
+    }
+    case 'unknown': return { kind: 'unknown', type: text(e['type'], 60, '(none)') };
+    case 'limit': {
+      const p = e['usedPercent'], r = e['resetsAt'];
+      return { kind: 'limit', reached: e['reached'] === true, message: text(e['message'], 2000), ...(typeof r === 'string' && r.length <= 64 && Number.isFinite(Date.parse(r)) ? { resetsAt: r } : {}), ...(typeof p === 'number' && Number.isFinite(p) ? { usedPercent: p } : {}) };
+    }
+    case 'warn': return { kind: 'warn', message: text(e['message'], 2000) };
+    case 'error': return { kind: 'error', message: text(e['message'], 2000), ...(e['needsLogin'] === true ? { needsLogin: true } : {}) };
+    case 'done': return { kind: 'done', ok: e['ok'] === true };
+    default: return { kind: 'unknown', type: text(e['kind'], 60, '(none)') };
   }
 }

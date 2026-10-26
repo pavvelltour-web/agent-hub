@@ -11,7 +11,7 @@ const FAMILY = {
   todo: ['todowrite', 'update_plan'],
   sub: ['task', 'agent'],
 };
-const familyOf = (name) => { const n = String(name || '').toLowerCase(); for (const [f, names] of Object.entries(FAMILY)) if (names.includes(n)) return f; return 'other'; };
+const familyOf = (name) => { const n = (typeof name === 'string' ? name : '').toLowerCase(); for (const [f, names] of Object.entries(FAMILY)) if (names.includes(n)) return f; return 'other'; };
 
 const HEAD = 5;          // bash output lines shown before the expander
 const DIFF_HEAD = 8;     // diff lines shown before the expander
@@ -31,8 +31,12 @@ export function duration(ms) {
   if (s < 3600) return `${Math.floor(s / 60)} м ${s % 60} с`;
   return `${Math.floor(s / 3600)} ч ${Math.floor((s % 3600) / 60)} м`;
 }
+// Stored rows may predate the server-side sanitizer: every field read from event data goes through these, never String(x) (`{toString:1}` throws).
 const str = (v) => (typeof v === 'string' ? v : '');
-const oneLine = (s, n = 240) => { const t = str(s).split('\n')[0]; return t.length > n || s.includes('\n') ? t.slice(0, n) + '…' : t; };
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+/** Lookup in a fixed table by a key from event data: only own string keys, so an object key cannot throw or reach the prototype. */
+const pick = (table, key) => (typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : undefined);
+const oneLine = (s, n = 240) => { const t = str(s).split('\n')[0]; return t.length > n || str(s).includes('\n') ? t.slice(0, n) + '…' : t; };
 
 /** Per-row bookkeeping, kept out of the DOM. */
 const ROW = new WeakMap();
@@ -63,7 +67,7 @@ function lineView(lines, { head, mk, truncated }) {
   more(head);
   return wrap;
 }
-const textLines = (text) => String(text ?? '').replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
+const textLines = (text) => str(text).replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
 const plainLine = (l) => h('span.l', l === '' ? ' ' : l);
 const bodyView = (text, { head = HEAD, truncated } = {}) => lineView(textLines(text), { head, mk: plainLine, truncated });
 const diffLine = (l) => h('span.l.' + (l.startsWith('+') ? 'add' : l.startsWith('-') ? 'del' : l.startsWith('@') ? 'hunk' : 'ctx'), l === '' ? ' ' : l);
@@ -72,8 +76,8 @@ function res(...kids) { const r = h('div.tx-res', corner(), h('div.tx-resbody', 
 const errRes = (r) => { r.classList.add('is-err'); return r; };
 /** Result text of a tool: its body (or the short summary for old records) with the first lines visible. */
 function resultBlock(d, head = HEAD) {
-  const body = d.body ?? d.summary ?? '';
-  if (!String(body).trim()) return h('span.tx-muted', d.isError ? '(ошибка без текста)' : '(нет вывода)');
+  const body = typeof d.body === 'string' ? d.body : str(d.summary);
+  if (!body.trim()) return h('span.tx-muted', d.isError ? '(ошибка без текста)' : '(нет вывода)');
   return bodyView(body, { head, truncated: d.truncated });
 }
 
@@ -81,16 +85,19 @@ function resultBlock(d, head = HEAD) {
 function textRow(text) { return h('div.tx-row.tx-text', mark(), h('div.tx-body', md(text))); }
 
 function thinkRow(d) {
-  const tokens = d.tokens != null ? ` (${tokenWords(d.tokens)})` : '';
+  const tokens = typeof d.tokens === 'number' && Number.isFinite(d.tokens) ? ` (${tokenWords(d.tokens)})` : '';
   const box = h('div.tx-fold-body');
   const det = h('details.tx-fold.tx-think', h('summary', h('span.tx-label', 'Размышление'), tokens ? h('span.tx-meta', tokens) : null, h('span.tx-caret', { 'aria-hidden': 'true' }, '▸')), box);
-  det.addEventListener('toggle', () => { if (det.open && !box.firstChild) box.append(bodyView(d.text || '', { head: 14 })); });
+  det.addEventListener('toggle', () => { if (det.open && !box.firstChild) box.append(bodyView(str(d.text), { head: 14 })); });
   return h('div.tx-row.tx-thinking', mark('✻'), det);
 }
 
-function todoCounts(items) { const done = items.filter((i) => i.state === 'done').length; return `Задачи (${done} из ${items.length})`; }
+function todoCounts(items0) {
+  const items = items0.filter((i) => i && typeof i === 'object'), done = items.filter((i) => i.state === 'done').length;
+  return `Задачи (${done} из ${items.length})`;
+}
 function todoItems(items) {
-  return items.map((i) => h('li.tx-todo-i', { dataset: { state: i.state } }, h('span.tx-box', { 'aria-label': i.state === 'done' ? 'готово' : i.state === 'active' ? 'в работе' : 'ждёт' }), h('span.tx-todo-t', i.text)));
+  return items.filter((i) => i && typeof i === 'object').map((i) => h('li.tx-todo-i', { dataset: { state: str(i.state) } }, h('span.tx-box', { 'aria-label': i.state === 'done' ? 'готово' : i.state === 'active' ? 'в работе' : 'ждёт' }), h('span.tx-todo-t', str(i.text))));
 }
 function todoRow(ctx, items, at) {
   const s = state(ctx);
@@ -121,7 +128,7 @@ function argFor(fam, d, input) {
 function toolRow(ctx, d, at) {
   const s = state(ctx), codex = ctx.agent === 'codex', fam = familyOf(d.name), input = d.input && typeof d.input === 'object' ? d.input : {};
   if (fam === 'todo') { ctx.tools.set(d.id ?? '', h('span')); ROW.set(ctx.tools.get(d.id ?? ''), { fam: 'todo' }); return; }   // the todo event draws the checklist
-  const arg = argFor(fam, d, input), full = arg;
+  const arg = str(argFor(fam, d, input)), full = arg;
   const cnt = h('span.tx-cnt'), nm = h('span.tx-label', labelFor(fam, d.name, codex));
   const head = h('div.tx-head', nm, arg ? h('code.tx-arg', { title: full }, oneLine(arg)) : null, cnt);
   if (fam === 'sub') {
@@ -155,18 +162,18 @@ function toolResult(ctx, d, at) {
   }
   if (r.fam === 'read') {
     if (d.isError) put(res(resultBlock(d)));
-    else r.cnt.textContent = d.lines > 0 ? `(${nLines(d.lines)})` : '(пусто)';
+    else r.cnt.textContent = num(d.lines) > 0 ? `(${nLines(num(d.lines))})` : '(пусто)';
   } else if (r.fam === 'search') {
     if (d.isError) put(res(resultBlock(d)));
-    else { const n = String(d.body ?? '').trim() ? (d.lines ?? 0) : 0; put(res(h('span.tx-sum', `Нашёл ${nMatches(n)}`), n > 0 && d.body ? bodyView(d.body, { head: 0, truncated: d.truncated }) : null)); }
+    else { const n = str(d.body).trim() ? num(d.lines) : 0; put(res(h('span.tx-sum', `Нашёл ${nMatches(n)}`), n > 0 ? bodyView(d.body, { head: 0, truncated: d.truncated }) : null)); }
   } else if (r.fam === 'edit') {
     if (d.isError || !r.diffs) put(res(resultBlock(d)));       // a diff already says what changed
   } else put(res(resultBlock(d)));
 }
 
 /** Diff of the tool row just above (Claude Edit/MultiEdit, Codex file_change) or a row of its own. */
-function diffRow(ctx, d, at) {
-  const s = state(ctx);
+function diffRow(ctx, d0, at) {
+  const s = state(ctx), d = { path: str(d0.path), added: num(d0.added), removed: num(d0.removed), hunks: str(d0.hunks) };
   let row = s.last && ROW.get(s.last)?.fam === 'edit' ? s.last : null;
   let r = row && ROW.get(row);
   if (!r) {
@@ -179,7 +186,7 @@ function diffRow(ctx, d, at) {
   const counts = () => h('span', '(', h('span.tx-add', '+' + (d.added || 0)), ' ', h('span.tx-del', '−' + (d.removed || 0)), ')');
   if (known && r.diffs === 0 && r.path) r.cnt.replaceChildren(counts());
   const separate = !r.path || r.diffs > 0;
-  const kind = Object.hasOwn(KIND, r.changes.find((c) => c && c.path === d.path)?.kind) ? KIND[r.changes.find((c) => c && c.path === d.path).kind] : undefined;
+  const kind = pick(KIND, r.changes.find((c) => c && typeof c === 'object' && c.path === d.path)?.kind);
   const box = h('div.tx-diff');
   if (separate) box.append(h('div.tx-file', h('code', d.path), known ? counts() : null, kind ? h('span.tx-meta', kind) : null));
   if (d.hunks) box.append(lineView(textLines(d.hunks), { head: DIFF_HEAD, mk: diffLine }));
@@ -189,12 +196,12 @@ function diffRow(ctx, d, at) {
 
 function footer(ctx, d) {
   const s = state(ctx), u = s.usage;
-  const ms = u?.ms ?? (s.t0 != null && s.tEnd != null ? s.tEnd - s.t0 : null);
-  const label = OUTCOME[d.outcome] || d.outcome || 'Конец';
+  const ms = (u && typeof u.ms === 'number' && Number.isFinite(u.ms) ? u.ms : null) ?? (s.t0 != null && s.tEnd != null ? s.tEnd - s.t0 : null);
+  const label = pick(OUTCOME, d.outcome) || str(d.outcome) || 'Конец';
   const parts = [ms ? `${label} за ${duration(ms)}` : label];
   if (u) {
-    parts.push(`вход ${fmt.tok(u.uncachedIn + u.cachedIn)}${u.cachedIn ? ` (кэш ${fmt.tok(u.cachedIn)})` : ''}`, `выход ${fmt.tok(u.out)}`);
-    if (typeof u.costUsd === 'number' && u.costUsd) parts.push('$' + u.costUsd.toFixed(3));
+    parts.push(`вход ${fmt.tok(num(u.uncachedIn) + num(u.cachedIn))}${num(u.cachedIn) ? ` (кэш ${fmt.tok(num(u.cachedIn))})` : ''}`, `выход ${fmt.tok(num(u.out))}`);
+    if (typeof u.costUsd === 'number' && Number.isFinite(u.costUsd) && u.costUsd) parts.push('$' + u.costUsd.toFixed(3));
   }
   return h('div.tx-foot' + (d.outcome && d.outcome !== 'done' ? '.is-bad' : ''), parts.join(' · '));
 }
@@ -202,32 +209,32 @@ function footer(ctx, d) {
 // ---------- public API ----------
 /** Render one stored/live event into `container` (or into the open sub-agent). `ctx` = { agent, tools: Map, override?(e), after?(e) }. */
 export function renderEvent(container, e, ctx) {
-  const s = state(ctx), d = e.data || {}, k = e.kind;
-  if (e.ts) { const t = Date.parse(e.ts); if (s.t0 == null) s.t0 = t; s.tEnd = t; }
+  const s = state(ctx), d = e.data && typeof e.data === 'object' ? e.data : {}, k = e.kind;
+  if (typeof e.ts === 'string') { const t = Date.parse(e.ts); if (s.t0 == null) s.t0 = t; s.tEnd = t; }
   if (ctx.override?.(e)) return;
   const at = s.subs.length ? s.subs.at(-1).nest : container;
   switch (k) {
     case 'text': {
-      const row = textRow(d.text || '');
+      const row = textRow(str(d.text));
       if (s.partial) { s.partial.el.replaceWith(row); s.partial = null; } else at.append(row);     // the final text replaces the live one: never both
       break;
     }
     case 'partial': {
       if (!s.partial) { const body = h('div.tx-body.tx-live'); s.partial = { el: h('div.tx-row.tx-text.is-live', mark(), body), body, text: '' }; at.append(s.partial.el); }
-      s.partial.text += d.text || ''; s.partial.body.textContent = s.partial.text;
+      s.partial.text += str(d.text); s.partial.body.textContent = s.partial.text;
       break;
     }
-    case 'user': at.append(h('div.msg.user', h('div.bubble', d.text || ''))); break;       // history only: a live run draws its prompt in renderRun
+    case 'user': at.append(h('div.msg.user', h('div.bubble', str(d.text)))); break;       // history only: a live run draws its prompt in renderRun
     case 'thinking': at.append(thinkRow(d)); break;
     case 'tool': toolRow(ctx, d, at); break;
     case 'tool_result': toolResult(ctx, d, at); break;
     case 'diff': diffRow(ctx, d, at); break;
     case 'todo': todoRow(ctx, Array.isArray(d.items) ? d.items : [], at); break;
     case 'usage': s.usage = d; break;
-    case 'unknown': at.append(h('div.tx-row.tx-unknown', mark(), h('span.tx-muted', `Неизвестное событие: ${d.type ?? '?'}`))); break;
-    case 'warn': at.append(h('div.note', d.message || '')); break;
-    case 'error': at.append(h('div.tx-row.tx-orphan.is-err', mark(), h('div.tx-body', d.message || 'Ошибка'))); break;
-    case 'limit': if (d.reached) at.append(h('div.tx-row.tx-orphan.is-err', mark(), h('div.tx-body', `Лимит исчерпан. ${d.message || ''}`))); break;
+    case 'unknown': at.append(h('div.tx-row.tx-unknown', mark(), h('span.tx-muted', `Неизвестное событие: ${str(d.type) || '?'}`))); break;
+    case 'warn': at.append(h('div.note', str(d.message))); break;
+    case 'error': at.append(h('div.tx-row.tx-orphan.is-err', mark(), h('div.tx-body', str(d.message) || 'Ошибка'))); break;
+    case 'limit': if (d.reached) at.append(h('div.tx-row.tx-orphan.is-err', mark(), h('div.tx-body', `Лимит исчерпан. ${str(d.message)}`))); break;
     case 'end': s.partial?.el.remove(); s.partial = null; s.subs.length = 0; container.append(footer(ctx, d)); break;
     default: break;      // session, done and anything newer than this build: nothing to draw
   }
@@ -241,6 +248,11 @@ export function renderRun(container, run, events, opts = {}) {
   if (run.resumeOf?.startsWith('session:')) container.append(h('div.note', 'Продолжение разговора из истории: агент помнит, что было раньше'));
   if (run.handoffOf) container.append(h('div.note', `Продолжение после лимита: ${agentName(run.agent)} получил короткую запись о сделанном, а не весь чат`));
   else if (run.prompt) container.append(h('div.msg.user', h('div.bubble', run.prompt)));      // a session from the history has no prompt of its own: its `user` events are in the stream
-  for (const e of events) renderEvent(container, e, ctx);
+  for (const e of events) renderSafe(container, e, ctx);
   return ctx;
+}
+
+/** renderEvent for one row from storage or the live stream: a row that cannot be drawn becomes a neutral line, the thread goes on. */
+export function renderSafe(container, e, ctx) {
+  try { renderEvent(container, e, ctx); } catch { container.append(h('div.tx-row.tx-unknown', mark(), h('span.tx-muted', 'Не удалось показать событие'))); }
 }

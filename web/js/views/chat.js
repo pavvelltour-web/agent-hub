@@ -1,6 +1,6 @@
 import { api, qs, stream } from '../api.js';
 import { agentBadge, agentName, avatar, btn, chip, closeBtn, copy, dialog, empty, fmt, h, icon, toast } from '../ui.js';
-import { renderEvent, renderRun as trRun } from '../transcript.js';
+import { renderSafe, renderRun as trRun } from '../transcript.js';
 import { EFFORT, go, outcomeChip, pageHead, projectSelect, TASKS, threadsOf, workModePicker } from './common.js';
 
 const PERMS = [['plan', 'Только читать'], ['edit', 'Можно править файлы'], ['full', 'Без подтверждений']];
@@ -68,10 +68,12 @@ export async function chatPanel({ projectId, runId, q, global }) {
   async function showLog() {
     const all = [];
     for (const r of current.runs) { const d = await api.get('/runs/' + r.id, true).catch(() => null); if (d) d.events.forEach((e) => all.push({ run: r.id, agent: r.agent, ...e })); }
-    const sum = (e) => { const d = e.data || {}; return d.text || d.summary || d.message || (e.kind === 'usage' ? `вход ${fmt.tok(d.uncachedIn + d.cachedIn)} · выход ${fmt.tok(d.out)}` : e.kind === 'end' ? d.outcome : d.nativeId || ''); };
+    // Stored rows are untrusted data (and may predate the sanitizer): read strings and numbers by type, never String(x).
+    const s = (v) => (typeof v === 'string' ? v : ''), n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    const sum = (e) => { try { const d = e.data && typeof e.data === 'object' ? e.data : {}; return s(d.text) || s(d.summary) || s(d.message) || (e.kind === 'usage' ? `вход ${fmt.tok(n(d.uncachedIn) + n(d.cachedIn))} · выход ${fmt.tok(n(d.out))}` : e.kind === 'end' ? s(d.outcome) : s(d.nativeId)); } catch { return ''; } };
     const blob = () => URL.createObjectURL(new Blob([JSON.stringify(all, null, 1)], { type: 'application/json' }));
     dialog(h('div.stack', h('div.bar', h('div', h('h2.t-title', 'Что происходило в этом чате'), h('p.t-meta', `Событий: ${all.length}. Пароли и ключи вырезаны.`)), closeBtn()),
-      h('div', { style: { maxHeight: '55vh', overflow: 'auto' } }, all.map((e) => h('div.log-row', { style: { gridTemplateColumns: '90px 90px 90px minmax(0,1fr)' } }, h('span.t-meta.mono', fmt.time(e.ts)), h('span.lv.' + (e.kind === 'error' ? 'error' : e.kind === 'limit' || e.kind === 'warn' ? 'warn' : 'info'), e.kind), h('span.t-meta', e.agent), h('span.msg-t', String(sum(e)).slice(0, 300))))),
+      h('div', { style: { maxHeight: '55vh', overflow: 'auto' } }, all.map((e) => h('div.log-row', { style: { gridTemplateColumns: '90px 90px 90px minmax(0,1fr)' } }, h('span.t-meta.mono', fmt.time(e.ts)), h('span.lv.' + (e.kind === 'error' ? 'error' : e.kind === 'limit' || e.kind === 'warn' ? 'warn' : 'info'), e.kind), h('span.t-meta', e.agent), h('span.msg-t', sum(e).slice(0, 300))))),
       h('div.foot', h('a.btn.btn-glass', { href: blob(), download: 'chat-log.json' }, icon('file', 'sm'), 'Скачать JSON'))), { wide: true });
   }
   const CAP = { read: 'читает', write: 'пишет', shell: 'команды', network: 'сеть' }, RES = { allowed: 'да', denied: 'нет', asked: 'спросит', unknown: '?' };
@@ -111,10 +113,10 @@ export async function chatPanel({ projectId, runId, q, global }) {
   function hooks(run) {
     return {
       override(e) {
-        const d = e.data || {};
-        if (e.kind === 'warn') { if (!String(d.message).startsWith('handoff_ready')) note(d.message); return true; }
-        if (e.kind === 'error') { transcript.append(errorCard(d)); return true; }
-        if (e.kind === 'limit') { if (d.reached) transcript.append(h('div.alert.warn', icon('alert'), h('div.stack', h('b', `${agentName(run.agent)}: лимит исчерпан`), h('span', d.message.slice(0, 220)), d.resetsAt ? h('span.t-meta', 'Сброс ' + fmt.until(d.resetsAt)) : null))); return true; }
+        const d = e.data && typeof e.data === 'object' ? e.data : {}, msg = typeof d.message === 'string' ? d.message : '';
+        if (e.kind === 'warn') { if (!msg.startsWith('handoff_ready')) note(msg); return true; }
+        if (e.kind === 'error') { transcript.append(errorCard({ message: msg, needsLogin: d.needsLogin === true })); return true; }
+        if (e.kind === 'limit') { if (d.reached) transcript.append(h('div.alert.warn', icon('alert'), h('div.stack', h('b', `${agentName(run.agent)}: лимит исчерпан`), h('span', msg.slice(0, 220)), typeof d.resetsAt === 'string' ? h('span.t-meta', 'Сброс ' + fmt.until(d.resetsAt)) : null))); return true; }
         return false;
       },
       after(e) {
@@ -166,12 +168,18 @@ export async function chatPanel({ projectId, runId, q, global }) {
     transcript.replaceChildren(h('div.skeleton', { style: { height: '60px' } }));
     const detail = await Promise.all(t.runs.map((r) => api.get('/runs/' + r.id, true).catch(() => ({ run: r, events: [] }))));
     transcript.replaceChildren();
-    detail.forEach((d, i) => { const liveRun = d.run.live && i === detail.length - 1; const c = renderRun(d.run, d.events, liveRun); if (liveRun) attach(d.run, d.events.at(-1)?.seq || 0, c); });
+    detail.forEach((d, i) => {
+      // One run that cannot be drawn must not stop the later runs or the live stream (rows are already drawn one by one in renderSafe).
+      const liveRun = d.run.live && i === detail.length - 1, events = Array.isArray(d.events) ? d.events : [];
+      let c;
+      try { c = renderRun(d.run, events, liveRun); } catch { transcript.append(h('div.note', 'Не удалось показать часть разговора')); c = { agent: d.run.agent, tools: new Map(), ...hooks(d.run) }; }
+      if (liveRun) attach(d.run, events.at(-1)?.seq || 0, c);
+    });
     toBottom();
     history.replaceState(null, '', location.hash.replace(/\/chat(\/\w+)?/, '/chat/' + t.last.id));
   }
   function attach(run, after, c) {
-    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderEvent(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); });
+    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderSafe(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); });
     live = { runId: run.id, close }; setBusy(true);
   }
   function stopLive() { live?.close(); live = null; setBusy(false); }
