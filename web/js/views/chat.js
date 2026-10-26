@@ -19,8 +19,12 @@ export async function chatPanel({ projectId, runId, q, global }) {
   let current = null;              // { runs: [...] } being shown, or null for a new chat
   let live = null;                 // { runId, close }
   let permChoice = null, fullOk = false;   // permChoice: only what the user clicked; everything else comes from the thread or the work mode
+  /** A review thread (or a new chat in the review mode) is read-only whatever is clicked. */
+  const reviewLocked = () => (current ? current.last.workMode === 'review' : state.workMode === 'review');
   /** What will really apply: a review is always read-only; else the click, else the thread's last run, else the work mode, else edit. */
-  const effPerm = () => (state.workMode === 'review' && !current ? 'plan' : permChoice ?? (current ? current.last.permission : workModes.find((x) => x.id === state.workMode)?.permission) ?? 'edit');
+  const effPerm = () => (reviewLocked() ? 'plan' : permChoice ?? (current ? current.last.permission : workModes.find((x) => x.id === state.workMode)?.permission) ?? 'edit');
+  /** Every thread change starts from what that thread (or the work mode) applies: no click or "full" consent carries over. */
+  const resetPerm = () => { permChoice = null; fullOk = false; drawOpts(); };
   const closers = [];
   const state = { agent: q?.get('agent') || 'auto', model: q?.get('model') || '', effort: q?.get('effort') || '', cls: q?.get('cls') || 'implement', workMode: q?.get('workMode') || 'chat', depth: q?.get('depth') || 'normal' };
   let workModes = [];
@@ -91,7 +95,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
       claudeLogin && !claudeLogin.installed ? chip('Claude Code не установлен', 'warn') : null);
   }
   function pickPerm(k) {
-    if (state.workMode === 'review' && !current) return toast('В режиме «Ревью» агент только читает', 'err');
+    if (reviewLocked()) return toast('В режиме «Ревью» агент только читает', 'err');
     if (k !== 'full' || fullOk) { permChoice = k; drawOpts(); return; }
     dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Без подтверждений'), closeBtn()), h('p', 'Агент будет выполнять любые команды сам и ничего не спросит. Включайте только в отдельной ветке и в проекте, который не жалко.'),
       h('div.foot', btn('Отмена', { kind: 'glass', onclick: () => document.getElementById('dlg').close() }), btn('Всё равно включить', { kind: 'danger', onclick: () => { fullOk = true; permChoice = 'full'; document.getElementById('dlg').close(); drawOpts(); } }))));
@@ -160,7 +164,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
 
   async function open(t) {
     stopLive();
-    current = t; drawHead(); drawList();
+    current = t; drawHead(); drawList(); resetPerm();
     transcript.replaceChildren(h('div.skeleton', { style: { height: '60px' } }));
     const detail = await Promise.all(t.runs.map((r) => api.get('/runs/' + r.id, true).catch(() => ({ run: r, events: [] }))));
     transcript.replaceChildren();
@@ -180,8 +184,8 @@ export async function chatPanel({ projectId, runId, q, global }) {
     sendBtn.classList.toggle('btn-primary', !b); sendBtn.classList.toggle('btn-danger', b);
     ta.disabled = false;
   }
-  async function refresh() { runs = await api.get('/runs' + qs({ project: projectId, limit: 150 }), true).catch(() => runs); threads = threadsOf(runs); if (current) current = threads.find((t) => t.runs.some((r) => current.runs.some((c) => c.id === r.id))) || current; drawList(); drawHead(); }
-  function newChat() { stopLive(); current = null; transcript.replaceChildren(emptyState()); drawHead(); drawList(); ta.focus(); history.replaceState(null, '', location.hash.replace(/\/chat\/\w+/, '/chat')); }
+  async function refresh() { runs = await api.get('/runs' + qs({ project: projectId, limit: 150 }), true).catch(() => runs); threads = threadsOf(runs); if (current) current = threads.find((t) => t.runs.some((r) => current.runs.some((c) => c.id === r.id))) || current; drawList(); drawHead(); drawOpts(); }
+  function newChat() { stopLive(); current = null; transcript.replaceChildren(emptyState()); drawHead(); drawList(); resetPerm(); ta.focus(); history.replaceState(null, '', location.hash.replace(/\/chat\/\w+/, '/chat')); }
   function emptyState() {
     const examples = ['Объясни, как устроен проект, и найди слабые места', 'Почини упавший тест и покажи, что изменилось', 'Составь план задачи и оцени, сколько она съест лимита'];
     return h('div.chat-empty', h('div.avatar.av-hub', { style: { width: '52px', height: '52px', fontSize: '20px' } }, 'h'), h('h2.t-title', 'С чего начнём?'),
@@ -195,22 +199,26 @@ export async function chatPanel({ projectId, runId, q, global }) {
     const prompt = ta.value.trim();
     if (!prompt) return;
     if (!pid) { toast('Выберите проект: слева сверху или на странице «Проекты»', 'err'); return; }
-    const last = current?.last;
+    const thread = current, last = current?.last;
     let agent = state.agent;
     const canResume = last?.sessionNativeId && (agent === 'auto' || agent === last.agent) && last.outcome !== 'limit';
+    // Send what the pill shows. An open thread that cannot be resumed (limit, no session id, other agent) still runs at its own
+    // permission, and a review thread keeps its read-only lock; a new chat lets the server apply the work mode's preset.
+    const perm = last ? effPerm() : permChoice;
+    const fresh = canResume ? { resumeRunId: last.id } : last ? (last.workMode === 'review' ? { workMode: 'review' } : {}) : { workMode: state.workMode, ...(state.workMode === 'autopilot' ? { depth: state.depth } : {}) };
     if (canResume) agent = last.agent;
     else if (current && last && agent !== 'auto' && agent !== last.agent) { note(`Новый чат: ${agentName(agent)} не видит прошлую переписку ${agentName(last.agent)}. Чтобы передать работу, дождитесь остановки по лимиту: появится кнопка «Продолжить».`); current = null; }
     ta.value = ''; autosize();
     try {
-      const r = await api.post('/runs', { projectId: current ? current.last.projectId : pid, prompt, agent, ...(state.model ? { model: state.model } : {}), ...(state.effort ? { effort: state.effort } : {}), cls: state.cls, ...(permChoice ? { permission: permChoice } : {}), ...(canResume ? { resumeRunId: last.id } : !current ? { workMode: state.workMode, ...(state.workMode === 'autopilot' ? { depth: state.depth } : {}) } : {}) });
+      const r = await api.post('/runs', { projectId: last ? last.projectId : pid, prompt, agent, ...(state.model ? { model: state.model } : {}), ...(state.effort ? { effort: state.effort } : {}), cls: state.cls, ...(perm ? { permission: perm } : {}), ...fresh });
       if (!current) { transcript.replaceChildren(); }
       runs = [r.run, ...runs]; threads = threadsOf(runs);
       current = threads.find((t) => t.runs.some((x) => x.id === r.run.id));
-      drawList(); drawHead();
+      drawList(); drawHead(); resetPerm();
       renderRun(r.run, [], true); toBottom();
       if (r.advice) note(`hub выбрал ${agentName(r.advice.agent)} · ${fmt.model(r.advice.model)}. ${r.advice.reason}`);
       attach(r.run, 0);
-    } catch { ta.value = prompt; autosize(); }
+    } catch { current = thread; ta.value = prompt; autosize(); }
   }
   const autosize = () => { ta.style.height = 'auto'; ta.style.height = Math.min(220, ta.scrollHeight) + 'px'; };
   ta.addEventListener('input', autosize);

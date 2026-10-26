@@ -61,6 +61,9 @@ export class RunManager {
     } else if (req.resumeNativeId) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{5,79}$/.test(req.resumeNativeId)) throw new Error('session id has an unexpected shape; not resuming');
       resumeId = req.resumeNativeId;
+      // A History session may be a hub run: inherit from the run that owns this native id (a review there wins).
+      const own = this.db.prepare("SELECT permission, work_mode AS workMode FROM run WHERE session_native_id = ? ORDER BY work_mode = 'review' DESC, started_at DESC LIMIT 1").get(resumeId) as { permission: string | null; workMode: string | null } | undefined;
+      if (own) { prevPerm = own.permission; prevMode = own.workMode; }
     } else if (req.handoffOf) {
       const prev = this.get(req.handoffOf);
       if (prev?.cwd) { cwd = prev.cwd; branch = prev.branch; }
@@ -70,8 +73,8 @@ export class RunManager {
       cwd = wt.path; branch = wt.branch; baseSha = wt.baseSha;
     }
     // A resumed thread keeps the permission it had unless the user chose another one; a review thread never leaves plan.
-    const permission: Permission = prevMode === 'review' ? 'plan' : req.permission ?? (prevPerm === 'plan' || prevPerm === 'full' || prevPerm === 'edit' ? prevPerm : 'edit');
-    const workMode = req.workMode ?? prevMode;
+    const permission: Permission = prevMode === 'review' || req.workMode === 'review' ? 'plan' : req.permission ?? (prevPerm === 'plan' || prevPerm === 'full' || prevPerm === 'edit' ? prevPerm : 'edit');
+    const workMode = prevMode === 'review' ? 'review' : req.workMode ?? prevMode;
     tx(this.db, () => {
       this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type, permission, work_mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(id, projectId(this.db, req.projectRoot), req.agent, req.model ?? null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode);

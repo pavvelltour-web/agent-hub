@@ -191,3 +191,23 @@ test('permission is stored per run; resume and handoff default to the earlier ru
   await waitEnd(rm, r2.id);
   assert.equal(rm.get(r2.id)?.permission, 'plan', 'a review thread stays read-only even if full is asked');
 });
+
+test('resume by native session id inherits permission and work mode from the hub run that owns it; review stays plan; handoff cannot loosen review', async () => {
+  const root = repo();
+  const mk = (): RunManager => new RunManager(openDb(':memory:'), { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-ok' }, summarize: false });
+  const rm = mk();
+  const a = rm.start({ agent: 'claude', prompt: 'think', projectRoot: root, permission: 'plan' });
+  await waitEnd(rm, a.id);
+  const nid = rm.get(a.id)?.sessionNativeId as string; assert.ok(nid);
+  const b = rm.start({ agent: 'claude', prompt: 'go on', projectRoot: root, resumeNativeId: nid });
+  await waitEnd(rm, b.id);
+  assert.equal(rm.get(b.id)?.permission, 'plan', 'native-id resume keeps the owning run\'s permission');
+  const rv = mk();
+  const r = rv.start({ agent: 'claude', prompt: 'review', projectRoot: root, permission: 'plan', workMode: 'review' });
+  await waitEnd(rv, r.id);
+  const r2 = rv.start({ agent: 'claude', prompt: 'again', projectRoot: root, resumeNativeId: rv.get(r.id)?.sessionNativeId as string, permission: 'full' });
+  await waitEnd(rv, r2.id);
+  assert.equal(rv.get(r2.id)?.permission, 'plan', 'a review thread continued from History stays read-only');
+  assert.equal(rv.get(r2.id)?.workMode, 'review');
+  assert.equal(rv.start({ agent: 'claude', prompt: 'x', projectRoot: root, workMode: 'review', permission: 'full' }).permission, 'plan', 'workMode review always means plan (handoff passes to.permission)');
+});

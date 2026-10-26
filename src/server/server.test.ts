@@ -247,6 +247,20 @@ test('history: a session can be continued with the own memory of the agent (resu
   assert.ok(pid > 0);
 });
 
+test('history resume of a hub review session stays read-only (permission comes from the hub run that owns the native id)', async () => {
+  const root = mkRepo();
+  await api('/api/projects', { method: 'POST', body: { path: root } });
+  const { projectId } = await import('../history/store.ts');
+  const p = projectId(db, root);
+  db.prepare("INSERT INTO run (id, project_id, agent, prompt, cwd, started_at, ended_at, outcome, session_native_id, permission, work_mode) VALUES ('rrev1', ?, 'claude', 'review', ?, '2026-10-01T00:00:00Z', '2026-10-01T00:01:00Z', 'done', 'rev123', 'plan', 'review')").run(p, root);
+  db.prepare("INSERT INTO session (id, agent, native_id, project_id, title, started_at, source_kind, source_path) VALUES ('claude:rev123', 'claude', 'rev123', ?, 'review chat', '2026-10-01T00:00:00Z', 'claude-jsonl', 'x')").run(p);
+  scenario.v = 'claude-ok'; env();
+  const r = await api('/api/runs', { method: 'POST', body: { prompt: 'go on', resumeSessionId: 'claude:rev123', permission: 'full' } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(r.json.run.permission, 'plan'); assert.equal(r.json.run.workMode, 'review');
+  await until(async () => (await api(`/api/runs/${r.json.run.id}`)).json.run.outcome === 'done');
+});
+
 test('history resume refuses a session id that could be read as a command-line option', async () => {
   const root = mkRepo();
   await api('/api/projects', { method: 'POST', body: { path: root } });
