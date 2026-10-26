@@ -8,7 +8,7 @@ const FAMILY = {
   search: ['grep', 'glob', 'ls', 'websearch', 'web_search', 'toolsearch'],
   bash: ['bash', 'bashoutput', 'shell', 'killshell'],
   edit: ['edit', 'multiedit', 'write', 'notebookedit'],
-  todo: ['todowrite'],
+  todo: ['todowrite', 'update_plan'],
   sub: ['task', 'agent'],
 };
 const familyOf = (name) => { const n = String(name || '').toLowerCase(); for (const [f, names] of Object.entries(FAMILY)) if (names.includes(n)) return f; return 'other'; };
@@ -216,6 +216,7 @@ export function renderEvent(container, e, ctx) {
       s.partial.text += d.text || ''; s.partial.body.textContent = s.partial.text;
       break;
     }
+    case 'user': at.append(h('div.msg.user', h('div.bubble', d.text || ''))); break;       // history only: a live run draws its prompt in renderRun
     case 'thinking': at.append(thinkRow(d)); break;
     case 'tool': toolRow(ctx, d, at); break;
     case 'tool_result': toolResult(ctx, d, at); break;
@@ -238,7 +239,7 @@ export function renderRun(container, run, events, opts = {}) {
   const ctx = { agent: run.agent, tools: new Map(), ...opts };
   if (run.resumeOf?.startsWith('session:')) container.append(h('div.note', 'Продолжение разговора из истории: агент помнит, что было раньше'));
   if (run.handoffOf) container.append(h('div.note', `Продолжение после лимита: ${agentName(run.agent)} получил короткую запись о сделанном, а не весь чат`));
-  else container.append(h('div.msg.user', h('div.bubble', run.prompt || '')));
+  else if (run.prompt) container.append(h('div.msg.user', h('div.bubble', run.prompt)));      // a session from the history has no prompt of its own: its `user` events are in the stream
   for (const e of events) renderEvent(container, e, ctx);
   return ctx;
 }

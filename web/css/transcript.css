@@ -1,6 +1,9 @@
 /* CLI-like transcript (web/js/transcript.js). Tokens only: --hub-* from tokens.css, no literal colours. */
 .transcript { gap: var(--hub-space-2); }
 .transcript > .msg.user { margin-top: var(--hub-space-3); }
+/* The session page draws the same transcript inside the normal page flow instead of a scrolling chat panel. */
+.transcript.is-page { flex: none; overflow: visible; padding: 0; scroll-behavior: auto; }
+.sess-more { display: flex; align-items: center; gap: var(--hub-space-3); flex-wrap: wrap; margin-top: var(--hub-space-3); }
 
 .tx-row { display: grid; grid-template-columns: 18px minmax(0, 1fr); column-gap: var(--hub-space-2); max-width: min(860px, 100%); min-width: 0; font: 14px/22px var(--hub-font-mono); color: var(--hub-ink); }
 .tx-row > * { min-width: 0; }

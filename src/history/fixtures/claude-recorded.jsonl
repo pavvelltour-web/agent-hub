@@ -1,0 +1,15 @@
+{"type":"file-history-snapshot","messageId":"m0","snapshot":{}}
+{"type":"user","sessionId":"s1","cwd":"C:/proj","timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":"Исправь тест на хуки"}}
+{"type":"user","sessionId":"s1","isMeta":true,"timestamp":"2026-10-20T10:00:01Z","message":{"role":"user","content":"meta line, never shown"}}
+{"type":"assistant","sessionId":"s1","timestamp":"2026-10-20T10:00:02Z","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"thinking","thinking":"Сначала прочитаю файл"}]}}
+{"type":"assistant","sessionId":"s1","timestamp":"2026-10-20T10:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"Смотрю src/hooks.ts"}]}}
+{"type":"assistant","sessionId":"s1","timestamp":"2026-10-20T10:00:04Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_r1","name":"Read","input":{"file_path":"src/hooks.ts"}}]}}
+this line is not json at all
+{"type":"user","sessionId":"s1","timestamp":"2026-10-20T10:00:05Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_r1","content":"line one\nline two\nline three\n"}]}}
+{"type":"assistant","sessionId":"s1","isSidechain":true,"timestamp":"2026-10-20T10:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"subagent chatter, never shown"}]}}
+{"type":"assistant","sessionId":"s1","timestamp":"2026-10-20T10:00:06Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_e1","name":"Edit","input":{"file_path":"src/hooks.ts","old_string":"a\nb","new_string":"a\nc\nd"}}]}}
+{"type":"user","sessionId":"s1","timestamp":"2026-10-20T10:00:07Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_e1","content":[{"type":"text","text":"edited"}]}]}}
+{"type":"assistant","sessionId":"s1","timestamp":"2026-10-20T10:00:08Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_t1","name":"TodoWrite","input":{"todos":[{"content":"Починить","status":"completed"},{"content":"Проверить","status":"in_progress"}]}}]}}
+{"type":"user","sessionId":"s1","timestamp":"2026-10-20T10:00:09Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_t1","content":"Todos updated"}]}}
+{"type":"brand-new-line-type","sessionId":"s1","timestamp":"2026-10-20T10:00:09Z"}
+{"type":"assistant","sessionId":"s1","timestamp":"2026-10-20T10:00:10Z","message":{"role":"assistant","content":[{"type":"text","text":"Готово, тест зелёный."}]}}

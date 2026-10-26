@@ -342,3 +342,45 @@ test('work mode permissions over the API: a mode\'s own permission applies unles
   assert.equal(rv2.json.run.permission, 'plan', 'a review thread cannot be escalated on resume');
   assert.equal((await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'x' } })).json.run.permission, 'edit');
 });
+
+test('GET /api/sessions/:id/events: pages of the session file, path comes from the index only, anything outside the agents\' history folders is refused', async () => {
+  const { upsertSession } = await import('../history/store.ts');
+  const { copyFileSync, symlinkSync } = await import('node:fs');
+  const fx = (n: string): string => join(dirname(fileURLToPath(import.meta.url)), '..', 'history', 'fixtures', n);
+  const cdir = join(fake, '.claude', 'projects', 'p 1'); mkdirSync(cdir, { recursive: true });
+  const xdir = join(fake, '.codex', 'sessions', '2026', '10'); mkdirSync(xdir, { recursive: true });
+  const cfile = join(cdir, 'a.jsonl'), xfile = join(xdir, 'rollout-a.jsonl');
+  copyFileSync(fx('claude-recorded.jsonl'), cfile); copyFileSync(fx('codex-rollout.unverified.jsonl'), xfile);
+  const add = (id: string, agent: 'claude' | 'codex', kind: string, p: string): void => upsertSession(db, { id, agent, nativeId: id.split(':')[1] as string, sourceKind: kind, sourcePath: p });
+  add('claude:a', 'claude', 'claude-jsonl', cfile); add('codex:a', 'codex', 'codex-rollout', xfile);
+  const ev = (id: string, q = ''): Promise<{ status: number; json: any }> => api(`/api/sessions/${encodeURIComponent(id)}/events${q}`);
+
+  const whole = await ev('claude:a', '?limit=1000');
+  assert.equal(whole.status, 200); assert.equal(whole.json.events.length, 13); assert.equal(whole.json.next, null);
+  const all: unknown[] = []; let off = 0;
+  for (let i = 0; i < 20; i++) { const r = await ev('claude:a', `?limit=4&offset=${off}`); all.push(...r.json.events); if (r.json.next == null) break; off = r.json.next; }
+  assert.deepEqual(all, whole.json.events, 'pages concatenate to the whole');
+  assert.equal((await ev('claude:a', '?limit=4')).json.events.length, 4);
+  assert.equal((await ev('claude:a', '?limit=abc&offset=-3')).json.events.length, 13, 'bad numbers fall back to defaults');
+  assert.equal((await ev('claude:a', '?limit=99999')).json.events.length, 13, 'limit is clamped, not an error');
+  assert.equal((await ev('codex:a')).json.events[0].kind, 'user');
+
+  assert.equal((await ev('claude:nope')).status, 404);
+  const other = join(tmpdir(), `hub-outside-${Date.now()}.jsonl`); copyFileSync(fx('claude-recorded.jsonl'), other);
+  add('claude:outside', 'claude', 'claude-jsonl', other);
+  assert.equal((await ev('claude:outside')).status, 403, 'a file outside the history folders is not read');
+  add('claude:trav', 'claude', 'claude-jsonl', join(cdir, '..', '..', '..', 'outside-file.jsonl')); writeFileSync(join(fake, 'outside-file.jsonl'), '{}\n');
+  assert.equal((await ev('claude:trav')).status, 403, '.. segments cannot climb out');
+  const outDir = mkdtempSync(join(tmpdir(), 'hub-junc-')); copyFileSync(fx('claude-recorded.jsonl'), join(outDir, 'x.jsonl'));
+  symlinkSync(outDir, join(cdir, 'link'), 'junction');
+  add('claude:junc', 'claude', 'claude-jsonl', join(cdir, 'link', 'x.jsonl'));
+  assert.equal((await ev('claude:junc')).status, 403, 'a junction that leads out of the folder is refused');
+  add('claude:dir', 'claude', 'claude-jsonl', cdir);
+  assert.equal((await ev('claude:dir')).status, 403, 'a directory is not a conversation file');
+  add('claude:gone', 'claude', 'claude-jsonl', join(cdir, 'gone.jsonl'));
+  const gone = await ev('claude:gone'); assert.equal(gone.status, 200); assert.deepEqual(gone.json, { events: [], next: null, moved: true });
+  add('claude:weird', 'claude', 'something-else', cfile);
+  assert.equal((await ev('claude:weird')).status, 400);
+  const pathParam = await ev('claude:a', `?limit=2&path=${encodeURIComponent(other)}&source_path=${encodeURIComponent(other)}`);
+  assert.equal(pathParam.json.events.length, 2); assert.equal(pathParam.json.events[0].kind, 'user', 'a path in the request is ignored');
+});

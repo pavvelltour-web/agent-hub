@@ -102,3 +102,141 @@ test('projectRoot maps worktree folders to the main project', () => {
   assert.equal(projectRoot('C:/a/App/.claude/worktrees/bold-name'), 'c:/a/App');
   assert.equal(projectRoot('C:/a/App'), 'c:/a/App');
 });
+
+// ===== Task 2.3: events rendered from the source files =====
+import { readFileSync, copyFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+import { readSessionEvents as readClaudeEvents } from './claude.ts';
+import { readSessionEvents as readCodexEvents } from './codex.ts';
+import { claudeAdapter } from '../adapters/claude.ts';
+import { codexAdapter } from '../adapters/codex.ts';
+import { MAX_BODY } from '../adapters/types.ts';
+import { SLOT } from './events.ts';
+
+const fx = (n: string): string => join(dirname(fileURLToPath(import.meta.url)), 'fixtures', n);
+type Page = Awaited<ReturnType<typeof readClaudeEvents>>;
+type Reader = typeof readClaudeEvents;
+const readAll = async (read: Reader, path: string, limit: number): Promise<{ events: Page['events']; pages: number }> => {
+  const events: Page['events'] = []; let offset = 0, pages = 0;
+  for (;;) {
+    const r = await read(path, { offset, limit }); pages++;
+    assert.ok(r.events.length <= limit, 'a page never exceeds the limit');
+    events.push(...r.events);
+    if (r.next == null) return { events, pages };
+    assert.ok(r.next > offset, 'next always moves forward'); offset = r.next;
+  }
+};
+const kinds = (es: { kind: string }[]): string[] => es.map((e) => e.kind);
+
+test('history: a recorded Claude file gives the same event kinds as the live parser, plus the user message', async () => {
+  const path = fx('claude-recorded.jsonl');
+  const { events } = await readAll(readClaudeEvents, path, 1000);
+  assert.deepEqual(kinds(events), ['user', 'thinking', 'text', 'tool', 'tool_result', 'tool', 'diff', 'tool_result', 'tool', 'todo', 'tool_result', 'unknown', 'text']);
+  const live = readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap((l) => { try { const o = JSON.parse(l); return o.isSidechain || o.isMeta ? [] : claudeAdapter.parse(o); } catch { return []; } });
+  assert.deepEqual(kinds(events).filter((k) => k !== 'user' && k !== 'unknown'), kinds(live).filter((k) => k !== 'unknown'), 'same kinds, same order as a live run');
+  assert.equal((events[0]!.data as { text: string }).text, 'Исправь тест на хуки');
+  const tool = events[3]!.data as { id: string }, res = events[4]!.data as { id: string; lines: number };
+  assert.equal(tool.id, res.id, 'tool and its result are paired by id'); assert.equal(res.lines, 3);
+  const diff = events[6]!.data as { added: number; removed: number }; assert.deepEqual([diff.added, diff.removed], [2, 1]);
+  assert.equal((events[11]!.data as { type: string }).type, 'brand-new-line-type');
+  const all = JSON.stringify(events);
+  assert.ok(!all.includes('subagent chatter') && !all.includes('meta line'), 'sidechain and meta lines skipped');
+});
+
+test('history: a Codex rollout gives the same event kinds as the live parser', async () => {
+  const path = fx('codex-rollout.unverified.jsonl');
+  const { events } = await readAll(readCodexEvents, path, 1000);
+  assert.deepEqual(kinds(events), ['user', 'thinking', 'text', 'tool', 'tool_result', 'tool', 'diff', 'tool_result', 'tool', 'todo', 'tool_result', 'unknown', 'unknown']);
+  const all = JSON.stringify(events);
+  assert.ok(!all.includes('developer text') && !all.includes('AGENTS.md'), 'developer and injected context skipped');
+  const sh = events[3]!.data as { id: string; name: string; input: { command: string } };
+  assert.equal(sh.name, 'shell'); assert.equal(sh.input.command, 'npm test');
+  const out = events[4]!.data as { id: string; body: string; isError?: boolean };
+  assert.equal(out.body, '1 failing\n'); assert.equal(out.isError, true); assert.equal(out.id, sh.id);
+  const diff = events[6]!.data as { path: string; added: number; removed: number }; assert.deepEqual([diff.path, diff.added, diff.removed], ['src/a.ts', 2, 1]);
+  assert.deepEqual((events[9]!.data as { items: unknown[] }).items, [{ text: 'Тесты', state: 'done' }, { text: 'Ревью', state: 'active' }, { text: 'Коммит', state: 'pending' }]);
+
+  // The live stream of equivalent content: reasoning, message, command, file change, todo list.
+  const live = [
+    { type: 'item.completed', item: { id: 'i1', type: 'reasoning', text: 'x' } }, { type: 'item.completed', item: { id: 'i2', type: 'agent_message', text: 'x' } },
+    { type: 'item.completed', item: { id: 'i3', type: 'command_execution', command: 'npm test', aggregated_output: 'x', exit_code: 1 } },
+    { type: 'item.completed', item: { id: 'i4', type: 'file_change', changes: [{ path: 'src/a.ts', kind: 'update' }] } },
+    { type: 'item.completed', item: { id: 'i5', type: 'todo_list', items: [{ text: 'x', completed: true }] } },
+  ].flatMap((l) => codexAdapter.parse(l));
+  // A rollout also records the patch result and the plan call (live item events carry neither), so those are set aside before comparing.
+  const toolName = new Map<string, string>();
+  for (const e of events) if (e.kind === 'tool') { const d = e.data as { id: string; name: string }; toolName.set(d.id, d.name); }
+  const comparable = events.filter((e) => {
+    if (e.kind === 'user' || e.kind === 'unknown') return false;
+    const d = e.data as { id?: string; name?: string };
+    if (e.kind === 'tool' && d.name === 'update_plan') return false;
+    if (e.kind === 'tool_result' && ['edit', 'update_plan'].includes(toolName.get(d.id ?? '') ?? '')) return false;
+    return true;
+  });
+  assert.deepEqual(kinds(comparable), kinds(live), 'same kinds, same order as a live run');
+});
+
+test('history: offset paging gives stable slices - pages concatenate to the one big read, no overlap or gap', async () => {
+  for (const [read, name] of [[readClaudeEvents, 'claude-recorded.jsonl'], [readCodexEvents, 'codex-rollout.unverified.jsonl']] as const) {
+    const whole = await readAll(read, fx(name), 10_000);
+    assert.equal(whole.pages, 1);
+    for (const limit of [1, 2, 3, 5]) {
+      const paged = await readAll(read, fx(name), limit);
+      assert.ok(paged.pages > 1, `${name} limit ${limit}: several pages`);
+      assert.deepEqual(paged.events, whole.events, `${name} limit ${limit}`);
+    }
+    const seqs = whole.events.map((e) => e.seq);
+    assert.deepEqual(seqs, [...new Set(seqs)].sort((a, b) => a - b), 'seq is unique and increasing');
+  }
+});
+
+test('history: a missing source file means the conversation file was moved; a directory is refused', async () => {
+  const gone = join(tmp, 'nope', 'gone.jsonl');
+  assert.deepEqual(await readClaudeEvents(gone, { offset: 0, limit: 10 }), { events: [], next: null, moved: true });
+  assert.deepEqual(await readCodexEvents(gone, { offset: 0, limit: 10 }), { events: [], next: null, moved: true });
+  await assert.rejects(readClaudeEvents(tmp, { offset: 0, limit: 10 }), /not a regular file/);
+  await assert.rejects(readCodexEvents(tmp, { offset: 0, limit: 10 }), /not a regular file/);
+});
+
+test('history: a Cyrillic path with spaces works', async () => {
+  const dir = join(tmp, 'Проект с пробелами', 'сессии'); mkdirSync(dir, { recursive: true });
+  const p = join(dir, 'разговор 1.jsonl'); copyFileSync(fx('claude-recorded.jsonl'), p);
+  assert.equal((await readClaudeEvents(p, { offset: 0, limit: 5 })).events.length, 5);
+});
+
+test('history: the file is streamed - a small page of a 30000-line file stops after a few lines, and a 50 MB tool result is capped', async () => {
+  const many = join(tmp, 'many.jsonl');
+  const line = L({ type: 'assistant', timestamp: '2026-10-20T10:00:00Z', message: { role: 'assistant', content: [{ type: 'text', text: 'строка '.repeat(20) }] } });
+  writeFileSync(many, line.repeat(30_000));
+  const r = await readClaudeEvents(many, { offset: 0, limit: 3 });
+  assert.equal(r.events.length, 3);
+  assert.equal(r.next, 3 * Buffer.byteLength(line) * SLOT, 'next = byte offset right after the 3rd line (times SLOT)');
+  const r2 = await readClaudeEvents(many, { offset: r.next!, limit: 3 });
+  assert.ok(r2.events[0]!.seq > r.events[2]!.seq, 'seq keeps growing across pages');
+
+  const big = join(tmp, 'huge.jsonl');
+  writeFileSync(big, L({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'h1', name: 'Bash', input: { command: 'cat big' } }] } }) +
+    L({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'h1', content: 'x'.repeat(50 * 1024 * 1024) }] } }));
+  const h = await readClaudeEvents(big, { offset: 0, limit: 10 });
+  const res = h.events[1]!.data as { body: string; truncated: boolean };
+  assert.ok(res.body.length <= MAX_BODY); assert.equal(res.truncated, true);
+});
+
+test('history: text from the file is redacted; bad offsets and limits are harmless', async () => {
+  const p = join(tmp, 'secret.jsonl');
+  writeFileSync(p, L({ type: 'user', message: { role: 'user', content: 'ключ sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 вот' } }) + L({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } }));
+  const r = await readClaudeEvents(p, { offset: 0, limit: 10 });
+  assert.ok(!JSON.stringify(r.events).includes('ABCDEFGHIJKLMNOPQRSTUVWXYZ012345'));
+  await assert.doesNotReject(readClaudeEvents(p, { offset: 7, limit: 10 }));
+  assert.deepEqual(await readClaudeEvents(p, { offset: 10_000_000, limit: 10 }), { events: [], next: null });
+  assert.equal((await readClaudeEvents(p, { offset: -5, limit: 0 })).events.length, 1, 'bad numbers are clamped (limit >= 1)');
+});
+
+test('history: Codex exec_command (cmd argument) is shown as a shell command', async () => {
+  const { rolloutLineEvents } = await import('./codex.ts');
+  const ev = rolloutLineEvents({ type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'c9', arguments: JSON.stringify({ cmd: 'git status', workdir: 'C:/proj' }) } });
+  assert.deepEqual(ev.map((e) => e.kind), ['tool']);
+  const t = ev[0] as unknown as { name: string; input: { command: string } };
+  assert.equal(t.name, 'shell'); assert.equal(t.input.command, 'git status');
+});

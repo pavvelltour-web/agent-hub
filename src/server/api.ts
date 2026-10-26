@@ -21,8 +21,9 @@ import { advise, MODEL_GUIDE, ROUTING, type LimitState, type TaskClass } from '.
 import { calibrate, costUsd, estimate, modelStats, outcomes, PRICES_VERIFIED_AT, profileFromHistory } from '../econ/econ.ts';
 import { buildCases, exportCases, NEVER_INCLUDED } from '../econ/cases.ts';
 import { startOverhead } from '../econ/overhead.ts';
-import { syncClaude, type SyncStats } from '../history/claude.ts';
-import { syncCodex } from '../history/codex.ts';
+import { readSessionEvents as readClaudeEvents, syncClaude, type SyncStats } from '../history/claude.ts';
+import { readSessionEvents as readCodexEvents, syncCodex } from '../history/codex.ts';
+import { resolveSource } from '../history/source.ts';
 import { addLimit, getSession, latestLimit, listProjects, listSessions, projectId, search, usageByModel, type Db } from '../history/store.ts';
 import { parseFrontmatter } from '../lib/frontmatter.ts';
 import { isSecretPath } from '../lib/paths.ts';
@@ -130,6 +131,18 @@ const ROUTES: [string, RegExp, Handler][] = [
     });
   }],
   ['GET', /^\/api\/sessions$/, (c, { q }) => ok(listSessions(c.db, { ...(num(q.get('project')) != null ? { projectId: num(q.get('project')) as number } : {}), ...(q.get('agent') ? { agent: q.get('agent') as string } : {}), ...(q.get('model') ? { model: q.get('model') as string } : {}), ...(q.get('q') ? { q: q.get('q') as string } : {}), topLevel: q.get('all') !== '1', limit: Math.min(200, num(q.get('limit')) ?? 50), offset: num(q.get('offset')) ?? 0 }))],
+  // The conversation itself, rendered from the agent's own file. The path comes from the index (never from the request) and must stay inside the history folders.
+  ['GET', /^\/api\/sessions\/(.+)\/events$/, async (c, { params, q }) => {
+    const row = c.db.prepare('SELECT source_kind AS kind, source_path AS path FROM session WHERE id = ?').get(decodeURIComponent(params[0] as string)) as { kind: string; path: string } | undefined;
+    if (!row) return bad(404, 'session not found');
+    const read = row.kind === 'claude-jsonl' ? readClaudeEvents : row.kind === 'codex-rollout' ? readCodexEvents : undefined;
+    if (!read) return bad(400, 'this session has no readable source file');
+    const src = resolveSource(row.path);
+    if ('refused' in src) return bad(403, src.refused);
+    if ('moved' in src) return ok({ events: [], next: null, moved: true });
+    try { return ok(await read(src.path, { offset: num(q.get('offset')) ?? 0, limit: Math.min(500, Math.max(1, num(q.get('limit')) ?? 200)) })); }
+    catch { return bad(403, 'source is not a conversation file'); }
+  }],
   ['GET', /^\/api\/sessions\/(.+)$/, (c, { params, q }) => { const s = getSession(c.db, decodeURIComponent(params[0] as string), { limit: Math.min(500, num(q.get('limit')) ?? 200), offset: num(q.get('offset')) ?? 0 }); return s ? ok(s) : bad(404, 'session not found'); }],
   ['GET', /^\/api\/search$/, (c, { q }) => ok(search(c.db, q.get('q') ?? '', { ...(num(q.get('project')) != null ? { projectId: num(q.get('project')) as number } : {}), ...(q.get('agent') ? { agent: q.get('agent') as string } : {}), limit: 40 }))],
 

@@ -3,6 +3,8 @@ import type { AgentId } from '../core/types.ts';
 /** One normalized event, whatever the agent. The UI, the ledger and the handoff builder only see these. */
 export type HubEvent =
   | { kind: 'session'; nativeId: string; model?: string }
+  | { kind: 'user'; text: string }                                                       // history only: what the person wrote (a live run shows its own prompt)
+  | { kind: 'user'; text: string }                                                       // history only: what the person wrote (a live run shows its own prompt)
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string; tokens?: number }
   | { kind: 'partial'; text: string }                                                    // live text delta: shown, never persisted (the final `text` is)

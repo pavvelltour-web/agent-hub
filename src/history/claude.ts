@@ -3,6 +3,10 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readJsonl } from '../lib/jsonl.ts';
 import { redact } from '../lib/redact.ts';
+import { claudeAdapter } from '../adapters/claude.ts';
+import { safe } from '../adapters/event-utils.ts';
+import type { HubEvent } from '../adapters/types.ts';
+import { pageEvents, type EventPage } from './events.ts';
 import { addMessage, addUsage, getState, resetSession, setState, tx, upsertSession, type Db } from './store.ts';
 
 const MAX_TEXT = 20_000;
@@ -86,3 +90,28 @@ export async function syncClaude(db: Db, claudeDir = join(homedir(), '.claude'))
   stats.sessions = seen.size;
   return stats;
 }
+
+/** Lines that only describe the file itself (snapshots, titles, queue, request blobs...): never shown, never `unknown`. */
+const BOOKKEEPING = /^(summary|system|attachment|mode|permission-mode|last-prompt|custom-title|ai-title|agent-name|tag|pr-link|cost-state|progress|worktree|file-history|queue-|bridge-|atis-|api-request|history-)/;
+
+/**
+ * One recorded line of `~/.claude/projects/**.jsonl` as hub events. Assistant and tool_result lines have the same shape as the live
+ * stream-json, so the live parser does the mapping (one source of truth); only the person's own messages are new here.
+ */
+export function historyLineEvents(line: unknown): HubEvent[] {
+  if (!line || typeof line !== 'object' || Array.isArray(line)) return [];
+  const l = line as Line;
+  if (typeof l.type !== 'string') return [{ kind: 'unknown', type: '(none)' }];
+  if (BOOKKEEPING.test(l.type)) return [];
+  if (l.isSidechain || l.isMeta) return [];
+  if (l.type === 'assistant') return claudeAdapter.parse(line);
+  if (l.type === 'user') {
+    const c = l.message?.content;
+    const text = (typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => b && b.type === 'text' && b.text).map((b) => b.text).join('\n') : '').trim();
+    return [...(text && !isNoise(text) ? [{ kind: 'user', text: safe(text) } as HubEvent] : []), ...claudeAdapter.parse(line)];
+  }
+  return [{ kind: 'unknown', type: l.type.slice(0, 60) }];
+}
+
+/** Events of one Claude conversation file, read from `offset` (see `pageEvents` for the position format). Read-only, streamed. */
+export const readSessionEvents = (sourcePath: string, o: { offset: number; limit: number }): Promise<EventPage> => pageEvents(sourcePath, o, historyLineEvents);
