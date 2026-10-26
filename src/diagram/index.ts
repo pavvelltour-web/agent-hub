@@ -13,12 +13,13 @@ export type Kind = (typeof KINDS)[number];
 
 /** Components and the source folder each one lives in. `--check` fails if a listed folder is missing or a src folder is unlisted. */
 export const ARCH = [
-  { id: 'cli', label: 'hub CLI', dir: 'src/cli', feeds: ['core'] },
+  { id: 'cli', label: 'hub CLI', dir: 'src/cli', feeds: ['core', 'bench'] },
   { id: 'server', label: 'Сервер + панель (127.0.0.1)', dir: 'src/server', feeds: ['core'] },
   { id: 'core', label: 'Ядро: реестр · lock · компиляторы · скаут · загрузка инструментов · init/undo', dir: 'src/core', feeds: ['adapters', 'history', 'econ', 'stages'] },
   { id: 'stages', label: 'Этапы проекта и ворота', dir: 'src/stages', feeds: [] },
   { id: 'econ', label: 'Экономика и советчик', dir: 'src/econ', feeds: [] },
   { id: 'run', label: 'Запуск: worktree · раннер · карточка передачи', dir: 'src/run', feeds: ['adapters', 'history'] },
+  { id: 'bench', label: 'Замер: golden-задачи и цена решённой задачи', dir: 'src/bench', feeds: ['run', 'econ'] },
   { id: 'adapters', label: 'Адаптеры агентов (claude, codex)', dir: 'src/adapters', feeds: [] },
   { id: 'history', label: 'Журнал: импорт, индекс, поиск (SQLite)', dir: 'src/history', feeds: [] },
   { id: 'diagram', label: 'Схемы (этот вывод)', dir: 'src/diagram', feeds: [] },

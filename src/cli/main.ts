@@ -2,7 +2,9 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { join, resolve } from 'node:path';
+import { authStatus } from '../adapters/auth.ts';
 import { detectAgents } from '../adapters/locate.ts';
+import { loadTasks, parsePicks, runBench, summarize } from '../bench/bench.ts';
 import { applyPlan, describe, listBackups, undoBackup, effective } from '../core/plan.ts';
 import { classifyHooks } from '../core/hooks.ts';
 import { adoptHooks } from '../core/hooks-adopt.ts';
@@ -29,7 +31,7 @@ import { startServer } from '../server/server.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 
 interface Args { _: string[]; flags: Record<string, string | true> }
-const BOOL = new Set(['demo', 'yes', 'no-open', 'check', 'write', 'worktree', 'help', 'version', 'full', 'plan']);
+const BOOL = new Set(['demo', 'yes', 'no-open', 'check', 'write', 'worktree', 'help', 'version', 'full', 'plan', 'dry']);
 function parse(argv: string[]): Args {
   const a: Args = { _: [], flags: {} };
   for (let i = 0; i < argv.length; i++) {
@@ -65,6 +67,7 @@ Work
   hub chat [path] [--agent auto|claude|codex] [--model m] [--effort e]
   hub run "prompt" [path] [--agent …] [--class implement|plan|debug|review|mechanical|summary] [--task T016 --worktree] [--plan|--full]
   hub estimate --class implement|plan|debug|review|mechanical [--scale 2]
+  hub bench [--picks sonnet:high,gpt-6.1-sol:medium] [--repeat N] [--dry]   golden tasks → solved count and cost per solved task (--dry lists the tasks only)
 History
   hub sync                              import Claude + Codex history (read-only)
   hub history <query> [--agent claude|codex]    full-text search across agents
@@ -258,6 +261,21 @@ async function cmdRun(a: Args, chat: boolean): Promise<void> {
   rl.close();
 }
 
+async function cmdBench(a: Args): Promise<void> {
+  const tasks = loadTasks(join(REPO_ROOT, 'eval', 'golden'));
+  if (a.flags['dry']) return tasks.forEach((t) => out(`${t.id.padEnd(26)} ${t.cls.padEnd(11)} verify: ${t.verify.join(' ')}`));
+  let picks; try { picks = parsePicks(flag(a, 'picks') ?? 'sonnet:high'); } catch (e) { return fail((e as Error).message); }
+  const ag = detectAgents();
+  for (const id of new Set(picks.map((p) => p.agent))) {
+    if (!ag[id].installed) return fail(`${id} CLI not found (hub doctor)`);
+    if (authStatus(id, ag[id]).loggedIn === false) return fail(`${id} is not signed in: sign in first (run \`${id === 'claude' ? 'claude' : 'codex login'}\`), then repeat`);
+  }
+  const rows = await runBench({ tasks, picks, runs: new RunManager(openDb()), repeat: Math.max(1, Number(flag(a, 'repeat') ?? 1) || 1) });
+  rows.forEach((r) => out(`${r.taskId.padEnd(26)} ${r.agent}:${r.model}:${r.effort}  ${r.solved ? 'solved' : 'unsolved'}  ${r.costUsd != null ? '$' + r.costUsd.toFixed(3) : '$?'}  ${r.seconds}s`));
+  out('');
+  summarize(rows).forEach((s) => out(`${s.pick.padEnd(28)} solved ${s.solved}/${rows.filter((r) => `${r.agent}:${r.model}:${r.effort}` === s.pick).length}  cost per solved ${s.costPerSolved != null ? '$' + s.costPerSolved.toFixed(3) : 'n/a'}  limit % per solved ${s.pctPerSolved ?? 'n/a'}`));
+}
+
 async function cmdUi(a: Args): Promise<void> {
   const db = openDb();
   const fakeAgent = join(REPO_ROOT, 'src', 'adapters', 'fake-agent.mjs');
@@ -306,6 +324,7 @@ async function main(argv: string[]): Promise<void> {
       out(`API-equivalent: ${est.usd ? `$${est.usd.low}–$${est.usd.high}` : 'unknown (price not verified)'}   share of weekly limit: ${est.percent ? `${est.percent.low}–${est.percent.high}%` : 'unknown'}   confidence: ${est.confidence}`);
       return est.notes.forEach((n) => out('  · ' + n));
     }
+    case 'bench': return cmdBench(a);
     case 'scout': return cmdScout(a);
     case 'install': return cmdInstall(a);
     case 'get': return cmdGet(a);

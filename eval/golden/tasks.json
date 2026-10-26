@@ -1,0 +1,84 @@
+{
+  "tasks": [
+    {
+      "id": "implement-slugify",
+      "cls": "implement",
+      "prompt": "Implement slugify(s) in slug.js so that the tests in slug.test.js pass. Do not edit the tests.",
+      "fixture": "implement-slugify",
+      "verify": [
+        "node",
+        "--test"
+      ]
+    },
+    {
+      "id": "implement-chunk",
+      "cls": "implement",
+      "prompt": "Implement chunk(arr, n) in chunk.js so that the tests in chunk.test.js pass. Do not edit the tests.",
+      "fixture": "implement-chunk",
+      "verify": [
+        "node",
+        "--test"
+      ]
+    },
+    {
+      "id": "debug-range-sum",
+      "cls": "debug",
+      "prompt": "The tests in sum.test.js fail. Find the cause and fix it in sum.js. Do not edit the tests.",
+      "fixture": "debug-range-sum",
+      "verify": [
+        "node",
+        "--test"
+      ]
+    },
+    {
+      "id": "debug-unique-by",
+      "cls": "debug",
+      "prompt": "The tests in unique.test.js fail. Find the cause and fix it in unique.js. Do not edit the tests.",
+      "fixture": "debug-unique-by",
+      "verify": [
+        "node",
+        "--test"
+      ]
+    },
+    {
+      "id": "review-withdraw",
+      "cls": "review",
+      "prompt": "Review account.js. Write REVIEW.md with one line per real bug, in the form \"account.js:<line> - <issue>\". Do not edit account.js.",
+      "fixture": "review-withdraw",
+      "verify": [
+        "node",
+        "--test"
+      ]
+    },
+    {
+      "id": "review-cache-key",
+      "cls": "review",
+      "prompt": "Review cache.js. Write REVIEW.md with one line per real bug, in the form \"cache.js:<line> - <issue>\". Do not edit cache.js.",
+      "fixture": "review-cache-key",
+      "verify": [
+        "node",
+        "--test"
+      ]
+    },
+    {
+      "id": "mechanical-rename",
+      "cls": "mechanical",
+      "prompt": "Rename the function getUsr to getUser everywhere (definition and all uses). Behaviour must not change. Do not edit the tests except for the name.",
+      "fixture": "mechanical-rename",
+      "verify": [
+        "node",
+        "--test"
+      ]
+    },
+    {
+      "id": "mechanical-var-to-const",
+      "cls": "mechanical",
+      "prompt": "In legacy.js replace every var with const or let (let only where the variable is reassigned). Behaviour must not change. Do not edit the tests.",
+      "fixture": "mechanical-var-to-const",
+      "verify": [
+        "node",
+        "--test"
+      ]
+    }
+  ]
+}
