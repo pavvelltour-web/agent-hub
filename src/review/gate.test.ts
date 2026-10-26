@@ -188,6 +188,27 @@ test('risk config comes from the project root, not from the branch the agent con
   assert.equal(r.risk, 'high');
 });
 
+test('a path listed only in REVIEW.md "Пути, где нужен человек" makes the tier high (merged with hub.json humanPaths)', async () => {
+  const md = '# REVIEW.md\n\n## Пути, где нужен человек\n- src/**\n';
+  const w = world({ base: { 'REVIEW.md': md } });
+  w.commit({ 'src/a.ts': A1 });
+  const r = await w.go();
+  assert.equal(r.risk, 'high');
+  const plain = world(); plain.commit({ 'src/a.ts': A1 });
+  assert.equal((await plain.go()).risk, 'medium', 'without the REVIEW.md entry the same change is medium');
+  const both = world({ base: { 'REVIEW.md': md, 'hub.json': JSON.stringify({ review: { humanPaths: ['lib/**'] } }) } });
+  both.commit({ 'lib/x.ts': 'export const x = 1;\n' });
+  assert.equal((await both.go()).risk, 'high', 'hub.json entries still count');
+});
+
+test('the hunter prompt carries the root REVIEW.md and the nearest folder REVIEW.md of a changed file', async () => {
+  const w = world({ base: { 'REVIEW.md': 'ROOT-REVIEW-MARK', 'src/REVIEW.md': 'SRC-REVIEW-MARK' } });
+  w.commit({ 'src/a.ts': A1 });
+  await w.go();
+  const p = w.spawned().map((s) => s.prompt).join('\n');
+  assert.ok(p.includes('ROOT-REVIEW-MARK') && p.includes('SRC-REVIEW-MARK') && p.indexOf('SRC-REVIEW-MARK') > p.indexOf('ROOT-REVIEW-MARK'));
+});
+
 // ---- convergence ---------------------------------------------------------------------------------------------------------------------
 
 test('round 2 reviews only the new commits', async () => {

@@ -10,6 +10,7 @@ import { checkpoint, git } from '../run/git.ts';
 import type { RunManager } from '../run/runner.ts';
 import { ReviewError, hunt, verifyMany } from './agents.ts';
 import { defaultChecks, dependencyFindings, gateChecks, readReviewConfig, type CheckResult } from './checks.ts';
+import { humanPathsFromReviewMd, loadReviewMd } from './reviewmd.ts';
 import { riskTier } from './risk.ts';
 import { addFindings, answerFinding, clearHumanApproval, createReview, getReview, listFindings, listReviewsForRun, markCleared, postedFingerprints, setHumanApproval, updateReview } from './store.ts';
 import { diffLinesFromUnified, triage } from './triage.ts';
@@ -268,6 +269,10 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     if (!diff.ok) return finish(close('cannot read the diff'));
     if (!diff.out.trim()) return finish(close(`nothing to review: no changes since ${short(from)}`));
 
+    // Every path the branch changed (not only this round): scopes the folder REVIEW.md files and decides the risk tier.
+    const names = gitText(cwd, ['diff', '--name-only', '--no-renames', '-z', `${review.baseSha}..${head}`]);
+    const changed = names.ok ? names.out.split('\0').filter(Boolean) : [];
+
     // 0 Checks: red means no AI is started.
     const gate = await gateChecks(cwd, defaultChecks(root), { diffText: diff.out });
     putInfo(db, review.id, { ...info, checks: gate.results }); info.checks = gate.results;
@@ -282,7 +287,7 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     // 1 Hunt
     updateReview(db, review.id, { state: 'hunting' });
     const read = (name: string): string => { try { return readFileSync(join(root, name), 'utf8'); } catch { return ''; } };
-    const common = { diffCmd: ['git', ...diffArgs], brief: run.prompt ?? '', agentsMd: read('AGENTS.md'), reviewMd: read('REVIEW.md'), runs: o.runs, cwd, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) };
+    const common = { diffCmd: ['git', ...diffArgs], brief: run.prompt ?? '', agentsMd: read('AGENTS.md'), reviewMd: loadReviewMd(root, changed), runs: o.runs, cwd, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) };
     const found = (await pool([...picks.hunters, picks.security].map((h) => () => hunt({ ...common, lens: h.lens, pick: h.pick })), RUN_SLOTS)).flat();
 
     // 2 Verify: only bugs and risks, each once, never what an earlier round already posted.
@@ -307,8 +312,8 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     stored.forEach((s, i) => { const f = kept[i] as Finding; db.prepare('UPDATE finding SET line_text = ? WHERE id = ?').run(squash(lineText(f.file, f.line)).slice(0, 2000) || null, s.id); });
 
     // 5 Risk from every path the branch changed (not only this round), config from the project root.
-    const names = gitText(cwd, ['diff', '--name-only', '--no-renames', '-z', `${review.baseSha}..${head}`]);
-    const tier = names.ok ? riskTier(names.out.split('\0').filter(Boolean), { humanPaths: readReviewConfig(root).humanPaths ?? [] }) : { tier: 'high' as const, why: ['changed paths unreadable'] };
+    const humanPaths = [...(readReviewConfig(root).humanPaths ?? []), ...humanPathsFromReviewMd(loadReviewMd(root, []))];   // hub.json + the project's REVIEW.md, both from the project root
+    const tier = names.ok ? riskTier(changed, { humanPaths }) : { tier: 'high' as const, why: ['changed paths unreadable'] };
     updateReview(db, review.id, { risk: tier.tier });
 
     putInfo(db, review.id, { ...info, completed: info.completed + 1, lastReviewedSha: head, reasons: [] });

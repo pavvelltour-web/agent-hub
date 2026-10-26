@@ -16,7 +16,7 @@ export class ReviewError extends Error {
 
 const NO_RESULT = 'no structured result';
 const MAX_DIFF = 200_000;
-const MAX_CONTEXT = { brief: 20_000, review: 20_000, agents: 30_000 };
+const MAX_CONTEXT = { brief: 20_000, review: 41_000, agents: 30_000 };
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
 const read = (name: string): string => readFileSync(new URL(`./prompts/${name}`, import.meta.url), 'utf8').trim();
 

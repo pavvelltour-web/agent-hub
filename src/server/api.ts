@@ -32,6 +32,7 @@ import { RunManager, type StartReq } from '../run/runner.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 import { GateError, answer as answerFindingGate, approve as approveReview, canAccept, launchReview, reviewView, reviewsOfRun } from '../review/gate.ts';
 import { getReview } from '../review/store.ts';
+import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
 
 export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] } }
 export interface Res { status: number; json?: unknown }
@@ -230,6 +231,20 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (body['approved'] !== true) return bad(400, 'apply needs approved: true');
     const r = applyPlan(plan, { approved: true });
     return ok({ backupId: r.backupId, written: r.written.length, fallbacks: r.fallbacks });
+  }],
+  // ---- review rules: repeated bug classes -> one line in the project's REVIEW.md. Writes go through the same plan -> approval -> backup -> undo flow as init.
+  ['GET', /^\/api\/projects\/(\d+)\/review-rules$/, (c, { params }) => {
+    const pid = num(params[0]); const root = rootOf(c, pid);
+    return ok({ hasReviewMd: reviewMdExists(root), repeated: repeatedFindings(c.db, pid as number).map((r) => ({ ...r, line: suggestRuleLine(r.classOfBug) })) });
+  }],
+  ['POST', /^\/api\/projects\/(\d+)\/review-rules$/, (c, { params, body }) => {
+    const root = rootOf(c, num(params[0]));
+    if (!existsSync(root)) return bad(400, 'project folder is missing on disk');
+    let plan; try { plan = effective({ root, changes: [appendRuleChange(root, typeof body['line'] === 'string' ? body['line'] : '')], notes: [] }); } catch (e) { const m = (e as Error).message; return bad(/already/.test(m) ? 409 : 400, m); }
+    if (body['preview'] === true) return ok({ lines: describe(plan), changes: plan.changes.map((ch) => ({ path: 'REVIEW.md', action: ch.action, note: ch.note ?? null, before: ch.before === null ? null : clip(ch.before, 3000), after: clip(ch.after, 3000) })) });
+    if (body['approved'] !== true) return bad(400, 'apply needs approved: true');
+    const r = applyPlan(plan, { approved: true });
+    return ok({ backupId: r.backupId, written: r.written.length });
   }],
   ['GET', /^\/api\/backups$/, (c, { q }) => ok(listBackups(rootOf(c, num(q.get('project')))))],
   ['POST', /^\/api\/undo$/, (c, { body }) => { const id = str(body['backupId']); if (!id || !/^[\w.-]+$/.test(id)) return bad(400, 'bad backup id'); return ok(undoBackup(rootOf(c, num(body['projectId'])), id)); }],

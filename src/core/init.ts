@@ -6,6 +6,7 @@ import { detectAgents } from '../adapters/locate.ts';
 import { compileAll } from './compilers.ts';
 import { change, effective } from './plan.ts';
 import { REPO_ROOT, library } from './registry.ts';
+import { compileReviewMd } from '../review/reviewmd.ts';
 import type { FileChange, HubConfig, Lock, LockEntry, Plan, RegistryEntry } from './types.ts';
 
 export interface Pack { id: string; title: string; mandatory: string[]; tags: string[] }
@@ -61,6 +62,7 @@ export function planInit(root: string, opts: { type: string; extra?: string[]; r
   if (!keepCfg) changes.push(change(hubPath, JSON.stringify(cfg, null, 2) + '\n', 'project config'));
   changes.push(change(join(root, 'toolkit.json'), JSON.stringify({ stage: 3, selected: selected.map((e) => ({ id: e.id, mandatory: pack.mandatory.includes(e.id) })), missing }, null, 2) + '\n', 'chosen tools'));
   changes.push(...compileAll(root, selected, opts.type));
+  changes.push(...compileReviewMd(root, opts.type));
   for (const id of drop) for (const d of ['.claude', '.agents']) { const p = join(root, d, 'skills', id.slice('skill/'.length)); try { if (lstatSync(p).isSymbolicLink()) changes.push({ path: p, action: 'unlink', before: null, after: '', note: 'tool removed from this project' }); } catch { /* not linked */ } }
   changes.push(change(join(root, 'hub.lock.json'), JSON.stringify(buildLock(selected, new Date(0)), null, 2) + '\n', 'versions + hashes'));
   const plan = effective({ root, changes, notes: [!agents.claude.installed ? 'Claude Code не найден на этом компьютере' : '', !agents.codex.installed ? 'Codex не найден на этом компьютере' : '',
