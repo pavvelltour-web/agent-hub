@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { AgentId } from '../core/types.ts';
 import type { Tokens } from '../econ/econ.ts';
 import { agentOf, modelKey, type TaskClass } from '../econ/router.ts';
@@ -24,24 +24,38 @@ export function parsePicks(spec: string): Pick[] {
   });
 }
 
-/** Reads `tasks.json`; a task's `fixture` is a folder name under `fixtures/` and comes back as an absolute path. */
+/** Reads `tasks.json`; a task's `fixture` is a folder name under `fixtures/` and comes back as an absolute, real path that is inside it. */
 export function loadTasks(dir: string): GoldenTask[] {
   const raw = JSON.parse(readFileSync(join(dir, 'tasks.json'), 'utf8')) as { tasks?: Partial<GoldenTask>[] };
+  const base = realpathSync(resolve(dir, 'fixtures'));
   return (raw.tasks ?? []).map((t) => {
     if (!t.id || !t.prompt || !t.fixture || !t.cls || !CLASSES.has(t.cls) || !Array.isArray(t.verify) || !t.verify.length) throw new Error(`golden task is malformed: ${t.id ?? '?'}`);
-    const fixture = resolve(dir, 'fixtures', t.fixture);
-    if (!fixture.startsWith(resolve(dir, 'fixtures')) || !existsSync(fixture)) throw new Error(`golden task ${t.id}: fixture not found`);
+    let fixture: string;
+    try { fixture = realpathSync(resolve(base, t.fixture)); } catch { throw new Error(`golden task ${t.id}: fixture not found`); }
+    const rel = relative(base, fixture);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error(`golden task ${t.id}: fixture must be a folder inside fixtures/`);
     return { id: t.id, cls: t.cls, prompt: t.prompt, fixture, verify: t.verify };
   });
 }
 
-/** The fixture is a plain file tree: copy it into a fresh git repo so every attempt starts from the same state. */
-function freshRepo(fixture: string): string {
+const TEST_FILE = /\.test\.[cm]?js$/;
+const GRADER_DIR = 'grader';
+
+/** The agent's workspace: the fixture as a fresh git repo, WITHOUT `grader/` (hidden answers and checks never reach the agent). */
+export function freshRepo(fixture: string): string {
   const d = mkdtempSync(join(tmpdir(), 'hub-bench-'));
-  cpSync(fixture, d, { recursive: true });
+  cpSync(fixture, d, { recursive: true, filter: (src) => relative(fixture, src).split(sep)[0] !== GRADER_DIR });
   git(d, ['init', '-q', '-b', 'main']); git(d, ['add', '-A']);
   git(d, ['-c', 'user.name=bench', '-c', 'user.email=bench@localhost', 'commit', '-qm', 'fixture']);
   return d;
+}
+
+/** Puts the original tests and the hidden graders back, then runs verify: deleting or rewriting a test is never a solution. */
+export function gradeRepo(task: GoldenTask, repo: string): boolean {
+  for (const f of readdirSync(task.fixture)) if (TEST_FILE.test(f)) cpSync(join(task.fixture, f), join(repo, f));
+  const graders = join(task.fixture, GRADER_DIR);
+  if (existsSync(graders)) cpSync(graders, repo, { recursive: true });
+  return runVerify(task.verify, repo);
 }
 
 /** Runs a verify argv in `cwd`. Outside env: NODE_TEST_CONTEXT is dropped, or a nested `node --test` inside a test runner exits 0 without running anything. */
@@ -75,7 +89,7 @@ export async function runBench(o: BenchOpts): Promise<BenchRow[]> {
         row.costUsd = r.costUsd;
       }
       if (r?.outcome === 'done') {
-        row.solved = runVerify(task.verify, repo);
+        row.solved = gradeRepo(task, repo);
       }
     } catch { /* a run that could not start is an unsolved attempt, not a crashed bench */ }
     row.seconds = Math.round((Date.now() - t0) / 100) / 10;
@@ -91,6 +105,7 @@ export function summarize(rows: BenchRow[]): { pick: string; solved: number; cos
   return [...by].map(([pick, rs]) => {
     const solved = rs.filter((r) => r.solved).length;
     const pcts = rs.filter((r) => r.limitPct != null);
-    return { pick, solved, costPerSolved: per(rs.reduce((s, r) => s + (r.costUsd ?? 0), 0), solved), pctPerSolved: pcts.length ? per(pcts.reduce((s, r) => s + (r.limitPct as number), 0), solved) : null };
+    const priced = rs.some((r) => r.costUsd != null);   // Codex reports no cost: "unknown", not $0
+    return { pick, solved, costPerSolved: priced ? per(rs.reduce((s, r) => s + (r.costUsd ?? 0), 0), solved) : null, pctPerSolved: pcts.length ? per(pcts.reduce((s, r) => s + (r.limitPct as number), 0), solved) : null };
   });
 }
