@@ -1,0 +1,8 @@
+node_modules/
+graphify-out/cache/
+design/research/refs-private/
+design/prototypes/captures/iter*/
+.hub/backups/
+.hub/runs/
+*.log
+dist/

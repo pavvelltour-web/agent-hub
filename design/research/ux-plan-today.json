@@ -1,0 +1,72 @@
+{
+  "version": "1.0",
+  "study_id": "hub-today",
+  "screen_kind": "operations",
+  "intent": {
+    "statement": "Proposed from the user's goal: show what is blocked on the user right now and the one action that unblocks it; keep metrics and history secondary.",
+    "basis": "proposed"
+  },
+  "attention": {
+    "primary": {
+      "content": "Decision card: Codex stopped on T016 at its weekly limit, with the proposed next agent and the handoff facts summary",
+      "reason": "Work on the project is stopped until the user chooses; a total or chart does not change any decision on this screen.",
+      "action": "Hand over T016 to Claude Sonnet 5.5"
+    },
+    "secondary": [
+      "Other items waiting for the user (approval of stage 3 toolkit, review ready)",
+      "Tasks running now with agent, model and state",
+      "Limit risk per account (only remaining share and reset time)"
+    ]
+  },
+  "grouping": [
+    {
+      "id": "decision",
+      "contents": ["Task id and title", "Why it stopped", "Proposed next agent", "Primary and secondary actions"],
+      "inner_gap": 8,
+      "outer_gap": 24
+    },
+    {
+      "id": "running",
+      "contents": ["Task", "Agent and model", "Current step", "Elapsed time"],
+      "inner_gap": 8,
+      "outer_gap": 24
+    }
+  ],
+  "typography": {
+    "page": {"family": "Golos Text", "size_px": 28, "line_height_px": 34, "weight": 600},
+    "section": {"family": "Golos Text", "size_px": 16, "line_height_px": 24, "weight": 600},
+    "entity": {"family": "Golos Text", "size_px": 20, "line_height_px": 28, "weight": 600},
+    "body": {"family": "Golos Text", "size_px": 14, "line_height_px": 21, "weight": 400},
+    "label": {"family": "Golos Text", "size_px": 14, "line_height_px": 20, "weight": 500},
+    "meta": {"family": "Golos Text", "size_px": 12, "line_height_px": 16, "weight": 400}
+  },
+  "controls": {
+    "family": "Pill segmented control and buttons share 44px height (primary 46px), full radius for pills, 10px for buttons.",
+    "search": "No search on Today; search lives in History.",
+    "filter_scope": "Segmented scope 'Ждут вас / Идут / Все' filters only the item list below it; the decision card always shows the top blocking item.",
+    "result_count": "Each scope pill shows a count derived from the same item array it filters.",
+    "selection": "Opening an item navigates to its task screen with the same task id in the title; back returns to Today with the same scope."
+  },
+  "chart": {
+    "present": false,
+    "reason": "No chart changes a decision on Today; limits are shown as remaining share with reset time."
+  },
+  "mobile": {
+    "first_useful_object": "Decision card for T016 with the primary 46px hand-over button inside the first fold",
+    "expected_order": ["Project context line", "Decision card", "Other waiting items", "Running now", "Limits"],
+    "text_min_px": 12,
+    "touch_target_px": 44
+  },
+  "interaction_checks": [
+    {
+      "id": "decision-open",
+      "kind": "open-region",
+      "trigger": "[data-testid=decision-open]",
+      "target": "[role=dialog]",
+      "identity": "T016",
+      "viewports": ["desktop", "mobile"],
+      "close": "Escape",
+      "focus_return": true
+    }
+  ]
+}

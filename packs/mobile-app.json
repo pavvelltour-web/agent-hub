@@ -1,0 +1,1 @@
+{ "id": "mobile-app", "title": "Mobile app", "mandatory": ["skill/graphify", "skill/ponytail", "skill/senior-architect", "skill/product-ui-workbench", "skill/design-quality-loop", "skill/mobile-design"], "tags": ["mobile", "ios", "android", "design"] }

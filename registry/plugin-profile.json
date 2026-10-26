@@ -1,0 +1,62 @@
+{
+  "note": "Plugins that are usually unrelated to a coding project. The hub only SUGGESTS switching them off for one project; you decide. keepFor lists plugins that are NOT suggested for a project type.",
+  "suggestDisable": [
+    "aws-serverless",
+    "deploy-on-aws",
+    "amazon-location-service",
+    "firebase",
+    "cloudinary",
+    "netlify-skills",
+    "fastly-agent-toolkit",
+    "brightdata-plugin",
+    "pinecone",
+    "cockroachdb",
+    "asana",
+    "atlan",
+    "atlassian",
+    "circleback",
+    "discord",
+    "fakechat",
+    "figma",
+    "data",
+    "data-engineering",
+    "astronomer-data",
+    "astronomer-data-agents",
+    "clangd-lsp",
+    "csharp-lsp",
+    "elixir-ls-lsp",
+    "adspirer-ads-agent",
+    "ai-firstify",
+    "atomic-agents",
+    "autofix-bot",
+    "ai-plugins",
+    "aikido",
+    "coderabbit"
+  ],
+  "keepFor": {
+    "design-study": [
+      "figma",
+      "cloudinary"
+    ],
+    "mobile-app": [
+      "figma",
+      "firebase",
+      "cloudinary"
+    ],
+    "web-saas": [
+      "figma",
+      "cloudinary",
+      "netlify-skills",
+      "firebase",
+      "fastly-agent-toolkit"
+    ],
+    "automation": [
+      "asana",
+      "atlassian",
+      "circleback",
+      "discord",
+      "pinecone",
+      "brightdata-plugin"
+    ]
+  }
+}

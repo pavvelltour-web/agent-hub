@@ -1,0 +1,47 @@
+{
+  "name": "agent-hub",
+  "version": "0.1.0",
+  "description": "Local-first hub for coding agents: shared skills, rules and MCP, runs, handoff, history, cost advice.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "hub": "./bin/hub.js"
+  },
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test \"src/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "security": "node scripts/security.mjs",
+    "hub": "node --disable-warning=ExperimentalWarning bin/hub.js",
+    "build": "tsc -p tsconfig.build.json",
+    "tokens": "node design/build-tokens.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "web",
+    "packs",
+    "rules",
+    "registry",
+    "stages",
+    "design/themes.json",
+    "design/tokens.css",
+    "design/tokens.json",
+    "design/build-tokens.mjs",
+    "design/DESIGN-SYSTEM.md",
+    "docs",
+    "scripts/security.mjs",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md"
+  ]
+}

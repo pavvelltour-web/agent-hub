@@ -1,0 +1,1 @@
+{ "id": "automation", "title": "Automation / agents", "mandatory": ["skill/graphify", "skill/ponytail", "skill/senior-architect"], "tags": ["agents", "workflow", "api", "bot"] }

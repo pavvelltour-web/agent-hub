@@ -1,0 +1,75 @@
+{
+ "at": "2026-10-22T23:52:14.458Z",
+ "results": [
+  {
+   "name": "dependency audit (pnpm audit, high+)",
+   "ok": true,
+   "detail": "no known high/critical vulnerabilities"
+  },
+  {
+   "name": "zero runtime dependencies",
+   "ok": true,
+   "detail": "dev only: @types/node, typescript"
+  },
+  {
+   "name": "no secret-looking strings in the repo",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "no shell spawning",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "no exec()/execSync() from child_process",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "no eval / new Function",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "no Math.random for secrets",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "no disabled TLS checks",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "no bind on all interfaces",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "no CORS wildcard",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "web: innerHTML only for constant icons (ui.js)",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "web: no inline event handlers (CSP)",
+   "ok": true,
+   "detail": ""
+  },
+  {
+   "name": "web: no external hosts",
+   "ok": true,
+   "detail": "fonts and scripts are local"
+  },
+  {
+   "name": "npm package has no private files",
+   "ok": true,
+   "detail": "120 files"
+  }
+ ]
+}

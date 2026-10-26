@@ -1,0 +1,375 @@
+{
+ "ids": {
+  "pid": 20,
+  "chatRun": "rmvjoxuvd4c70c2",
+  "limitRun": "rmvjoxuvpc5ab43"
+ },
+ "rows": [
+  {
+   "id": "dark-green-desktop-today",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex"
+   ],
+   "smallTargets": [],
+   "h1": "Сегодня",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-desktop-chat",
+   "overflowX": 0,
+   "golos": true,
+   "mono": true,
+   "smallText": [
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "demo-project",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-desktop-models",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex",
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "Модели и лимиты",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-desktop-library",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [],
+   "smallTargets": [],
+   "h1": "Библиотека",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-green-desktop-today",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex"
+   ],
+   "smallTargets": [],
+   "h1": "Сегодня",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-green-desktop-chat",
+   "overflowX": 0,
+   "golos": true,
+   "mono": true,
+   "smallText": [
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "demo-project",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-green-desktop-models",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex",
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "Модели и лимиты",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-green-desktop-library",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [],
+   "smallTargets": [],
+   "h1": "Библиотека",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-orange-desktop-today",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex"
+   ],
+   "smallTargets": [],
+   "h1": "Сегодня",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-orange-desktop-chat",
+   "overflowX": 0,
+   "golos": true,
+   "mono": true,
+   "smallText": [
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "demo-project",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-orange-desktop-models",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex",
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "Модели и лимиты",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-orange-desktop-library",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [],
+   "smallTargets": [],
+   "h1": "Библиотека",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-orange-desktop-today",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex"
+   ],
+   "smallTargets": [],
+   "h1": "Сегодня",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-orange-desktop-chat",
+   "overflowX": 0,
+   "golos": true,
+   "mono": true,
+   "smallText": [
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "demo-project",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-orange-desktop-models",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex",
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "Модели и лимиты",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-orange-desktop-library",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [],
+   "smallTargets": [],
+   "h1": "Библиотека",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-desktop-projects",
+   "overflowX": 0,
+   "golos": true,
+   "mono": true,
+   "smallText": [],
+   "smallTargets": [],
+   "h1": "Проекты",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-desktop-project",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [],
+   "smallTargets": [],
+   "h1": "demo-project",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-desktop-logs",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.lv info",
+    "SPAN.lv info",
+    "SPAN.lv warn",
+    "SPAN.lv warn"
+   ],
+   "smallTargets": [],
+   "h1": "Логи",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-desktop-settings",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex"
+   ],
+   "smallTargets": [],
+   "h1": "Настройки",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-desktop-history",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [],
+   "smallTargets": [],
+   "h1": "История",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-mobile-today",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex"
+   ],
+   "smallTargets": [],
+   "h1": "Сегодня",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-mobile-chat",
+   "overflowX": 0,
+   "golos": true,
+   "mono": true,
+   "smallText": [
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "demo-project",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "dark-green-mobile-models",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex",
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "Модели и лимиты",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-orange-mobile-today",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex"
+   ],
+   "smallTargets": [],
+   "h1": "Сегодня",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-orange-mobile-chat",
+   "overflowX": 0,
+   "golos": true,
+   "mono": true,
+   "smallText": [
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "demo-project",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  },
+  {
+   "id": "light-orange-mobile-models",
+   "overflowX": 0,
+   "golos": true,
+   "mono": false,
+   "smallText": [
+    "SPAN.avatar av-claude",
+    "SPAN.avatar av-codex",
+    "SPAN.avatar av-claude"
+   ],
+   "smallTargets": [],
+   "h1": "Модели и лимиты",
+   "err": false,
+   "blur": "blur(26px) saturate(1.65)"
+  }
+ ],
+ "console_errors": []
+}

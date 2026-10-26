@@ -1,0 +1,99 @@
+Модель данных (SQLite-индекс)
+=============================
+
+[project]
+# id               INTEGER
+  key              TEXT
+  root             TEXT
+  slug             TEXT
+
+[session]
+# id               TEXT
+  agent            TEXT
+  native_id        TEXT
+  project_id       INTEGER  → project
+  parent_id        TEXT
+  title            TEXT
+  model            TEXT
+  effort           TEXT
+  started_at       TEXT
+  ended_at         TEXT
+  source_kind      TEXT
+  source_path      TEXT
+  uncached_in      INTEGER
+  cached_in        INTEGER
+  out_tokens       INTEGER
+  msg_count        INTEGER
+  origin           TEXT
+
+[message]
+# id               INTEGER
+  session_id       TEXT  → session
+  ordinal          INTEGER
+  role             TEXT
+  ts               TEXT
+  tool_name        TEXT
+  text             TEXT
+
+[usage_event]
+# id               INTEGER
+  session_id       TEXT
+  ts               TEXT
+  model            TEXT
+  uncached_in      INTEGER
+  cached_in        INTEGER
+  out_tokens       INTEGER
+  reasoning        INTEGER
+
+[limit_snapshot]
+# id               INTEGER
+  agent            TEXT
+  ts               TEXT
+  window_minutes   INTEGER
+  used_percent     REAL
+  resets_at        INTEGER
+  plan_type        TEXT
+  source           TEXT
+
+[source_file_state]
+# path             TEXT
+  size             INTEGER
+  mtime_ms         INTEGER
+  byte_offset      INTEGER
+  last_ordinal     INTEGER
+
+[run]
+# id               TEXT
+  project_id       INTEGER
+  agent            TEXT
+  model            TEXT
+  effort           TEXT
+  prompt           TEXT
+  cwd              TEXT
+  branch           TEXT
+  started_at       TEXT
+  ended_at         TEXT
+  outcome          TEXT
+  session_native_id TEXT
+  tokens_in        INTEGER
+  tokens_out       INTEGER
+  cost_usd         REAL
+  handoff_of       TEXT
+  error            TEXT
+  resume_of        TEXT
+  tokens_cached    INTEGER
+  cls              TEXT
+  est_json         TEXT
+  rating           INTEGER
+  project_type     TEXT
+
+[run_event]
+# id               INTEGER
+  run_id           TEXT
+  seq              INTEGER
+  ts               TEXT
+  kind             TEXT
+  data             TEXT
+
+[FTS]
+message_fts (FTS5) — поиск по тексту сообщений

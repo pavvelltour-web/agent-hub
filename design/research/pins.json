@@ -1,0 +1,26 @@
+{
+ "pinned_at": "2026-10-22T14:31:06.405115+00:00",
+ "note": "pinned before any prototype source exists",
+ "files": {
+  "STUDY.md": "7bff7da11eff5c6bba4688235344fbbdb4bc95a0020ac616a1ffae20f0bd8b68",
+  "ux-plan-today.json": "f1ba3f993ae4af370b18bc16a9ba075c9f5231099200dd8dacf2fb99b6867725",
+  "prompt.md": "70f77d6da6bcae1ac32dc1c920ca28fe4e88c7caee7e3174fafe0aa598eb327d",
+  "refs-private\\1.webp": "a3d9db2ef698e1861e8d1ab5c4f99e414660893b5f3b3f795664685edaa10f43",
+  "refs-private\\2.png": "5a3bca0f89ddee3b56a58261891347cfde78a496f88f59eefaf3a0139564940f",
+  "refs-private\\3.png": "29fbe6e319fa755d1265636ce75e7f1f8fdc549901d272dd36e99b6baa523c7f",
+  "refs-private\\apple-clear.jpg": "63d680c81c5101ce11b782710f1d5028359aede45cad6c020b187975a33c47e5",
+  "refs-private\\apple-hero.jpg": "5ad23ebe7bb67275fc67f008985bb16318482a6e8d646a8b11b5fd2b079748aa",
+  "refs-private\\pin-dark-01.jpg": "2691db5d82d0408aa0f1037083b4de54c6c61854faac434899167f8bd79820f2",
+  "refs-private\\pin-dark-02.jpg": "7825118ce1c1856a24c55fe3c0edac7c0120a70764eb1f1d85f511617fd5f887",
+  "refs-private\\pin-dark-03.jpg": "9c1ba709204d77b57855726a4e0565717ab446e3e44697bda5fb85a9ae49670a",
+  "refs-private\\pin-dark-04.jpg": "1873c72be8657fee04bb0c3070fa5ef2e48ecf374974c6de8d857e16ffcd9964",
+  "refs-private\\pin-dark-05.jpg": "e8b851928830c9bb8c811a6e58745e661e214e037abd076bb4fe4f3c1560e1be",
+  "refs-private\\pin-dark-06.jpg": "60dc529640426e492e60ca35d3da4cdd275ebf36e4e473898017df13e708d934",
+  "refs-private\\pin-dark-07.jpg": "1d74aa77740bb95743d0df06381e22baed8114d2f8b8b5de26abd13678f064a2",
+  "refs-private\\pin-dark-08.jpg": "272863a85a23b80f508deb2e2584e95a432920cb93a11fcce4e4561a23c20c3e",
+  "refs-private\\pin-dark-09.jpg": "6209b7d6ed0a2ded11355e7bd1a0d8bbfd1d060c08a92bcc21c8a5c8fc30b245",
+  "refs-private\\pin-dark-10.jpg": "1e391f8e64d9cbaa2c6959d98e2760147afba88c380811c2fc00a570321893a2",
+  "refs-private\\pin-dark-11.jpg": "398b094c3284dc3b6f12e0163779b39282b43fcb401a307823c7f5a5dc1246e5",
+  "refs-private\\pin-dark-12.jpg": "df47f391bf620210998e51a75ef2cfe4dcf8449d4e4ddb25d2c43573c38eea94"
+ }
+}

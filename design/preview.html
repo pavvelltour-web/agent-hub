@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Hub — темы</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { background: #2b2b2b; padding: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); gap: 16px; }
+  .theme { background: var(--hub-bg); color: var(--hub-ink); border-radius: var(--hub-radius-sheet); padding: var(--hub-space-4); display: flex; flex-direction: column; gap: var(--hub-space-4); font: var(--hub-type-body); min-width: 0; }
+  .bar { display: flex; align-items: center; gap: var(--hub-space-3); padding: var(--hub-space-2) var(--hub-space-3); border-radius: var(--hub-radius-card); background: var(--hub-glass); backdrop-filter: blur(var(--hub-glass-blur)); border: 1px solid var(--hub-line); }
+  .logo { font: var(--hub-type-heading); white-space: nowrap; display: flex; align-items: center; gap: var(--hub-space-2); }
+  .logo i { width: 12px; height: 12px; border-radius: 3px; background: var(--hub-accent); display: inline-block; }
+  .nav { display: flex; gap: var(--hub-space-1); margin-left: auto; flex-wrap: wrap; }
+  .nav a { font: var(--hub-type-label); color: var(--hub-muted); text-decoration: none; padding: 6px 10px; border-radius: var(--hub-radius-pill); }
+  .nav a[aria-current] { background: var(--hub-accent-soft); color: var(--hub-accent-soft-ink); }
+  h2 { font: var(--hub-type-title); margin: 0; }
+  .meta { font: var(--hub-type-meta); color: var(--hub-muted); }
+  .row { display: flex; gap: var(--hub-space-3); flex-wrap: wrap; }
+  .card { background: var(--hub-surface); border: 1px solid var(--hub-line); border-radius: var(--hub-radius-card); padding: var(--hub-space-4); box-shadow: var(--hub-shadow); flex: 1 1 200px; min-width: 0; }
+  .card h3 { font: var(--hub-type-heading); margin: 0 0 var(--hub-space-2); }
+  .meter { height: 8px; border-radius: var(--hub-radius-pill); background: var(--hub-surface-2); overflow: hidden; margin: var(--hub-space-2) 0; }
+  .meter b { display: block; height: 100%; background: var(--hub-accent); border-right: 1px solid var(--hub-accent-edge); }
+  .big { font: var(--hub-type-display); }
+  .tw { overflow-x: auto; margin: 0 calc(-1 * var(--hub-space-2)); }
+  table { width: 100%; border-collapse: collapse; }
+  @media (max-width: 480px) { .col-agent { display: none; } body { padding: 8px; } }
+  th { font: var(--hub-type-meta); color: var(--hub-muted); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--hub-line); }
+  td { padding: 10px 8px; border-bottom: 1px solid var(--hub-line); vertical-align: middle; }
+  td.t { width: var(--hub-time-col); white-space: nowrap; font: var(--hub-type-meta); font-family: var(--hub-font-mono); color: var(--hub-muted); }
+  tr.sel td { background: var(--hub-accent-soft); color: var(--hub-accent-soft-ink); }
+  .chip { font: var(--hub-type-meta); padding: 2px 8px; border-radius: var(--hub-radius-pill); white-space: nowrap; }
+  .ok { background: var(--hub-success-bg); color: var(--hub-success-ink); }
+  .warn { background: var(--hub-warning-bg); color: var(--hub-warning-ink); }
+  .err { background: var(--hub-danger-bg); color: var(--hub-danger-ink); }
+  .info { background: var(--hub-info-bg); color: var(--hub-info-ink); }
+  .btn { font: var(--hub-type-label); min-height: var(--hub-target-primary); padding: 0 var(--hub-space-4); border-radius: var(--hub-radius-control); border: 1px solid transparent; cursor: pointer; flex-shrink: 0; }
+  .primary { background: var(--hub-accent); color: var(--hub-on-accent); border-color: var(--hub-accent-edge); }
+  .secondary { background: var(--hub-surface-2); color: var(--hub-ink); border-color: var(--hub-line); }
+  .ghost { background: transparent; color: var(--hub-accent-text); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  input, select { font: var(--hub-type-body); color: var(--hub-ink); background: var(--hub-surface); border: 1px solid var(--hub-input-border); border-radius: var(--hub-radius-control); min-height: var(--hub-target-min); padding: 0 var(--hub-space-3); min-width: 0; flex: 1 1 160px; }
+  .link { color: var(--hub-accent-text); }
+  .handoff { border-left: 3px solid var(--hub-accent); }
+  code { font-family: var(--hub-font-mono); font-size: 12px; color: var(--hub-muted); }
+</style>
+</head>
+<body>
+<div class="grid" id="grid"></div>
+<template id="tpl">
+  <section class="theme">
+    <div class="bar">
+      <span class="logo"><i></i>agent hub</span>
+      <nav class="nav"><a aria-current="page" href="#">Проекты</a><a href="#">История</a><a href="#">Библиотека</a><a href="#">Лимиты</a></nav>
+    </div>
+    <div><h2 data-name></h2><div class="meta">amplicore · этап 6 «План и экономика» ждёт вашего OK</div></div>
+    <div class="row">
+      <div class="card"><h3>Codex · prolite</h3><div class="big hub-num">50%</div><div class="meter"><b style="width:50%"></b></div><div class="meta">недельный лимит · сброс через 3 дн.</div></div>
+      <div class="card"><h3>Claude · Pro</h3><div class="big">—</div><div class="meter"><b style="width:0"></b></div><div class="meta">нет данных · введите % из <code>/usage</code></div></div>
+    </div>
+    <div class="card">
+      <h3>Задачи</h3>
+      <div class="tw"><table>
+        <thead><tr><th>Время</th><th>Задача</th><th class="col-agent">Агент</th><th>Статус</th></tr></thead>
+        <tbody>
+          <tr><td class="t">14:02:11</td><td>T014 компилятор MCP</td><td class="col-agent">Sonnet 5.5 · medium</td><td><span class="chip ok">готово</span></td></tr>
+          <tr class="sel"><td class="t">14:20:45</td><td>T015 адаптер Codex</td><td class="col-agent">Opus 5.5 · high</td><td><span class="chip info">в работе</span></td></tr>
+          <tr><td class="t">14:31:09</td><td>T016 хуки → Codex</td><td class="col-agent">Sonnet 5.5 · medium</td><td><span class="chip warn">лимит 95%</span></td></tr>
+          <tr><td class="t">14:40:52</td><td>T017 sparse-checkout</td><td class="col-agent">Sonnet 5.5 · low</td><td><span class="chip err">тест упал</span></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+    <div class="card handoff">
+      <h3>Карточка передачи</h3>
+      <div>Codex остановился на <span class="link">T016</span>: 2 файла изменены, 1 тест падает. Следующий агент: Claude Sonnet 5.5.</div>
+      <div class="row" style="margin-top:12px">
+        <input aria-label="Комментарий" placeholder="Комментарий к передаче">
+        <button class="btn primary">Передать</button>
+        <button class="btn secondary">Подробнее</button>
+        <button class="btn ghost">Отменить</button>
+      </div>
+    </div>
+  </section>
+</template>
+<script>
+  const variants = [["dark","green","Тёмная · зелёный"],["light","green","Светлая · зелёный"],["dark","orange","Тёмная · оранжевый"],["light","orange","Светлая · оранжевый"]];
+  const grid = document.getElementById("grid"), tpl = document.getElementById("tpl");
+  for (const [theme, accent, name] of variants) {
+    const node = tpl.content.firstElementChild.cloneNode(true);
+    node.dataset.theme = theme; node.dataset.accent = accent;
+    node.querySelector("[data-name]").textContent = name;
+    grid.appendChild(node);
+  }
+</script>
+</body>
+</html>

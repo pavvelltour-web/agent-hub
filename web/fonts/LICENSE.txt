@@ -1,0 +1,3 @@
+Golos Text — Copyright Paratype. SIL Open Font License 1.1 (https://openfontlicense.org).
+JetBrains Mono — Copyright JetBrains s.r.o. SIL Open Font License 1.1.
+Files are unmodified subsets served by Google Fonts (cyrillic and latin), stored locally so the panel works offline and sends no requests to third parties.
