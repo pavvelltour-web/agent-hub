@@ -1,8 +1,8 @@
 import { redact } from '../lib/redact.ts';
 import { locate } from './locate.ts';
+import { claudeModeArgs } from './modes.ts';
 import { clip, type AgentAdapter, type HubEvent } from './types.ts';
 
-const PERMISSION = { plan: 'plan', edit: 'acceptEdits', full: 'bypassPermissions' } as const;
 const LOGIN = /not logged in|\/login|invalid api key|authentication/i;
 const LIMIT = /usage limit|rate limit|limit reached|out of (extra )?usage|5-hour limit|weekly limit/i;
 
@@ -19,7 +19,7 @@ export const claudeAdapter: AgentAdapter = {
   id: 'claude',
   exe() { const i = locate('claude'); return i.path ? { cmd: i.path, prefix: [] } : undefined; },
   args(r) {
-    const a = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', PERMISSION[r.permission ?? 'edit']];
+    const a = ['-p', '--output-format', 'stream-json', '--verbose', ...claudeModeArgs(r.permission ?? 'edit')];
     if (r.model) a.push('--model', r.model);
     if (r.effort) a.push('--effort', r.effort);
     if (r.resumeId) a.push('--resume', r.resumeId);

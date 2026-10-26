@@ -1,8 +1,8 @@
 import { redact } from '../lib/redact.ts';
 import { locate } from './locate.ts';
+import { codexModeArgs } from './modes.ts';
 import { clip, type AgentAdapter, type HubEvent } from './types.ts';
 
-const SANDBOX = { plan: 'read-only', edit: 'workspace-write', full: 'danger-full-access' } as const;
 const LIMIT = /usage limit|rate limit|hit your .*limit/i;
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 
@@ -27,8 +27,8 @@ export const codexAdapter: AgentAdapter = {
   id: 'codex',
   exe() { const i = locate('codex'); return i.path ? { cmd: i.path, prefix: [] } : undefined; },
   args(r) {
-    if (r.resumeId) return ['exec', 'resume', r.resumeId, '--json', ...(r.model ? ['-m', r.model] : []), ...(r.effort ? ['-c', `model_reasoning_effort=${r.effort}`] : []), '-'];
-    return ['exec', '--json', '-s', SANDBOX[r.permission ?? 'edit'], ...(r.model ? ['-m', r.model] : []), ...(r.effort ? ['-c', `model_reasoning_effort=${r.effort}`] : []), '-'];
+    if (r.resumeId) return ['exec', 'resume', r.resumeId, '--json', ...codexModeArgs(r.permission ?? 'edit', true), ...(r.model ? ['-m', r.model] : []), ...(r.effort ? ['-c', `model_reasoning_effort=${r.effort}`] : []), '-'];
+    return ['exec', '--json', ...codexModeArgs(r.permission ?? 'edit', false), ...(r.model ? ['-m', r.model] : []), ...(r.effort ? ['-c', `model_reasoning_effort=${r.effort}`] : []), '-'];
   },
   parse(line): HubEvent[] {
     const l = line as { type?: string; thread_id?: string; item?: Item; usage?: Record<string, number>; message?: string; error?: { message?: string } };

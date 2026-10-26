@@ -17,19 +17,19 @@ const run = async (a: AgentAdapter, scenario: string, prompt = 'hello world', st
   return ev;
 };
 
-test('claude args: prompt is not an argument; permission/model/effort/resume mapped; default is acceptEdits not bypass', () => {
+test('claude args: prompt is not an argument; permission/model/effort/resume mapped; default is auto (edit), never bypass', () => {
   const a = claudeAdapter.args({ prompt: 'SECRET PROMPT', cwd: '.', model: 'sonnet', effort: 'medium', resumeId: 'abc' });
   assert.ok(!a.includes('SECRET PROMPT'));
   assert.deepEqual(a.slice(0, 5), ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode']);
-  assert.equal(a[5], 'acceptEdits');
+  assert.equal(a[5], 'auto');
   assert.deepEqual(a.slice(-6), ['--model', 'sonnet', '--effort', 'medium', '--resume', 'abc']);
   assert.equal(claudeAdapter.args({ prompt: '', cwd: '.', permission: 'plan' })[5], 'plan');
 });
 
-test('codex args: stdin prompt marker, sandbox mapped, effort via -c, resume has no sandbox flag', () => {
+test('codex args: stdin prompt marker, sandbox mapped, effort via -c, resume keeps the mode via -c, not -s', () => {
   const a = codexAdapter.args({ prompt: 'x', cwd: '.', model: 'gpt-6.1-sol', effort: 'high' });
   assert.deepEqual(a, ['exec', '--json', '-s', 'workspace-write', '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=high', '-']);
-  assert.deepEqual(codexAdapter.args({ prompt: 'x', cwd: '.', resumeId: 'T1' }), ['exec', 'resume', 'T1', '--json', '-']);
+  assert.deepEqual(codexAdapter.args({ prompt: 'x', cwd: '.', resumeId: 'T1' }), ['exec', 'resume', 'T1', '--json', '-c', 'sandbox_mode="workspace-write"', '-']);
   assert.equal(codexAdapter.args({ prompt: 'x', cwd: '.', permission: 'plan' })[3], 'read-only');
 });
 
