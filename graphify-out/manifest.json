@@ -190,8 +190,8 @@
     "semantic_hash": ""
   },
   "src/cli/main.ts": {
-    "mtime": 1792712991.4841044,
-    "ast_hash": "2bc5dab7e850ef26e6d9fb92ca8687bd",
+    "mtime": 1793033614.959915,
+    "ast_hash": "9929b299f64e60212b8bad3f5528b7d4",
     "semantic_hash": ""
   },
   "src/core/compilers.ts": {
@@ -240,8 +240,8 @@
     "semantic_hash": ""
   },
   "src/diagram/index.ts": {
-    "mtime": 1792699378.831841,
-    "ast_hash": "cdfb56c4156e39ff13bfbf31f4cc8f5c",
+    "mtime": 1793033679.6475494,
+    "ast_hash": "9ea1abecf692e1dc8198c1a34bae198a",
     "semantic_hash": ""
   },
   "src/econ/advisor.ts": {
@@ -642,6 +642,116 @@
   "src/run/lean.ts": {
     "mtime": 1792712800.2786796,
     "ast_hash": "00df899f81bb2696b839f6aa1ca0248d",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/debug-range-sum/sum.js": {
+    "mtime": 1793033519.280969,
+    "ast_hash": "dff91bb21e37c4fc25e4795406e68597",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/debug-range-sum/sum.test.js": {
+    "mtime": 1793033519.280969,
+    "ast_hash": "38ee64b34ecda76c497afbd2826cbc72",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/debug-unique-by/unique.js": {
+    "mtime": 1793033519.282973,
+    "ast_hash": "6b8ba78ad78db6f2fb65dae98bcbc4bc",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/debug-unique-by/unique.test.js": {
+    "mtime": 1793033519.283975,
+    "ast_hash": "5176e34e0e5b8b088d84da7c9cf9bcae",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/implement-chunk/chunk.js": {
+    "mtime": 1793033519.278968,
+    "ast_hash": "55fca13a15529bcc5d57220d8ae8f2f9",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/implement-chunk/chunk.test.js": {
+    "mtime": 1793033519.27997,
+    "ast_hash": "228f99a4152744749a80f3e0a3d6c3fd",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/implement-slugify/slug.js": {
+    "mtime": 1793033519.277965,
+    "ast_hash": "5cba742678e4af5323881910bdd5bdda",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/implement-slugify/slug.test.js": {
+    "mtime": 1793033519.277965,
+    "ast_hash": "fee632b34b244b67c268ee52a89948cc",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/mechanical-rename/greet.js": {
+    "mtime": 1793033519.3098342,
+    "ast_hash": "e0b8758f5043fef514ed6adbfb932d1d",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/mechanical-rename/rename.test.js": {
+    "mtime": 1793033519.310835,
+    "ast_hash": "6972701ceffbcf43c3e4b05243062f60",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/mechanical-rename/users.js": {
+    "mtime": 1793033519.3098342,
+    "ast_hash": "e84084cea337e2571426d36132e48f2f",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/mechanical-var-to-const/legacy.js": {
+    "mtime": 1793033519.3118355,
+    "ast_hash": "e53f14721b16debddd5948cbcc609886",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/mechanical-var-to-const/legacy.test.js": {
+    "mtime": 1793033519.3118355,
+    "ast_hash": "2aa15a4e34a4fd1c87f1e9d0d83107b4",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/review-cache-key/cache.js": {
+    "mtime": 1793033519.3088346,
+    "ast_hash": "edac6fbea470c26d0c92e61ab9172b54",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/review-cache-key/grader/review.test.js": {
+    "mtime": 1793033519.3088346,
+    "ast_hash": "a5b8e224ccb4084fc01375dc25098206",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/review-withdraw/account.js": {
+    "mtime": 1793033519.297022,
+    "ast_hash": "6c508c388f822eb4a80fe5c3d0d0a446",
+    "semantic_hash": ""
+  },
+  "eval/golden/fixtures/review-withdraw/grader/review.test.js": {
+    "mtime": 1793033519.297022,
+    "ast_hash": "d92e445d5eba7a33d3cb68c926fd249f",
+    "semantic_hash": ""
+  },
+  "eval/golden/tasks.json": {
+    "mtime": 1793033519.3128371,
+    "ast_hash": "c6d0051a2bb251fe145021486ba213a7",
+    "semantic_hash": ""
+  },
+  "src/bench/bench.test.ts": {
+    "mtime": 1793034521.5359273,
+    "ast_hash": "8222935cafe90bcdee42884f5609f940",
+    "semantic_hash": ""
+  },
+  "src/bench/bench.ts": {
+    "mtime": 1793034537.568663,
+    "ast_hash": "ce12089ed562bc19604ddaf54d96f3e3",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-10-26-agent-hub-v0.2.md": {
+    "mtime": 1793033046.1466,
+    "ast_hash": "bac0df1b99e2a6a82df549634dc9b69c",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/APPLY-PROMPT.md": {
+    "mtime": 1793033052.679279,
+    "ast_hash": "3522b150b83be3837f3d340a304be067",
     "semantic_hash": ""
   }
 }
