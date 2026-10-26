@@ -123,7 +123,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
         if (e.kind !== 'end') return;
         const outcome = e.data?.outcome;
         if (outcome === 'limit') showHandoff(run);
-        if (outcome === 'done' || outcome === 'failed') rateRow(run);
+        if (outcome === 'done' || outcome === 'review' || outcome === 'failed') rateRow(run);
       },
     };
   }

@@ -22,12 +22,12 @@ CREATE INDEX IF NOT EXISTS usage_ts ON usage_event(ts);
 CREATE TABLE IF NOT EXISTS limit_snapshot (id INTEGER PRIMARY KEY, agent TEXT NOT NULL, ts TEXT NOT NULL, window_minutes INTEGER, used_percent REAL, resets_at INTEGER, plan_type TEXT, source TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS limit_agent_ts ON limit_snapshot(agent, ts);
 CREATE TABLE IF NOT EXISTS source_file_state (path TEXT PRIMARY KEY, size INTEGER, mtime_ms INTEGER, byte_offset INTEGER NOT NULL DEFAULT 0, last_ordinal INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS run (id TEXT PRIMARY KEY, project_id INTEGER, agent TEXT NOT NULL, model TEXT, effort TEXT, prompt TEXT, cwd TEXT, branch TEXT, started_at TEXT NOT NULL, ended_at TEXT, outcome TEXT, session_native_id TEXT, tokens_in INTEGER, tokens_out INTEGER, cost_usd REAL, handoff_of TEXT, error TEXT, resume_of TEXT, tokens_cached INTEGER, cls TEXT, est_json TEXT, rating INTEGER, project_type TEXT, permission TEXT, work_mode TEXT);
+CREATE TABLE IF NOT EXISTS run (id TEXT PRIMARY KEY, project_id INTEGER, agent TEXT NOT NULL, model TEXT, effort TEXT, prompt TEXT, cwd TEXT, branch TEXT, started_at TEXT NOT NULL, ended_at TEXT, outcome TEXT, session_native_id TEXT, tokens_in INTEGER, tokens_out INTEGER, cost_usd REAL, handoff_of TEXT, error TEXT, resume_of TEXT, tokens_cached INTEGER, cls TEXT, est_json TEXT, rating INTEGER, project_type TEXT, permission TEXT, work_mode TEXT, base_sha TEXT);
 CREATE TABLE IF NOT EXISTS run_event (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, seq INTEGER NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS run_event_run ON run_event(run_id, seq);
-CREATE TABLE IF NOT EXISTS review (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, project_id INTEGER NOT NULL, base_sha TEXT NOT NULL, head_sha TEXT NOT NULL, effort TEXT NOT NULL, risk TEXT NOT NULL, round INTEGER NOT NULL, state TEXT NOT NULL, approval_sha TEXT, approval_at TEXT);
+CREATE TABLE IF NOT EXISTS review (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, project_id INTEGER NOT NULL, base_sha TEXT NOT NULL, head_sha TEXT NOT NULL, effort TEXT NOT NULL, risk TEXT NOT NULL, round INTEGER NOT NULL, state TEXT NOT NULL, approval_sha TEXT, approval_at TEXT, info_json TEXT);
 CREATE INDEX IF NOT EXISTS review_run ON review(run_id);
-CREATE TABLE IF NOT EXISTS finding (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, review_id TEXT NOT NULL REFERENCES review(id), round INTEGER NOT NULL, severity TEXT NOT NULL, lens TEXT NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL, title TEXT NOT NULL, evidence TEXT NOT NULL, class_of_bug TEXT, votes_real INTEGER NOT NULL, votes_not_real INTEGER NOT NULL, answer TEXT NOT NULL DEFAULT 'open', reason TEXT, cleared_by TEXT);
+CREATE TABLE IF NOT EXISTS finding (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, review_id TEXT NOT NULL REFERENCES review(id), round INTEGER NOT NULL, severity TEXT NOT NULL, lens TEXT NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL, title TEXT NOT NULL, evidence TEXT NOT NULL, class_of_bug TEXT, votes_real INTEGER NOT NULL, votes_not_real INTEGER NOT NULL, answer TEXT NOT NULL DEFAULT 'open', reason TEXT, cleared_by TEXT, line_text TEXT);
 CREATE INDEX IF NOT EXISTS finding_review ON finding(review_id);
 CREATE INDEX IF NOT EXISTS finding_fp ON finding(fingerprint);
 `;
@@ -38,8 +38,13 @@ export function openDb(path = defaultDbPath()): Db {
   db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;');
   db.exec(SCHEMA);
   // Older databases lack columns added later: add them in place (never drop data).
-  const have = new Set((db.prepare('PRAGMA table_info(run)').all() as unknown as { name: string }[]).map((c) => c.name));
-  for (const [col, type] of [['resume_of', 'TEXT'], ['tokens_cached', 'INTEGER'], ['cls', 'TEXT'], ['est_json', 'TEXT'], ['rating', 'INTEGER'], ['project_type', 'TEXT'], ['permission', 'TEXT'], ['work_mode', 'TEXT']] as const) if (!have.has(col)) db.exec(`ALTER TABLE run ADD COLUMN ${col} ${type}`);
+  const addMissing = (table: string, cols: readonly (readonly [string, string])[]): void => {
+    const have = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((c) => c.name));
+    for (const [col, type] of cols) if (!have.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  };
+  addMissing('run', [['resume_of', 'TEXT'], ['tokens_cached', 'INTEGER'], ['cls', 'TEXT'], ['est_json', 'TEXT'], ['rating', 'INTEGER'], ['project_type', 'TEXT'], ['permission', 'TEXT'], ['work_mode', 'TEXT'], ['base_sha', 'TEXT']]);
+  addMissing('review', [['info_json', 'TEXT']]);       // checks, warnings, round bookkeeping of the review gate
+  addMissing('finding', [['line_text', 'TEXT']]);      // text of the flagged line, to clear the finding when a later commit removes it
   return db;
 }
 

@@ -84,7 +84,7 @@ test('LIMIT → handoff card with git facts and checkpoint commit → second age
   const b = rm2.handoff(a.id, { agent: 'claude', model: 'sonnet', effort: 'medium' });
   assert.equal(b.cwd, wtPath, 'same worktree'); assert.equal(b.handoffOf, a.id); assert.equal(b.branch, 'hub/T016/codex');
   await waitEnd(rm2, b.id);
-  assert.equal(rm2.get(b.id)!.outcome, 'done');
+  assert.equal(rm2.get(b.id)!.outcome, 'review', 'work on a task branch ends in review (the gate), not done');
   const first = rm2.events(b.id).find((e) => e.kind === 'text')!.data as { text: string };
   assert.match(first.text, /got \d{3,} chars: You are continuing work another coding a/);
   assert.match(b.prompt ?? '', /Handoff card/); assert.ok(!/FAIL hooks[\s\S]*FAIL hooks[\s\S]*FAIL hooks/.test(b.prompt ?? ''), 'no transcript replay');

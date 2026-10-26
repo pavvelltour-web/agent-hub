@@ -92,7 +92,7 @@ const round1 = (x: number): number => Math.round(x * 10) / 10;
 /** 0..1 per finished run: a rating from the user wins; without one, "done" is a weak yes and "failed" a no. Limit stops and manual stops say nothing about quality. */
 export function runScore(outcome: string | null, rating: number | null): number | null {
   if (rating === 2) return 1; if (rating === 1) return 0.5; if (rating === 0) return 0;
-  if (outcome === 'done') return 0.7; if (outcome === 'failed') return 0;
+  if (outcome === 'done' || outcome === 'review') return 0.7; if (outcome === 'failed') return 0;
   return null;
 }
 export function modelStats(db: Db): Record<string, { n: number; score: number }> {
@@ -117,7 +117,7 @@ export function outcomes(db: Db): OutcomeRow[] {
   for (const r of rows) {
     const key = [r.cls ?? 'unclassified', canonicalModel(r.model) ?? r.model ?? 'unknown', r.effort ?? '-'].join('|');
     const o = g.get(key) ?? { cls: r.cls ?? 'unclassified', model: canonicalModel(r.model) ?? r.model ?? 'unknown', effort: r.effort ?? '-', runs: 0, done: 0, limit: 0, failed: 0, actualMw: 0, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, lowSum: 0, highSum: 0, actualSum: 0 };
-    o.runs++; if (r.outcome === 'done') o.done++; else if (r.outcome === 'limit') o.limit++; else if (r.outcome === 'failed') o.failed++;
+    o.runs++; if (r.outcome === 'done' || r.outcome === 'review') o.done++; else if (r.outcome === 'limit') o.limit++; else if (r.outcome === 'failed') o.failed++;
     const cached = r.tc ?? 0;
     const actual = weighted({ uncachedIn: Math.max(0, (r.tin ?? 0) - cached), cachedIn: cached, out: r.tout ?? 0 });
     o.actualSum += actual;

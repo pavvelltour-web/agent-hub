@@ -30,8 +30,10 @@ import { isSecretPath } from '../lib/paths.ts';
 import { checkSparse } from '../run/git.ts';
 import { RunManager, type StartReq } from '../run/runner.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
+import { GateError, answer as answerFindingGate, approve as approveReview, canAccept, launchReview, reviewView, reviewsOfRun } from '../review/gate.ts';
+import { getReview } from '../review/store.ts';
 
-export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string } }
+export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] } }
 export interface Res { status: number; json?: unknown }
 type Body = Record<string, unknown>;
 type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
@@ -48,6 +50,12 @@ function rootOf(c: Ctx, id: number | undefined): string {
   return r;
 }
 class HttpError extends Error { status: number; constructor(status: number, msg: string) { super(msg); this.status = status; } }
+
+const RUN_ID = /^r[0-9a-z]{2,40}$/, REVIEW_ID = /^rv[0-9a-z]{2,40}$/, FINDING_ID = /^fd[0-9a-z]{2,40}$/, SHA = /^[0-9a-f]{7,40}$/i;
+function reviewId(c: Ctx, raw: string | undefined): string {
+  if (!raw || !REVIEW_ID.test(raw) || !getReview(c.db, raw)) throw new HttpError(404, 'review not found');
+  return raw;
+}
 
 let syncState: { running: boolean; last?: { at: string; claude: SyncStats; codex: SyncStats; ms: number }; error?: string } = { running: false };
 
@@ -243,7 +251,7 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (r == null || ![0, 1, 2].includes(r)) return bad(400, 'rating must be 0 (no), 1 (partly) or 2 (yes)');
     const run = c.runs.get(params[0] as string);
     if (!run) return bad(404, 'run not found');
-    if (run.outcome !== 'done' && run.outcome !== 'failed') return bad(400, 'only finished runs can be rated');
+    if (run.outcome !== 'done' && run.outcome !== 'review' && run.outcome !== 'failed') return bad(400, 'only finished runs can be rated');
     c.db.prepare('UPDATE run SET rating = ? WHERE id = ?').run(r, run.id);
     return ok({ ok: true });
   }],
@@ -322,6 +330,44 @@ const ROUTES: [string, RegExp, Handler][] = [
     try { return ok({ run: c.runs.handoff(params[0] as string, { agent: to, ...(str(body['model']) ? { model: str(body['model']) as string } : {}), ...(str(body['effort']) ? { effort: str(body['effort']) as string } : {}) }) }); } catch (e) { return bad(400, (e as Error).message); }
   }],
 
+  // ---- review gate: nothing is accepted while it is open. There is no accept/merge endpoint yet; when one is added it MUST call canAccept and refuse when not ok.
+  ['POST', /^\/api\/reviews$/, (c, { body }) => {
+    const runId = str(body['runId']);
+    if (!runId || !RUN_ID.test(runId)) return bad(400, 'runId required');
+    const effort = body['effort'];
+    if (effort !== undefined && effort !== null && effort !== '' && effort !== 'quick' && effort !== 'standard' && effort !== 'deep') return bad(400, 'effort must be quick, standard or deep');
+    if (!c.runs.get(runId)) return bad(404, 'run not found');
+    const { review } = launchReview({ runId, ...(effort === 'quick' || effort === 'standard' || effort === 'deep' ? { effort } : {}), runs: c.runs, db: c.db, ...(c.review?.available ? { available: c.review.available } : {}) });   // runs in the background
+    return ok(review);
+  }],
+  ['GET', /^\/api\/reviews\/(\w+)$/, (c, { params }) => { const id = reviewId(c, params[0]); return ok(reviewView(c.db, id)); }],
+  ['GET', /^\/api\/runs\/(\w+)\/reviews$/, (c, { params }) => (RUN_ID.test(params[0] as string) ? ok(reviewsOfRun(c.db, params[0] as string)) : bad(400, 'bad run id'))],
+  ['POST', /^\/api\/findings\/(\w+)\/answer$/, (c, { params, body }) => {
+    const id = params[0] as string;
+    if (!FINDING_ID.test(id) || !c.db.prepare('SELECT 1 FROM finding WHERE id = ?').get(id)) return bad(404, 'finding not found');
+    const a = body['answer'];
+    if (a === 'fixed') return bad(400, 'fixed is set by a later commit that removes the flagged line');
+    if (a !== 'rejected' && a !== 'intentional' && a !== 'dismissed') return bad(400, 'answer must be rejected, intentional or dismissed');
+    const reason = typeof body['reason'] === 'string' ? body['reason'].slice(0, 2000) : undefined;
+    try { const finding = answerFindingGate(c.db, id, a, reason); return ok({ finding, review: getReview(c.db, finding.reviewId) }); } catch (e) { return bad(400, (e as Error).message); }
+  }],
+  ['POST', /^\/api\/reviews\/(\w+)\/approve$/, (c, { params, body }) => {
+    if (body['by'] !== undefined && body['by'] !== 'human') return bad(403, 'only a human can approve a review');
+    const id = reviewId(c, params[0]);
+    const sha = str(body['sha']);
+    if (!sha || !SHA.test(sha)) return bad(400, 'sha: 7-40 hex characters');
+    const r = getReview(c.db, id) as NonNullable<ReturnType<typeof getReview>>;
+    if (!r.headSha.startsWith(sha.toLowerCase())) return bad(409, 'this is not the commit that was reviewed: run the next review round first');
+    return ok({ review: approveReview(c.db, id, r.headSha, 'human') });
+  }],
+  ['GET', /^\/api\/reviews\/(\w+)\/can-accept$/, (c, { params, q }) => {
+    const id = reviewId(c, params[0]);
+    const sha = q.get('sha') ?? '';
+    if (!SHA.test(sha)) return bad(400, 'sha: 7-40 hex characters');
+    const r = getReview(c.db, id) as NonNullable<ReturnType<typeof getReview>>;
+    return ok(canAccept(c.db, id, r.headSha.startsWith(sha.toLowerCase()) ? r.headSha : sha.toLowerCase()));
+  }],
+
   ['GET', /^\/api\/logs$/, (c, { q }) => {
     const limit = Math.min(500, num(q.get('limit')) ?? 200);
     const pid = num(q.get('project'));
@@ -360,7 +406,7 @@ export async function handle(c: Ctx, method: string, pathname: string, q: URLSea
     const mt = re.exec(pathname);
     if (!mt) continue;
     try { return await h(c, { params: mt.slice(1), q, body }); }
-    catch (e) { return e instanceof HttpError ? bad(e.status, e.message) : bad(500, 'internal error'); }
+    catch (e) { return e instanceof HttpError || e instanceof GateError ? bad(e.status, e.message) : bad(500, 'internal error'); }
   }
   return bad(404, 'no such endpoint');
 }

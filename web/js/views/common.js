@@ -49,7 +49,7 @@ export function sessionRow(s) {
     h('div.right', h('span.t-meta', fmt.ago(s.endedAt || s.startedAt)), s.projectId && !s.parentId ? h('span.chip.chip-soft', 'Продолжить') : null));
 }
 
-const OUTCOME = { done: ['готово', 'ok'], limit: ['лимит', 'warn'], failed: ['ошибка', 'err'], stopped: ['остановлено', 'line'], interrupted: ['прервано', 'line'] };
+const OUTCOME = { done: ['готово', 'ok'], review: ['На ревью', 'warn'], limit: ['лимит', 'warn'], failed: ['ошибка', 'err'], stopped: ['остановлено', 'line'], interrupted: ['прервано', 'line'] };
 export function outcomeChip(r) {
   if (r.live) return h('span.chip.chip-info', h('span.dot.live'), 'идёт');
   const [t, tone] = OUTCOME[r.outcome] || ['—', 'line'];

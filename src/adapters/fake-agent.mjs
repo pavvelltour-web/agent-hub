@@ -61,7 +61,7 @@ if (scenario.startsWith('fixture:')) {
   const argv = process.argv.slice(2);
   if (process.env.FAKE_CAPTURE_FILE) {
     const si = argv.indexOf('--output-schema');
-    appendFileSync(process.env.FAKE_CAPTURE_FILE, JSON.stringify({ argv, prompt, schemaFileExists: si >= 0 ? existsSync(argv[si + 1]) : null }) + '\n');
+    appendFileSync(process.env.FAKE_CAPTURE_FILE, JSON.stringify({ argv, prompt, schemaFileExists: si >= 0 ? existsSync(argv[si + 1]) : null, hubEnv: Object.keys(process.env).filter((k) => /hub/i.test(k)) }) + '\n');
   }
   const codexShape = isCodex || scenario === 'review-codex-json';
   const mi = Math.max(argv.indexOf('--model'), argv.indexOf('-m'));
@@ -74,7 +74,18 @@ if (scenario.startsWith('fixture:')) {
     { category: 'bug', line: 5, title: 'Claim without a file', evidence: 'x', classOfBug: '' },
   ];
   const real = scenario === 'review-verify-real' || (scenario === 'review-verify-by-model' && !String(model).includes('notreal'));
-  const text = scenario === 'review-json' || scenario === 'review-codex-json' ? '```json\n' + JSON.stringify({ summary: '2 findings', findings }) + '\n```'
+  // review-script (src/review/gate.test.ts): FAKE_REVIEW_SCRIPT is a JSON file { hunt: { <lens>: findings[] | "prose" }, verify: "real" | "notreal" }; the role and the lens are read from the prompt.
+  let scripted;
+  if (scenario === 'review-script') {
+    const plan = JSON.parse(readFileSync(process.env.FAKE_REVIEW_SCRIPT, 'utf8'));
+    if (prompt.includes('<<<DATA:finding:')) scripted = JSON.stringify({ real: plan.verify !== 'notreal', why: 'scripted verdict' });
+    else {
+      const lens = /security pass/i.test(prompt) ? 'security' : /Lens: edge cases/.test(prompt) ? 'edge-cases' : /Lens: intent/.test(prompt) ? 'intent' : /Lens: concurrency/.test(prompt) ? 'concurrency' : /Lens: UI/.test(prompt) ? 'ui' : 'correctness';
+      const h = (plan.hunt ?? {})[lens] ?? [];
+      scripted = h === 'prose' ? 'LGTM, nothing to fix.' : JSON.stringify({ summary: `${h.length} findings`, findings: h });
+    }
+  }
+  const text = scripted !== undefined ? scripted : scenario === 'review-json' || scenario === 'review-codex-json' ? '```json\n' + JSON.stringify({ summary: '2 findings', findings }) + '\n```'
     : scenario === 'review-prose' ? 'LGTM, nothing to fix.'
     : scenario === 'review-bad' ? '{"summary": "1 finding", "findings": [{"category": "bug", "file": '
     : JSON.stringify({ real, why: real ? 'the loop bound reads one past the end: `i <= n`' : 'no evidence in the diff' });

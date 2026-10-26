@@ -22,15 +22,19 @@ export interface StartReq {
   extraArgs?: string[];                                      // INTERNAL only (review gate): appended to the CLI args; api.ts must never forward it from a request body
   cls?: string; workMode?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
 }
-export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null }
+export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null; baseSha: string | null }
 export interface StoredEvent { seq: number; ts: string; kind: string; data: unknown }
 
-const COLS = 'id, agent, model, effort, prompt, cwd, branch, started_at AS startedAt, ended_at AS endedAt, outcome, session_native_id AS sessionNativeId, tokens_in AS tokensIn, tokens_out AS tokensOut, cost_usd AS costUsd, handoff_of AS handoffOf, resume_of AS resumeOf, error, project_id AS projectId, tokens_cached AS tokensCached, cls, est_json AS estJson, rating, project_type AS projectType, permission, work_mode AS workMode';
+const COLS = 'id, agent, model, effort, prompt, cwd, branch, started_at AS startedAt, ended_at AS endedAt, outcome, session_native_id AS sessionNativeId, tokens_in AS tokensIn, tokens_out AS tokensOut, cost_usd AS costUsd, handoff_of AS handoffOf, resume_of AS resumeOf, error, project_id AS projectId, tokens_cached AS tokensCached, cls, est_json AS estJson, rating, project_type AS projectType, permission, work_mode AS workMode, base_sha AS baseSha';
 const MAX_CONCURRENT = 4;
 const MAX_KEEP = 400;
 
 /** `summarize`: false = deterministic handoff summary only; a function replaces the model call (tests). Default: try the cheap model, fall back. */
 export interface RunManagerOpts { exe?: Partial<Record<AgentId, { cmd: string; prefix: string[] }>>; env?: NodeJS.ProcessEnv; summarize?: boolean | ((inp: HandoffInput) => Promise<Summary | undefined>); home?: string }
+
+/** The hub's session token / cookie / approval secrets must never reach an agent process: only the user's browser may approve a review. */
+const HUB_SECRET_ENV = /hub.*(?:token|cookie|session|secret)/i;
+export const agentEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([k]) => !HUB_SECRET_ENV.test(k)));
 
 const projectTypeOf = (root: string): string | null => { try { return (JSON.parse(readFileSync(join(root, 'hub.json'), 'utf8')) as { project?: { type?: string } }).project?.type ?? null; } catch { return null; } };
 
@@ -59,7 +63,7 @@ export class RunManager {
       const prev = this.get(req.resumeRunId);
       if (!prev?.sessionNativeId) throw new Error('nothing to resume: the previous run has no session id');
       if (prev.agent !== req.agent) throw new Error('resume works inside one agent; use handoff to switch agents');
-      resumeId = prev.sessionNativeId; cwd = prev.cwd ?? cwd; branch = prev.branch; prevPerm = prev.permission; prevMode = prev.workMode;
+      resumeId = prev.sessionNativeId; cwd = prev.cwd ?? cwd; branch = prev.branch; baseSha = prev.baseSha ?? undefined; prevPerm = prev.permission; prevMode = prev.workMode;
     } else if (req.resumeNativeId) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{5,79}$/.test(req.resumeNativeId)) throw new Error('session id has an unexpected shape; not resuming');
       resumeId = req.resumeNativeId;
@@ -68,7 +72,7 @@ export class RunManager {
       if (own) { prevPerm = own.permission; prevMode = own.workMode; }
     } else if (req.handoffOf) {
       const prev = this.get(req.handoffOf);
-      if (prev?.cwd) { cwd = prev.cwd; branch = prev.branch; }
+      if (prev?.cwd) { cwd = prev.cwd; branch = prev.branch; baseSha = prev.baseSha ?? undefined; }
     } else if (req.worktree ?? req.mode === 'task') {
       if (!isGitRepo(req.projectRoot)) throw new Error('worktree needs a git repository');
       const wt = createWorktree(req.projectRoot, req.task ?? id, req.agent, { ...(req.sparse ? { sparse: req.sparse } : {}) });
@@ -78,8 +82,8 @@ export class RunManager {
     const permission: Permission = prevMode === 'review' || req.workMode === 'review' ? 'plan' : req.permission ?? (prevPerm === 'plan' || prevPerm === 'full' || prevPerm === 'edit' ? prevPerm : 'edit');
     const workMode = prevMode === 'review' ? 'review' : req.workMode ?? prevMode;
     tx(this.db, () => {
-      this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type, permission, work_mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(id, projectId(this.db, req.projectRoot), req.agent, req.model ?? null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode);
+      this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type, permission, work_mode, base_sha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(id, projectId(this.db, req.projectRoot), req.agent, req.model ?? null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode, baseSha ?? null);
     });
 
     const events: HubEvent[] = [];
@@ -105,7 +109,7 @@ export class RunManager {
     };
 
     const home = this.opts.home ?? HUB_HOME;
-    const env = pushGuardEnv(home, this.opts.env ?? process.env);
+    const env = pushGuardEnv(home, agentEnv(this.opts.env ?? process.env));
     const hooks = readRunnerHooks(req.projectRoot, home);
     if (!hooks.approved) { emit({ kind: 'warn', message: 'hub.json has runner hooks that you have not approved on this machine: skipped. Review and approve with `hub hooks --approve <project>`.' }); hooks.sessionStart = []; hooks.sessionEnd = []; }
     const note = (r: { event: string; command: string; code: number | null; output: string }[]): void => r.forEach((h) => emit({ kind: 'warn', message: `hook ${h.event}: ${h.command} → ${h.code === 0 ? 'ok' : 'exit ' + h.code}${h.output ? ' · ' + h.output.slice(0, 120) : ''}` }));
@@ -117,7 +121,7 @@ export class RunManager {
     this.live.set(id, entry);
     void handle.done.then(async () => {
       this.live.delete(id);
-      const outcome = limit ? 'limit' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : 'done';
+      const outcome = limit ? 'limit' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
       this.db.prepare('UPDATE run SET outcome = ?, ended_at = ? WHERE id = ?').run(outcome, new Date().toISOString(), id);
       if (outcome === 'limit' && limit) {
         try {

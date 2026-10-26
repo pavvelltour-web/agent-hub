@@ -88,6 +88,7 @@
   project_type     TEXT
   permission       TEXT
   work_mode        TEXT
+  base_sha         TEXT
 
 [run_event]
 # id               INTEGER
@@ -109,6 +110,7 @@
   state            TEXT
   approval_sha     TEXT
   approval_at      TEXT
+  info_json        TEXT
 
 [finding]
 # id               TEXT
@@ -127,6 +129,7 @@
   answer           TEXT
   reason           TEXT
   cleared_by       TEXT
+  line_text        TEXT
 
 [FTS]
 message_fts (FTS5) — поиск по тексту сообщений

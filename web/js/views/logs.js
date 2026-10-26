@@ -8,7 +8,7 @@ export default async function view() {
 }
 
 const LEVEL = { error: ['Ошибка', 'error'], warn: ['Внимание', 'warn'], info: ['Событие', 'info'], audit: ['Изменение', 'audit'] };
-const OUTCOME = { done: 'закончил работу', failed: 'остановился с ошибкой', limit: 'остановился: кончился лимит', stopped: 'остановлен вами', interrupted: 'прерван' };
+const OUTCOME = { done: 'закончил работу', review: 'закончил работу, ждёт ревью', failed: 'остановился с ошибкой', limit: 'остановился: кончился лимит', stopped: 'остановлен вами', interrupted: 'прерван' };
 const who = (a) => (a === 'codex' ? 'Codex' : a === 'claude' ? 'Claude' : 'Hub');
 
 /** Turn a raw log row into one plain sentence. */

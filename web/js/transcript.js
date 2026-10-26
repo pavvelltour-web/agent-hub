@@ -16,7 +16,7 @@ const familyOf = (name) => { const n = (typeof name === 'string' ? name : '').to
 const HEAD = 5;          // bash output lines shown before the expander
 const DIFF_HEAD = 8;     // diff lines shown before the expander
 const CHUNK = 300;       // lines added per expander click: a 64 KB body never lands in the DOM at once
-const OUTCOME = { done: 'Готово', failed: 'Ошибка', limit: 'Остановлено лимитом', stopped: 'Остановлено вами', interrupted: 'Прервано' };
+const OUTCOME = { done: 'Готово', review: 'На ревью', failed: 'Ошибка', limit: 'Остановлено лимитом', stopped: 'Остановлено вами', interrupted: 'Прервано' };
 const KIND = { add: 'новый файл', delete: 'удалён', update: 'изменён' };
 
 const plural = (n, [one, few, many]) => { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many; };
@@ -203,7 +203,7 @@ function footer(ctx, d) {
     parts.push(`вход ${fmt.tok(num(u.uncachedIn) + num(u.cachedIn))}${num(u.cachedIn) ? ` (кэш ${fmt.tok(num(u.cachedIn))})` : ''}`, `выход ${fmt.tok(num(u.out))}`);
     if (typeof u.costUsd === 'number' && Number.isFinite(u.costUsd) && u.costUsd) parts.push('$' + u.costUsd.toFixed(3));
   }
-  return h('div.tx-foot' + (d.outcome && d.outcome !== 'done' ? '.is-bad' : ''), parts.join(' · '));
+  return h('div.tx-foot' + (d.outcome && d.outcome !== 'done' && d.outcome !== 'review' ? '.is-bad' : ''), parts.join(' · '));
 }
 
 // ---------- public API ----------
