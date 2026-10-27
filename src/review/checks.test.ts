@@ -13,7 +13,7 @@ const NODE = 'node';
 const tmp = (name = 'hub-chk-'): string => mkdtempSync(join(tmpdir(), name));
 const withTmp = async (fn: (dir: string) => void | Promise<void>, name?: string): Promise<void> => {
   const dir = tmp(name);
-  try { await fn(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+  try { await fn(dir); } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 };
 const js = (code: string, ...args: string[]): string[] => [NODE, '-e', code, ...args];
 
