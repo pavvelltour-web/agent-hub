@@ -134,7 +134,7 @@ export class RunManager {
     const ctxRestart = handoffMode({ limit: ctxLimit, branch, isolated: !!req.isolatedCwd, capped: ctxCapped, autoContinue: req.autoContinue }) === 'restart';
     // A continuation keeps the chain's ORIGINAL task text (not the previous handoff prompt, which would nest one card inside the next).
     const origPrompt = req.handoffOf ? this.rootPrompt(req.handoffOf) ?? req.prompt : req.prompt;
-    let ctxWarned = false, ctxStop = false, guardStopped = false, handleRef: RunHandle | undefined;
+    let ctxWarned = false, ctxStop = false, guardStopped = false, guardNeutral = false, handleRef: RunHandle | undefined;
     const events: HubEvent[] = [];
     let seq = 0, limit: Extract<HubEvent, { kind: 'limit' }> | undefined, tokIn = 0, tokOut = 0, cost = 0, cached = 0;
     let liveNew = 0, liveCached = 0, liveOut = 0;   // ADR-026: what the model calls of this run have used so far, for the per-run cap
@@ -146,10 +146,11 @@ export class RunManager {
       const own = { uncachedIn: Math.max(0, tokIn - cached), cachedIn: cached, out: tokOut }, turns = { uncachedIn: liveNew, cachedIn: liveCached, out: liveOut };
       const w = Math.max(weighted(own), weighted(turns));
       const usd = cost > 0 ? cost : priceUsd(req.model ?? null, own.uncachedIn + own.out > turns.uncachedIn + turns.out ? own : turns);
-      let why: string | null = null;
-      try { why = this.guard.usage({ runId: id, projectRoot: req.projectRoot, weighted: w, costUsd: usd }); } catch { why = null; }
-      if (!why) return;
-      guardStopped = true; live.stopped = true;
+      let verdict: ReturnType<NonNullable<RunGuard['usage']>> = null;
+      try { verdict = this.guard.usage({ runId: id, projectRoot: req.projectRoot, weighted: w, costUsd: usd }); } catch { verdict = null; }
+      if (!verdict) return;
+      const why = typeof verdict === 'string' ? verdict : verdict.reason;
+      guardStopped = true; guardNeutral = typeof verdict !== 'string'; live.stopped = true;
       emit({ kind: 'warn', message: `остановлено защитой от лишних расходов: ${why}` });
       handleRef?.stop();
     };
@@ -255,7 +256,7 @@ export class RunManager {
       if (ctxStop) this.pendingHandover.set(id, { cancelled: false });   // set in the same step as the delete below: Stop never finds the run in neither map
       this.live.delete(id);
       lean?.cleanup();
-      const outcome = limit ? 'limit' : ctxStop ? 'context' : guardStopped ? 'guard' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
+      const outcome = limit ? 'limit' : ctxStop ? 'context' : guardStopped ? (guardNeutral ? 'guard-stop' : 'guard') : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
       this.db.prepare('UPDATE run SET outcome = ?, ended_at = ? WHERE id = ?').run(outcome, new Date().toISOString(), id);
       // A reviewer has no work to hand over, and its projectRoot is the task folder: a card there would be committed into the branch.
       if (outcome === 'limit' && limit && reviewer) emit({ kind: 'warn', message: 'reviewer stopped on a usage limit: no handoff card (the review round fails and can be run again)' });

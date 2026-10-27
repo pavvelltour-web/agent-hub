@@ -27,10 +27,12 @@ export function authStatus(id: AgentId, info: AgentInfo, runner: Runner = run, n
   return v;
 }
 /** The same check made FROM a project folder (not cached): that is where an automatic run will start, and a folder's own Claude settings can change the answer. */
-export function authStatusIn(id: AgentId, info: AgentInfo, cwd: string, runner?: Runner): AuthInfo {
+export function authStatusIn(id: AgentId, info: AgentInfo, cwd: string, runner?: RunnerIn, env?: NodeJS.ProcessEnv): AuthInfo {
   if (!info.installed || !info.path) return { loggedIn: null, how: '' };
-  const args = id === 'claude' ? ['auth', 'status'] : ['login', 'status'];
-  const r = runner ? runner(info.path, args) : (() => { const x = spawnSync(info.path as string, args, { encoding: 'utf8', timeout: 15_000, windowsHide: true, cwd }); return { status: x.status, stdout: (x.stdout ?? '') + (x.stderr ?? '') }; })();
+  // Claude: only the USER settings (as the run itself), so a project's .claude/settings cannot change the answer; the environment is the one the run gets, not the whole process environment. `--setting-sources` on `auth status` is NOT verified live.
+  const args = id === 'claude' ? ['auth', 'status', '--setting-sources', 'user'] : ['login', 'status'];
+  const r = (runner ?? ((cmd, a, o) => { const x = spawnSync(cmd, a, { encoding: 'utf8', timeout: 15_000, windowsHide: true, ...(o?.cwd ? { cwd: o.cwd } : {}), ...(o?.env ? { env: o.env } : {}) }); return { status: x.status, stdout: (x.stdout ?? '') + (x.stderr ?? '') }; }))(info.path, args, { cwd, ...(env ? { env } : {}) });
   return parseAuth(id, r);
 }
+export type RunnerIn = (cmd: string, args: string[], opts?: { cwd?: string; env?: NodeJS.ProcessEnv }) => { status: number | null; stdout: string };
 export const forgetAuth = (id: AgentId): void => void cache.delete(id);

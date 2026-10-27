@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameS
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { HUB_HOME, loadUserConfig } from '../core/registry.ts';
-import { GUARDRAILS_FILE, fileState, guardrailsConfigTrusted, recordTamper, sealFile } from './integrity.ts';
+import { GUARDRAILS_FILE, fileState, guardrailsConfigTrusted, recordTamper, sealThenRename } from './integrity.ts';
 import { weighted } from '../econ/econ.ts';
 import type { Db } from '../history/store.ts';
 import { pathKey } from '../lib/paths.ts';
@@ -138,7 +138,7 @@ export function evaluate(o: { now: number; facts: Fact[]; caps: Caps; acks?: Rec
   for (const f of facts) if (f.projectId != null) byProject.set(f.projectId, [...(byProject.get(f.projectId) ?? []), f]);
   for (const [pid, fs] of byProject) {
     const keyF = `same-failure:${pid}`, keyS = `repeated-stops:${pid}`;
-    const done = fs.filter((f) => f.endedMs !== null && f.outcome !== null && f.outcome !== 'interrupted' && f.outcome !== 'stopped' && (f.endedMs as number) > (acks[keyF] ?? 0)).sort((a, b) => (b.endedMs as number) - (a.endedMs as number));
+    const done = fs.filter((f) => f.endedMs !== null && f.outcome !== null && f.outcome !== 'interrupted' && f.outcome !== 'stopped' && f.outcome !== 'guard-stop' && (f.endedMs as number) > (acks[keyF] ?? 0)).sort((a, b) => (b.endedMs as number) - (a.endedMs as number));
     const newest = done[0];
     if (newest && isFail(newest) && now - (newest.endedMs as number) < FAILURE_COOLDOWN_MS) {
       let n = 0;
@@ -172,7 +172,7 @@ export function ackTrip(home: string, key: string, now: number): boolean {
   const acks = loadAcks(home); acks[key] = now;
   mkdirSync(home, { recursive: true });
   const f = ackFile(home), tmp = `${f}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ acks }), 'utf8'); renameSync(tmp, f); sealFile(home, 'guardrails.json');
+  writeFileSync(tmp, JSON.stringify({ acks }), 'utf8'); sealThenRename(home, 'guardrails.json', tmp); void f;
   return true;
 }
 /** An append-only line for every change of the protection itself (who: the panel; what; when). */
@@ -184,8 +184,11 @@ export function auditGuard(home: string, e: Record<string, unknown>): void {
 export interface RunGuard {
   /** A reason (Russian, shown to the user) when this run must not start, else null. */
   start?: (req: StartReq) => string | null;
-  /** Called with the live totals of a run: a reason when it must be stopped now, else null. */
-  usage?: (i: { runId: string; projectRoot: string; weighted: number; costUsd: number | null }) => string | null;
+  /**
+   * Called with the live totals of a run: a reason when it must be stopped now, else null. A plain string means THIS RUN is the runaway (outcome `guard`: a failure for quality).
+   * `{ reason, neutral: true }` is a stop for a SHARED limit (the day, a continuation chain): the run did nothing wrong, so its outcome is `guard-stop` and it scores nothing.
+   */
+  usage?: (i: { runId: string; projectRoot: string; weighted: number; costUsd: number | null }) => string | { reason: string; neutral: true } | null;
 }
 export interface GuardOpts { db: Db; home: string; now?: () => number; userCaps?: () => unknown; projectCaps?: (root: string) => unknown }
 
@@ -217,11 +220,11 @@ export function makeGuard(o: GuardOpts): RunGuard {
       if (one) return one;
       // a continuation chain that grew past the cap is stopped here too (the trip list alone only describes it)
       const parent = (o.db.prepare('SELECT handoff_of AS p FROM run WHERE id = ?').get(i.runId) as { p: string | null } | undefined)?.p;
-      if (parent) { const d = chainDepth(facts(now), parent); if (d + 1 > caps.chainMax) return `цепочка продолжений дошла до ${d + 1} запусков подряд при пороге ${caps.chainMax}`; }
+      if (parent) { const d = chainDepth(facts(now), parent); if (d + 1 > caps.chainMax) return { reason: `цепочка продолжений дошла до ${d + 1} запусков подряд при пороге ${caps.chainMax}`, neutral: true }; }
       const others = facts(now).filter((f) => f.id !== i.runId && now - f.startedMs < DAY_MS);
       const dw = others.reduce((a, f) => a + f.w, 0) + i.weighted, du = others.reduce((a, f) => a + (f.usd ?? 0), 0) + (i.costUsd ?? 0);
-      if (dw > caps.dayWeighted) return `за сутки израсходовано ${mw(dw)} условных млн токенов при пороге ${mw(caps.dayWeighted)}`;
-      if (du > caps.dayUsd) return `за сутки набежало $${Math.round(du)} по ценам API при пороге $${Math.round(caps.dayUsd)}`;
+      if (dw > caps.dayWeighted) return { reason: `за сутки израсходовано ${mw(dw)} условных млн токенов при пороге ${mw(caps.dayWeighted)}`, neutral: true };
+      if (du > caps.dayUsd) return { reason: `за сутки набежало $${Math.round(du)} по ценам API при пороге $${Math.round(caps.dayUsd)}`, neutral: true };
       return null;
     },
   };

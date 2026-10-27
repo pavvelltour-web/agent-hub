@@ -9,7 +9,7 @@ export default async function view() {
   const [runs, models, sessions, projects, state, auto, guard] = await Promise.all([api.get('/runs?limit=60'), api.get('/models'), api.get('/sessions?limit=6'), api.get('/projects'), api.get('/state'), api.get('/autouse', true).then(autoModel, () => null), loadGuard()]);
   const handedOff = new Set(runs.filter((r) => r.handoffOf).map((r) => r.handoffOf));
   const needs = runs.filter((r) => r.outcome === 'limit' && !handedOff.has(r.id));
-  const failed = runs.filter((r) => r.outcome === 'failed' && !r.live && Date.now() - Date.parse(r.startedAt) < 86400000).slice(0, 3);
+  const failed = runs.filter((r) => (r.outcome === 'failed' || r.outcome === 'guard') && !r.live && Date.now() - Date.parse(r.startedAt) < 86400000).slice(0, 3);
   const live = runs.filter((r) => r.live);
   const proj = (id) => projects.find((p) => p.id === id)?.slug || 'проект';
 

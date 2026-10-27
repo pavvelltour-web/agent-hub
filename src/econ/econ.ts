@@ -49,7 +49,7 @@ export const MIN_EFFORT_RUNS = 3;
  * Fewer than MIN_EFFORT_RUNS rows: the default profile, so callers fall back to the prior multiplier.
  */
 export function effortProfile(db: Db, agent: string, effort: string): Profile {
-  const runs = db.prepare(`SELECT r.tokens_in AS tin, r.tokens_cached AS tc, r.tokens_out AS o FROM run r WHERE r.agent = ? AND lower(r.effort) = ? AND r.outcome IS NOT NULL AND r.outcome NOT IN ('interrupted', 'context') AND ${NOT_REVIEWER_SQL} AND (r.tokens_in IS NOT NULL OR r.tokens_out IS NOT NULL)`).all(agent, effort.toLowerCase()) as unknown as { tin: number | null; tc: number | null; o: number | null }[];
+  const runs = db.prepare(`SELECT r.tokens_in AS tin, r.tokens_cached AS tc, r.tokens_out AS o FROM run r WHERE r.agent = ? AND lower(r.effort) = ? AND r.outcome IS NOT NULL AND r.outcome NOT IN ('interrupted', 'context', 'guard', 'guard-stop') AND ${NOT_REVIEWER_SQL} AND (r.tokens_in IS NOT NULL OR r.tokens_out IS NOT NULL)`).all(agent, effort.toLowerCase()) as unknown as { tin: number | null; tc: number | null; o: number | null }[];
   const sessions = db.prepare(`SELECT s.uncached_in AS u, s.cached_in AS c, s.out_tokens AS o FROM session s WHERE s.agent = ? AND lower(s.effort) = ? AND s.parent_id IS NULL AND s.msg_count >= 5 AND (s.uncached_in + s.cached_in) > 0 AND NOT EXISTS (SELECT 1 FROM run r WHERE r.agent = s.agent AND r.session_native_id = s.native_id)`).all(agent, effort.toLowerCase()) as unknown as { u: number; c: number; o: number }[];
   const rows = [
     ...runs.map((r) => ({ u: Math.max(0, (r.tin ?? 0) - (r.tc ?? 0)), c: r.tc ?? 0, o: r.o ?? 0 })),

@@ -83,6 +83,7 @@ test('autouse: off by default; nothing is listed, a hub.json cannot switch it on
   assert.equal(r.status, 200); assert.deepEqual(r.json.projects, []);
   const one = await get(`/api/autouse?project=${pid}`);
   assert.equal(one.json.projects[0].enabled, false); assert.deepEqual(one.json.projects[0].suggestions, []);
+  assert.deepEqual(one.json.scheduler, { state: 'free', silent: false }, 'no loop runs in the test server: nobody holds the lock');
   assert.equal(one.json.settings.minLeftPct, 20); assert.equal(one.json.settings.marginPct, 10);
   assert.equal((await get('/api/autouse?project=99999')).status, 404);
   rmSync(join(root, 'hub.json'));
@@ -245,7 +246,8 @@ test('tamper: a settings file changed behind the hub is listed, needs a click to
   assert.deepEqual(g.tamper.map((t: { file: string }) => t.file), ['autouse.json']);
   assert.equal((await get(`/api/autouse?project=${pid}`)).json.projects[0].enabled, false, 'a file the hub did not write is not read');
   assert.equal((await post('/api/integrity/reset', {}, {})).status, 403);
-  assert.equal((await post('/api/integrity/reset', {})).status, 200);
+  assert.equal((await post('/api/integrity/reset', {})).status, 400, 'the typed word is needed');
+  assert.equal((await post('/api/integrity/reset', { confirm: 'СБРОС' })).status, 200);
   assert.deepEqual((await get('/api/guardrails')).json.tamper, []);
   assert.equal((await get(`/api/autouse?project=${pid}`)).json.projects[0].enabled, false);
 });

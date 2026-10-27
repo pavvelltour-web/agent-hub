@@ -204,7 +204,9 @@ test('n6: a live run deep in a continuation chain is stopped by usage(), not onl
   const ins = db.prepare('INSERT INTO run (id, project_id, agent, started_at, outcome, handoff_of) VALUES (?,?,?,?,?,?)');
   for (let i = 0; i < 8; i++) ins.run(`c${i}`, 1, 'claude', new Date(NOW - (9 - i) * 60_000).toISOString(), i < 7 ? 'context' : null, i ? `c${i - 1}` : null);
   const g = makeGuard({ db, home, now: () => NOW, userCaps: () => undefined, projectCaps: () => undefined });
-  assert.match(g.usage!({ runId: 'c7', projectRoot: 'x', weighted: 0, costUsd: null }) ?? '', /цепочка продолжений дошла до 8/);
+  const why = (x: unknown): string => (typeof x === 'string' ? x : (x as { reason?: string } | null)?.reason ?? '');
+  assert.match(why(g.usage!({ runId: 'c7', projectRoot: 'x', weighted: 0, costUsd: null })), /цепочка продолжений дошла до 8/);
+  assert.equal(typeof g.usage!({ runId: 'c7', projectRoot: 'x', weighted: 0, costUsd: null }), 'object', 'a chain stop is neutral for the model: it comes as an object, not as a plain string');
   assert.equal(g.usage!({ runId: 'c5', projectRoot: 'x', weighted: 0, costUsd: null }), null, 'the 6th run of a chain is still allowed');
   assert.equal(g.usage!({ runId: 'nothing', projectRoot: 'x', weighted: 0, costUsd: null }), null);
 });
@@ -214,8 +216,10 @@ test('makeGuard.usage: the per-run cap, then the day cap counting the other runs
   try {
     db.prepare('INSERT INTO run (id, project_id, agent, started_at, outcome, tokens_in, tokens_cached, tokens_out) VALUES (?,?,?,?,?,?,?,?)').run('other', 1, 'claude', new Date(NOW - 3600_000).toISOString(), 'done', 100_000_000, 0, 0);
     const g = makeGuard({ db, home, now: () => NOW, userCaps: () => ({ runWeighted: 20, dayWeighted: 100 }), projectCaps: () => ({ runWeighted: 10, dayWeighted: 99999 }) });
-    assert.match(g.usage!({ runId: 'me', projectRoot: 'x', weighted: 11, costUsd: null }) ?? '', /при пороге 10/, 'the project lowered the run cap to 10');
-    assert.match(g.usage!({ runId: 'me', projectRoot: 'x', weighted: 5, costUsd: null }) ?? '', /за сутки израсходовано 105/, 'the other run (100) plus this one; the project could not raise the day cap');
+    assert.match(g.usage!({ runId: 'me', projectRoot: 'x', weighted: 11, costUsd: null }) as string, /при пороге 10/, 'the project lowered the run cap to 10');
+    const day = g.usage!({ runId: 'me', projectRoot: 'x', weighted: 5, costUsd: null });
+    assert.match(typeof day === 'string' ? day : day?.reason ?? '', /за сутки израсходовано 105/, 'the other run (100) plus this one; the project could not raise the day cap');
+    assert.equal(typeof day, 'object', 'a day-cap stop is neutral for the model');
     assert.equal(g.usage!({ runId: 'other', projectRoot: 'x', weighted: 5, costUsd: null }), null, 'the run itself is not counted twice');
     assert.equal(makeGuard({ db, home, now: () => NOW, userCaps: () => ({ enabled: false }), projectCaps: () => undefined }).usage!({ runId: 'me', projectRoot: 'x', weighted: 1e6, costUsd: 1e6 }), null);
   } finally { rmSync(home, { recursive: true, force: true }); }

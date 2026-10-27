@@ -75,9 +75,19 @@ test('calibration uses weekly readings only: a 5 h percent is not "per 1 % of th
 
 test('Claude adapter: rateLimitType gives the window length; unknown types give none; the event survives sanitising', () => {
   assert.equal(claudeWindowMinutes('five_hour'), 300);
-  assert.equal(claudeWindowMinutes('seven_day'), 10080); assert.equal(claudeWindowMinutes('seven_day_opus'), 10080); assert.equal(claudeWindowMinutes('seven_day_sonnet'), 10080);
-  for (const x of ['overage', '', 'weird', 5, null, undefined, {}]) assert.equal(claudeWindowMinutes(x), undefined, String(x));
+  assert.equal(claudeWindowMinutes('seven_day'), 10080);
+  for (const x of ['seven_day_opus', 'seven_day_sonnet', 'seven_day_anything', 'five_hour_x', 'SEVEN_DAY', 'overage', '', 'weird', 5, null, undefined, {}]) assert.equal(claudeWindowMinutes(x), undefined, String(x));
   const ev = (type: unknown) => claudeAdapter.parse({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', utilization: 0.3, resetsAt: Math.floor(sec) + 3 * 3600, rateLimitType: type } }).map((e) => sanitizeEvent(e)).find((e) => e.kind === 'limit') as { windowMinutes?: number; usedPercent?: number };
   assert.equal(ev('five_hour').windowMinutes, 300); assert.equal(ev('seven_day').windowMinutes, 10080); assert.equal(ev('seven_day').usedPercent, 30);
-  assert.equal(ev('nonsense').windowMinutes, undefined); assert.equal(ev(undefined).windowMinutes, undefined);
+  assert.equal(ev('nonsense').windowMinutes, undefined); assert.equal(ev('seven_day_opus').windowMinutes, undefined, 'a sub-limit is not the overall week'); assert.equal(ev(undefined).windowMinutes, undefined);
+});
+
+test('S3: a sub-limit reading (an Opus-only 20 %) is stored with no window and can never allow a start while the overall week is high', () => {
+  const db = openDb(':memory:');
+  snap(db, { used: 95, resetsInH: 3, window: 10080, ts: new Date(NOW - 120_000).toISOString() });                 // the overall week: nearly spent
+  snap(db, { used: 20, resetsInH: 3, window: claudeWindowMinutes('seven_day_opus') ?? null, ts: new Date(NOW - 60_000).toISOString() });   // a newer Opus-only reading
+  const rows = db.prepare('SELECT window_minutes AS w, used_percent AS p FROM limit_snapshot ORDER BY id').all() as unknown as { w: number | null; p: number }[];
+  assert.deepEqual(rows.map((r) => [r.w, r.p]), [[10080, 95], [null, 20]], 'both are stored, the sub-limit with no window');
+  assert.equal(limitSnapshots(db, NOW).claude!.usedPercent, 95);
+  assert.equal(fromDb(db).length, 0, 'the overall week has 5 % left: nothing is offered');
 });

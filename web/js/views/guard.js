@@ -12,7 +12,7 @@ export function guardLine(m) {
   const rows = [];
   if (!m.enabled) rows.push(h('div.alert.warn', { role: 'status' }, icon('alert'), h('div.stack', { style: { flex: 1 } }, h('b', 'Защита от лишних запусков выключена вами'), h('span', 'Ничто не остановит запуск, который тратит слишком много или повторяет одну и ту же ошибку. Включить обратно можно в настройках.'))));
   if (m.tamper.length) rows.push(h('div.alert.err', { role: 'alert' }, icon('alert'), h('div.stack', { style: { flex: 1 } }, h('b', 'Файл настроек изменён не hub: проверьте'), h('span', `Изменено не через панель: ${m.tamper.join(', ')}. Автозапуск по остатку лимита выключен, защита работает с обычными порогами, подтверждения не действуют. Если это были вы, сбросьте и включите нужное заново.`),
-    h('div.row-flex', btn('Проверил(а): сбросить', { kind: 'glass', onclick: async () => { try { await api.post('/integrity/reset', {}); location.reload(); } catch { /* toast */ } } })))));
+    h('div.row-flex', btn('Проверил(а): сбросить…', { kind: 'glass', onclick: () => resetDialog(m.tamper) })))));
   for (const t of m.trips) {
     rows.push(h('div.alert.err', { role: 'alert' }, icon('alert'), h('div.stack', { style: { flex: 1 } }, h('b', 'Защита остановила запуски'), h('span', (t.slug ? t.slug + ': ' : '') + t.ru),
       t.ackable ? h('div.row-flex', btn('Понятно, продолжить', { kind: 'glass', onclick: async () => { try { await api.post('/guardrails/ack', { key: t.key }); location.reload(); } catch { /* toast */ } } })) : null)));
@@ -58,4 +58,24 @@ function offDialog(done) {
   dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Выключить защиту?'), closeBtn()),
     h('p', 'Без защиты ничто не остановит запуск, который съедает лимит или деньги, или повторяет одну и ту же ошибку. На главной странице будет висеть напоминание, пока она выключена.'),
     h('div.field', h('label', `Чтобы выключить, напечатайте: ${WORD}`), input), h('div.foot', btn('Отмена', { kind: 'glass', onclick: () => document.getElementById('dlg').close() }), go)));
+}
+
+/** Reset after a settings file was changed behind the hub: only the flagged files are reset, the typed word is needed, Cancel has the focus, and the server's answer is shown in the dialog. */
+function resetDialog(files) {
+  const WORD = 'СБРОС';
+  const EFFECT = { 'autouse.json': 'автозапуск выключится вместе с одобрениями', 'guardrails.json': 'подтверждения перестанут действовать', 'config.json guardrails': 'пороги защиты вернутся к обычным' };
+  const effects = files.map((f) => EFFECT[f]).filter(Boolean);
+  const input = h('input.input', { 'aria-label': 'Слово подтверждения', autocomplete: 'off', spellcheck: false });
+  const err = h('p.t-meta', { role: 'alert', style: { color: 'var(--hub-danger-ink)', margin: 0 } });
+  const cancel = btn('Отмена', { kind: 'glass', onclick: () => document.getElementById('dlg').close() });
+  cancel.setAttribute('data-autofocus', '');   // the safe answer has the focus
+  const go = btn('Сбросить', { kind: 'primary', disabled: true, onclick: async () => {
+    go.disabled = true; err.textContent = '';
+    try { await api.post('/integrity/reset', { confirm: input.value }, true); document.getElementById('dlg').close(); location.reload(); }
+    catch (e) { err.textContent = (e && e.message) || 'Не удалось сбросить'; go.disabled = input.value.trim() !== WORD; }
+  } });
+  input.addEventListener('input', () => { go.disabled = input.value.trim() !== WORD; });
+  dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Сбросить изменённые файлы?'), closeBtn()),
+    h('p', `Будут сброшены только помеченные файлы: ${files.join(', ')}. Всё, что в них было, пропадёт: ${effects.join('; ')}. Остальные настройки не меняются.`),
+    h('div.field', h('label', `Чтобы сбросить, напечатайте: ${WORD}`), input), err, h('div.foot', cancel, go)));
 }

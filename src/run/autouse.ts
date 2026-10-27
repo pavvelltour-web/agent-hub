@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync
 import { join, resolve } from 'node:path';
 import type { AgentId } from '../core/types.ts';
 import { isSecretPath, pathKey } from '../lib/paths.ts';
-import { fileState, hasTamper, recordTamper, sealFile } from './integrity.ts';
+import { fileState, hasTamper, recordTamper, sealThenRename } from './integrity.ts';
 import { git } from './git.ts';
 import { APPROVAL_TTL_MS, MAX_STARTS_PER_DAY, SAFETY_MARGIN_PCT, STARTABLE, eligibility, leftPct, validJob, type LimitAt, type QueuedJob, type Why } from './scheduler.ts';
 
@@ -90,8 +90,7 @@ export function saveAuto(home: string, st: AutoState, now = Date.now()): void {
   mkdirSync(home, { recursive: true });
   const file = join(home, FILE), tmp = `${file}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
   writeFileSync(tmp, JSON.stringify({ version: 1, projects: st.projects, items, starts: st.starts.filter((t) => now - t < 2 * DAY_MS).slice(-MAX_STARTS) }, null, 1), 'utf8');
-  renameSync(tmp, file);
-  sealFile(home, FILE);   // the hub just wrote it: remember what it looks like
+  sealThenRename(home, FILE, tmp);   // seal the new content first, then move it into place: the file in place is never an unsealed one for more than an instant
 }
 
 export const isEnabled = (st: AutoState, root: string): boolean => st.projects[projectKeyOf(root)]?.enabled === true;
@@ -154,7 +153,7 @@ export interface AutoDeps {
   /** Is this agent on a subscription (not a paid key)? See billingOk. */
   billing: (agent: AgentId, root?: string) => { ok: boolean; why?: string };
   /** A reason when the project folder's own settings could change billing or run commands for this agent, else null (see projectSettingsProblem). */
-  projectCheck?: (root: string, agent: AgentId) => string | null;
+  projectCheck?: (root: string, agent: AgentId, kind: QueuedJob['kind']) => string | null;
   /** The circuit breaker (7.5): a reason when starts are blocked for this folder, else null. */
   breaker: (root: string) => string | null;
   projectRoot: (projectId: number) => string | undefined;
@@ -166,6 +165,10 @@ export interface AutoDeps {
   /** The lock that makes one process the only scheduler over this home (autouse-lock.ts), and this process's pid. Absent: no lock (tests of one instance). */
   lock?: { hold: () => boolean };
   pid?: number;
+  /** Is a process alive? A started item whose owner is another LIVE process is never judged by this one. */
+  alive?: (pid: number) => boolean;
+  /** Ids of live runs that look like automatic ones (the run table: the scheduler's fixed prompts, not finished): so that a tampered state file cannot hide a live run from the loop. */
+  liveAutoRuns?: () => string[];
   runState: (runId: string) => { live: boolean; outcome: string | null };
 }
 export interface TickReport { started: { itemId: string; runId: string }[]; stopped: { itemId: string; why: string }[]; skipped: { itemId?: string; why: string; detail?: string }[]; expired: string[] }
@@ -174,6 +177,8 @@ const toJob = (i: AutoItem): QueuedJob => ({ id: i.id, kind: i.kind, projectId: 
 
 export class AutoScheduler {
   private d: AutoDeps;
+  /** Run ids this instance started (kept in memory, not in the file that may be forged). */
+  private mine = new Set<string>();
   constructor(deps: AutoDeps) { this.d = deps; }
 
   /** One pass: drop old approvals, look after the run that is live (stop it under the margin), and start at most ONE approved item if everything allows it. */
@@ -181,7 +186,14 @@ export class AutoScheduler {
     const d = this.d, now = d.now(), rep: TickReport = { started: [], stopped: [], skipped: [], expired: [] };
     if (d.lock && !d.lock.hold()) { rep.skipped.push({ why: 'not-owner' }); return rep; }   // another process is the scheduler: this one neither starts nor judges its runs
     const st = loadAuto(d.home);
-    if (hasTamper(d.home, FILE)) { rep.skipped.push({ why: 'tamper' }); return rep; }
+    if (hasTamper(d.home, FILE)) {
+      // the state file cannot be trusted, but a run it started can still be live: stop it (the normal stop path), do not leave it unwatched
+      for (const id of new Set([...this.mine, ...(d.liveAutoRuns?.() ?? [])])) {
+        let live = false; try { live = d.runState(id).live; } catch { live = false; }
+        if (live) { try { d.stop(id); } catch { /* gone */ } rep.stopped.push({ itemId: id, why: 'файл настроек изменён не hub: запуск остановлен' }); }
+      }
+      this.mine.clear(); rep.skipped.push({ why: 'tamper' }); return rep;
+    }
     let dirty = false;
     for (const i of st.items) if (i.status === 'approved' && now - i.approvedAt > APPROVAL_TTL_MS) { i.status = 'expired'; i.endedAt = now; rep.expired.push(i.id); dirty = true; }
 
@@ -189,6 +201,7 @@ export class AutoScheduler {
     try { limits = d.limits() ?? {}; } catch { limits = {}; }   // an unreadable limit is an unknown limit
     for (const i of st.items.filter((x) => x.status === 'started' && x.runId)) {
       const rs = d.runState(i.runId as string);
+      if (!rs.live && i.ownerPid !== undefined && d.pid !== undefined && i.ownerPid !== d.pid && d.alive?.(i.ownerPid)) continue;   // a run of another LIVE process: never marked finished here
       dirty = true;
       if (!rs.live) { i.status = 'finished'; i.endedAt = now; i.outcome = rs.outcome ?? 'unknown'; continue; }
       const left = leftPct(limits[i.agent], now);
@@ -216,7 +229,7 @@ export class AutoScheduler {
       }
       const e = eligibility(toJob(it), { limits, queue: [], now });
       if (!e.ok) { rep.skipped.push({ itemId: it.id, why: (e as { why: Why }).why }); continue; }
-      const pc = d.projectCheck?.(root, it.agent);
+      const pc = d.projectCheck?.(root, it.agent, it.kind);
       if (pc) { rep.skipped.push({ itemId: it.id, why: 'project-settings', detail: pc }); continue; }
       const b = d.billing(it.agent, root);
       if (!b.ok) { rep.skipped.push({ itemId: it.id, why: 'billing', ...(b.why ? { detail: b.why } : {}) }); continue; }
@@ -227,6 +240,7 @@ export class AutoScheduler {
       try {
         const r = d.start(toJob(it), root);
         if (d.pid !== undefined) it.ownerPid = d.pid;
+        this.mine.add(r.runId);
         it.status = 'started'; it.runId = r.runId; it.startedAt = now; st.starts.push(now);
         rep.started.push({ itemId: it.id, runId: r.runId });
       } catch (err) { it.status = 'failed-to-start'; it.endedAt = now; it.note = clip(oneLine((err as Error).message), 200); rep.skipped.push({ itemId: it.id, why: 'start-failed', detail: it.note }); }

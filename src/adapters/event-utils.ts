@@ -106,9 +106,9 @@ export function sanitizeEvent(raw: HubEvent): HubEvent {
   }
 }
 
-/** Window length of a Claude `rate_limit_event` (`rateLimitType`). NOT verified live (the CLI here is not signed in): an unknown or missing type gives no length, and a reading with no length is never used as weekly. */
+/** Window length of a Claude `rate_limit_event` (`rateLimitType`). NOT verified live (the CLI here is not signed in): an unknown or missing type, and every sub-limit type, gives no length, and a reading with no length is never used as weekly. */
 export function claudeWindowMinutes(type: unknown): number | undefined {
   if (type === 'five_hour') return 300;
-  if (typeof type === 'string' && /^seven_day(_[a-z]+)?$/.test(type)) return 10080;
+  if (type === 'seven_day') return 10080;   // exactly the overall week: `seven_day_opus` and the like are SUB-limits and must never stand in for it
   return undefined;
 }

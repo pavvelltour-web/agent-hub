@@ -1,6 +1,8 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,7 +12,9 @@ process.env['USERPROFILE'] = base; process.env['HOME'] = base; process.env['AGEN
 mkdirSync(process.env['AGENT_HUB_HOME'], { recursive: true });
 const HOME = process.env['AGENT_HUB_HOME'] as string;
 const { AutoScheduler, loadAuto, loadAutoRaw, saveAuto, setEnabled, approveItem } = await import('./autouse.ts');
-const { tamperList, resetTamper } = await import('./integrity.ts');
+const { tamperList, resetTamper, seal, fileState, sealFile, hashFile } = await import('./integrity.ts');
+const { spawnSync } = await import('node:child_process');
+const { renameSync } = await import('node:fs');
 const { userCapsRaw, ackTrip, loadAcks, makeGuard, effectiveCaps } = await import('./breaker.ts');
 const { saveUserConfig, loadUserConfig } = await import('../core/registry.ts');
 const { sealGuardrailsConfig } = await import('./integrity.ts');
@@ -99,4 +103,81 @@ test('acknowledgements edited behind the hub\'s back are ignored; the hub\'s own
   assert.deepEqual(loadAcks(home), {}, 'forged acknowledgements clear nothing');
   assert.ok(tamperList([home]).some((x) => x.file === 'guardrails.json'));
   void makeGuard; void existsSync;
+});
+
+// ---------- second review round ----------
+
+test('S1: a tampered state file does not hide a live run: the loop stops it through the normal stop path (from its own memory and from the run table)', () => {
+  const { home, root } = fresh();
+  setEnabled(home, root, true, NOW); approveItem(home, job, root, NOW);
+  const started: unknown[] = [], stopped: string[] = [], live = new Set<string>(['rtable9']);
+  const d = { ...deps(home, root, started), stop: (id: string) => { stopped.push(id); }, runState: (id: string) => ({ live: id === 'rauto1' || live.has(id), outcome: null }), liveAutoRuns: () => ['rtable9'] };
+  const s = new AutoScheduler(d);
+  s.tick();
+  assert.equal(started.length, 1);
+  const doc = JSON.parse(readFileSync(join(home, 'autouse.json'), 'utf8')); doc.items[0].note = 'edited';
+  writeFileSync(join(home, 'autouse.json'), JSON.stringify(doc));          // not through the hub
+  const rep = s.tick();
+  assert.deepEqual(stopped.sort(), ['rauto1', 'rtable9']);
+  assert.ok(rep.skipped.some((x) => x.why === 'tamper')); assert.equal(rep.stopped.length, 2);
+  stopped.length = 0; s.tick();
+  assert.deepEqual(stopped, ['rtable9'], 'the run table still shows one that is live: it keeps being stopped, and nothing is started');
+  assert.equal(started.length, 1);
+});
+
+test('S1: three processes sealing different keys of one folder at once lose no seal (the seal file is written under a lock)', () => {
+  const dir = mkdtempSync(join(base, 'seal-')), worker = join(dirname(fileURLToPath(import.meta.url)), 'integrity-worker.mjs');
+  const procs = ['a', 'b', 'c'].map((p) => import('node:child_process').then((m) => new Promise<number | null>((res) => { const c = m.spawn(process.execPath, ['--disable-warning=ExperimentalWarning', worker, dir, p, '70'], { stdio: 'ignore' }); c.on('exit', res); })));
+  return Promise.all(procs).then((codes) => {
+    assert.deepEqual(codes, [0, 0, 0]);
+    const seals = JSON.parse(readFileSync(join(dir, 'integrity.json'), 'utf8')).seals as Record<string, string>;
+    assert.equal(Object.keys(seals).length, 210, 'every one of the 210 seals is there');
+    for (const p of ['a', 'b', 'c']) for (let i = 0; i < 70; i++) assert.equal(seals[`${p}${i}`], `hash-${p}${i}`);
+    assert.equal(existsSync(join(dir, 'integrity.json.lock')), false, 'the lock file is gone');
+    void spawnSync;
+  });
+});
+
+test('S1: a reader that catches the short gap between sealing and renaming does not flag tamper: it retries first', () => {
+  const dir = mkdtempSync(join(base, 'gap-'));
+  writeFileSync(join(dir, 'x.json'), 'old'); sealFile(dir, 'x.json');
+  writeFileSync(join(dir, 'x.json.tmp'), 'new');
+  seal(dir, 'x.json', hashFile(join(dir, 'x.json.tmp')));                  // sealed first ...
+  let slept = 0;
+  const state = fileState(dir, 'x.json', { sleep: () => { slept++; renameSync(join(dir, 'x.json.tmp'), join(dir, 'x.json')); } });   // ... the rename happens while the reader waits
+  assert.equal(state, 'ok'); assert.equal(slept, 1);
+  writeFileSync(join(dir, 'x.json'), 'forged');
+  assert.equal(fileState(dir, 'x.json', { sleep: () => {} }), 'changed', 'a real change still shows after the retries');
+});
+
+test('N1: once the hub sealed a guardrails config, a MISSING value is tamper (it would silently loosen the caps)', () => {
+  const cfg = loadUserConfig();
+  saveUserConfig({ ...cfg, guardrails: { runWeighted: 10 } }); sealGuardrailsConfig(HOME);
+  assert.deepEqual(userCapsRaw(), { runWeighted: 10 });
+  const { guardrails: _g, ...rest } = loadUserConfig(); saveUserConfig(rest);                // deleted behind the hub's back
+  assert.equal(userCapsRaw(), undefined);
+  assert.ok(tamperList([HOME]).some((x) => x.file === 'config.json guardrails'), 'the deletion is reported');
+  resetTamper([HOME], HOME);
+  assert.deepEqual(tamperList([HOME]), []); assert.equal(userCapsRaw(), undefined);
+});
+
+test('S5: a reset touches only the files that were flagged: flagged autouse leaves the caps and the acknowledgements alone, and vice versa', () => {
+  const { home, root } = fresh();
+  saveUserConfig({ ...loadUserConfig(), guardrails: { runWeighted: 10 } }); sealGuardrailsConfig(HOME);
+  assert.equal(ackTrip(home, 'same-failure:7', NOW), true);
+  setEnabled(home, root, true, NOW);
+  writeFileSync(join(home, 'autouse.json'), JSON.stringify({ version: 1, projects: {}, items: [], starts: [] }));
+  loadAuto(home);
+  assert.deepEqual(tamperList([home]).map((t) => t.file), ['autouse.json']);
+  resetTamper([home], HOME);
+  assert.deepEqual(userCapsRaw(), { runWeighted: 10 }, 'the tightened caps of the user survive');
+  assert.deepEqual(loadAcks(home), { 'same-failure:7': NOW }, 'and so do the acknowledgements');
+  assert.deepEqual(loadAuto(home).projects, {});
+  // now the other way: the caps flagged, autouse left alone
+  setEnabled(home, root, true, NOW);
+  saveUserConfig({ ...loadUserConfig(), guardrails: { runWeighted: 70 } });
+  assert.equal(userCapsRaw(), undefined);
+  resetTamper([home], HOME);
+  assert.equal(Object.keys(loadAuto(home).projects).length, 1, 'the switch the user set stays');
+  assert.equal(loadUserConfig().guardrails, undefined);
 });

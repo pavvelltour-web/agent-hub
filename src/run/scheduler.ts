@@ -1,7 +1,9 @@
+import { spawnSync } from 'node:child_process';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentId } from '../core/types.ts';
 import { MODEL_ID } from '../econ/router.ts';
+import { agentConfigGuard } from './git.ts';
 import type { StartReq } from './runner.ts';
 
 /**
@@ -117,27 +119,59 @@ export function billingOk(agent: AgentId, auth: { loggedIn: boolean | null; how:
  * NOT verified live: the CLI here is not signed in), and on top of that a folder whose settings carry any of these is refused, with the reason. null = nothing found.
  * Codex's project config (`.codex/`) is NOT checked here.
  */
-export function projectSettingsProblem(root: string): string | null {
+export function projectSettingsProblem(root: string, o: { source?: 'files' | 'head'; home?: string } = {}): string | null {
+  const head = o.source === 'head';
+  const gitShow = (path: string): { text?: string; missing?: boolean } => {
+    let guard: string[] = ['-c', 'core.fsmonitor=false'];
+    if (o.home) { try { guard = agentConfigGuard(root, o.home); } catch { /* keep the minimal guard */ } }   // the repository's own config must not run a program while the hub reads it
+    const r = spawnSync('git', [...guard, 'show', `HEAD:${path}`], { cwd: root, encoding: 'utf8', timeout: 15_000, windowsHide: true, maxBuffer: 400_000 });
+    if (r.error || r.status === null) return { missing: true };
+    return r.status === 0 ? { text: r.stdout } : { missing: true };
+  };
+  // a project .mcp.json adds MCP servers, which are commands
+  if (head ? gitShow('.mcp.json').text !== undefined : exists(join(root, '.mcp.json'))) return '.mcp.json в проекте подключает MCP-серверы (это команды)';
   for (const name of ['settings.json', 'settings.local.json']) {
-    const file = join(root, '.claude', name);
-    let st;
-    try { st = lstatSync(file); } catch { continue; }   // no such file: nothing to worry about
+    const label = `.claude/${name}${head ? ' (в последнем коммите)' : ''}`;
+    let text: string | undefined;
+    if (head) { const g = gitShow(`.claude/${name}`); if (g.text === undefined) continue; text = g.text; if (text.length > 200_000) return `${label}: не удалось прочитать, поэтому неизвестно, что в нём`; }
+    else {
+      const file = join(root, '.claude', name);
+      let st;
+      try { st = lstatSync(file); } catch { continue; }   // no such file: nothing to worry about
+      try { if (!st.isFile() || st.isSymbolicLink() || st.size > 200_000) throw new Error('not a small regular file'); text = readFileSync(file, 'utf8'); } catch { return `${label}: не удалось прочитать, поэтому неизвестно, что в нём`; }
+    }
     let j: unknown;
-    try { if (!st.isFile() || st.isSymbolicLink() || st.size > 200_000) throw new Error('not a small regular file'); j = JSON.parse(readFileSync(file, 'utf8')); } catch { return `.claude/${name}: не удалось прочитать, поэтому неизвестно, что в нём`; }
-    const o = j && typeof j === 'object' && !Array.isArray(j) ? (j as Record<string, unknown>) : {};
-    const filled = (v: unknown): boolean => (Array.isArray(v) ? v.length > 0 : !!v && typeof v === 'object' ? Object.keys(v).length > 0 : v !== undefined && v !== null && v !== '');
-    if (filled(o['env'])) return `.claude/${name} задаёт env (там могут быть ключ API или адрес сервера)`;
-    if (filled(o['apiKeyHelper'])) return `.claude/${name} задаёт apiKeyHelper (он меняет способ оплаты)`;
-    if (filled(o['hooks'])) return `.claude/${name} содержит hooks (команды запустились бы без присмотра)`;
-    const perm = o['permissions'] && typeof o['permissions'] === 'object' ? (o['permissions'] as Record<string, unknown>) : {};
-    if (filled(perm['allow'])) return `.claude/${name} разрешает команды заранее (permissions.allow)`;
+    try { j = JSON.parse(text as string); } catch { return `${label}: не удалось прочитать, поэтому неизвестно, что в нём`; }
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return `${label}: не удалось прочитать (не объект)`;
+    const obj = j as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      if (!SAFE_SETTINGS_KEYS.has(key)) return `${label} задаёт «${shown(key)}»: этого ключа нет в списке безопасных, он мог бы менять оплату или запускать команды`;
+    }
+    if ('permissions' in obj) {
+      const p = obj['permissions'];
+      if (!p || typeof p !== 'object' || Array.isArray(p)) return `${label}: permissions не в ожидаемом виде`;
+      for (const [k, v] of Object.entries(p as Record<string, unknown>)) {
+        if ((k !== 'deny' && k !== 'ask') || !Array.isArray(v) || !v.every((x) => typeof x === 'string')) return `${label} задаёт permissions.${shown(k)}: разрешены только списки deny и ask из строк`;
+      }
+    }
   }
   return null;
 }
+const exists = (p: string): boolean => { try { lstatSync(p); return true; } catch { return false; } };
+/** A key name for a message: no control or bidi characters, at most 40 characters. */
+const INVISIBLE = new RegExp('[' + [[0, 0x1f], [0x7f, 0x9f], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x206f], [0xfeff, 0xfeff]].map(([a, b]) => String.fromCharCode(a as number) + '-' + String.fromCharCode(b as number)).join('') + ']', 'g');
+const shown = (k: string): string => k.replace(INVISIBLE, '?').slice(0, 40);
+/**
+ * The top-level keys of a project's Claude settings that cannot change billing, start a command or widen what the agent may do (kept minimal on purpose: an unknown key, including
+ * one a later Claude version adds, is refused). `permissions` is accepted only with `deny` / `ask` lists.
+ */
+export const SAFE_SETTINGS_KEYS: ReadonlySet<string> = new Set(['$schema', 'model', 'outputStyle', 'cleanupPeriodDays', 'includeCoAuthoredBy', 'spinnerTipsEnabled', 'permissions']);
 
 // ---------- what a job asks the RunManager for ----------
 const REVIEW_PROMPT = 'Read-only review of the EXISTING code of this project (not a diff). Look for bugs that are already there: logic errors, unhandled error paths, unsafe handling of input, races, resource leaks. Start with the riskiest modules and go deep rather than wide. Do not edit, create or delete any file and do not run a command that changes files. Answer as: FINDINGS: file:line — issue (most serious first, at most 20 lines), then SUMMARY: two sentences.';
 const TESTS_PROMPT = 'Find the source files changed in the last 7 days (git log --since=7.days --name-only). For those that have no tests, add tests only: new test files or additions to existing test files. Do not change any non-test code. Use the test command the project already has and run it; if the project has no test setup, stop and say so. Keep each test small and about one behaviour.';
+/** The first characters of the scheduler's fixed prompts: how an automatic run is recognised in the run table. */
+export const AUTO_PROMPT_MARKS: string[] = [REVIEW_PROMPT.slice(0, 60), TESTS_PROMPT.slice(0, 60)];
 const safeId = (s: string): string => (/^[A-Za-z0-9]{1,24}$/.test(s) ? s : 'x');
 
 /**

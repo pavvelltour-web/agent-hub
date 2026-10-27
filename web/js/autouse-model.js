@@ -15,7 +15,9 @@ const plain = (s, n) => (typeof s === 'string' ? s.slice(0, n).replace(INVISIBLE
 export function autoModel(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const r = obj(raw), s = obj(r.settings);
+  const sc = obj(r.scheduler);
   return {
+    scheduler: { state: ['own', 'free', 'other'].includes(sc.state) ? sc.state : 'free', silent: sc.silent === true },
     settings: { minLeftPct: fin(s.minLeftPct) ? s.minLeftPct : 20, marginPct: fin(s.marginPct) ? s.marginPct : 10, maxHours: fin(s.maxHoursToReset) ? s.maxHoursToReset : 24, approvalHours: fin(s.approvalHours) ? s.approvalHours : 48, loop: plain(s.loop, 80) },
     projects: (Array.isArray(r.projects) ? r.projects : []).slice(0, 30).map((p) => {
       const x = obj(p);

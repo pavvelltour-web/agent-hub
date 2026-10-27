@@ -44,7 +44,7 @@ export function autoBlock(projectId) {
     if (!p) { box.replaceChildren(h('p.muted', 'Не удалось загрузить настройку.')); return; }
     const off = h('div.stack.au-gap', h('p', 'Выключено. Когда лимит агента скоро сбросится, а часть ещё не потрачена, hub может предложить занять её полезной работой. Ничего не запускается без вашего «да».'),
       h('div.row-flex', btn('Включить…', { kind: 'glass', icon: 'check', onclick: () => enableDialog(p, m.settings, draw) })));
-    const on = h('div.stack.au-gap', h('div.row-flex', chip('включено', 'ok'), h('span.t-meta', `Предложения при сбросе лимита меньше чем через ${m.settings.maxHours} ч и свободных ${m.settings.minLeftPct} % и больше. Запас ${m.settings.marginPct} %.`)),
+    const on = h('div.stack.au-gap', m.scheduler.state === 'other' ? h('div.alert.warn', { role: 'status' }, h('div.stack', h('b', 'Другой процесс hub держит планировщик'), h('span', m.scheduler.silent ? 'Он давно не отзывался, но жив: автозапуск здесь не работает, пока он не закроется. Если он завис, закройте его.' : 'Автозапуск идёт там. Здесь он ничего не запускает и не останавливает.'))) : null, h('div.row-flex', chip('включено', 'ok'), h('span.t-meta', `Предложения при сбросе лимита меньше чем через ${m.settings.maxHours} ч и свободных ${m.settings.minLeftPct} % и больше. Запас ${m.settings.marginPct} %.`)),
       p.suggestions.length ? h('div.au-offers', p.suggestions.map((s) => offerRow(p, s, draw))) : h('p.muted', 'Сейчас предложить нечего.'),
       p.blocked.length ? h('ul.au-list', p.blocked.map((b) => h('li', `${agentText(b.agent)}: ${b.why}`))) : null,
       p.items.length ? h('div.stack.au-gap', h('b.t-label', 'Одобрено вами'), p.items.map((i) => queueRow(i, draw))) : null,

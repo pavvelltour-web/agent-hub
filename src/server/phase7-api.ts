@@ -9,7 +9,9 @@ import { calibrate, estimate, profileFromHistory } from '../econ/econ.ts';
 import { projectForecast } from '../econ/forecast-data.ts';
 import { limitSnapshots } from '../econ/limits.ts';
 import { MODEL_ID } from '../econ/router.ts';
-import { tamperList, resetTamper } from '../run/integrity.ts';
+import { hasTamper, tamperList, resetTamper } from '../run/integrity.ts';
+import { liveAutoRunIds, realLock } from '../run/autouse-wire.ts';
+import { lockStatus } from '../run/autouse-lock.ts';
 import { guardrails, reviewWindow } from '../review/guardrails.ts';
 import { readProjectCaps, CAP_RANGE, DEFAULT_CAPS, NUM_KEYS, DAY_MS, ackTrip, auditGuard, capsProblem, effectiveCaps, evaluate, loadAcks, readFacts, sanitizeCaps, userCapsRaw } from '../run/breaker.ts';
 import { approveItem, cancelItem, repoIdOf, confirmWordFor, isEnabled, loadAuto, newItemId, projectKeyOf, setEnabled, type AutoItem } from '../run/autouse.ts';
@@ -52,9 +54,10 @@ function projectAuto(c: Ctx, p: { id: number; root: string; slug: string }, st: 
   const blocked: { agent: AgentId; why: string }[] = [];
   if (enabled) {
     for (const agent of ['claude', 'codex'] as AgentId[]) {
-      const bill = billingOk(agent, info[agent].installed ? (c.auth ?? ((id, i) => authStatusIn(id, i, p.root)))(agent, info[agent]) : undefined, agentEnv(process.env));
-      const settings = bill.ok && agent === 'claude' ? projectSettingsProblem(p.root) : null;   // the folder's own Claude settings can change billing or run commands
+      // the folder's own Claude settings are checked FIRST (both for a run in the folder and for a worktree cut from HEAD): nothing is spawned for a folder that could change billing or run commands
+      const settings = agent === 'claude' ? projectSettingsProblem(p.root, { home: c.runs.home }) ?? projectSettingsProblem(p.root, { source: 'head', home: c.runs.home }) : null;
       if (settings) { blocked.push({ agent, why: settings }); continue; }
+      const bill = billingOk(agent, info[agent].installed ? (c.auth ?? ((id, i) => authStatusIn(id, i, p.root, undefined, agentEnv(process.env))))(agent, info[agent]) : undefined, agentEnv(process.env));
       if (!bill.ok) { blocked.push({ agent, why: bill.why ?? 'подписка не подтверждена' }); continue; }
       const pct = jobPct(c, agent);
       if (pct == null) { blocked.push({ agent, why: REASON_RU.estimate }); continue; }
@@ -94,7 +97,8 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     const rows = c.db.prepare('SELECT id, root, slug FROM project ORDER BY id').all() as unknown as { id: number; root: string; slug: string }[];
     const mine = rows.filter((p) => (one != null ? p.id === one : isEnabled(st, p.root))).slice(0, 30);
     if (one != null && !mine.length) return bad(404, 'project not found');
-    return ok({ now, settings: { minLeftPct: MIN_LEFT_PCT, marginPct: SAFETY_MARGIN_PCT, maxHoursToReset: MAX_HOURS_TO_RESET, approvalHours: APPROVAL_TTL_MS / 3600_000, maxStartsPerDay: MAX_STARTS_PER_DAY, loop: 'только пока открыта панель hub' },
+    const ls = lockStatus(realLock(c.runs.home));   // who is the scheduler of this home: this process, another one, or nobody yet
+    return ok({ now, scheduler: { state: ls.state, silent: ls.silent }, settings: { minLeftPct: MIN_LEFT_PCT, marginPct: SAFETY_MARGIN_PCT, maxHoursToReset: MAX_HOURS_TO_RESET, approvalHours: APPROVAL_TTL_MS / 3600_000, maxStartsPerDay: MAX_STARTS_PER_DAY, loop: 'только пока открыта панель hub' },
       projects: mine.map((p) => projectAuto(c, p, st, now)) });
   }],
   ['POST', /^\/api\/autouse\/enable$/, (c, { body, meta }) => {
@@ -108,6 +112,8 @@ export const phase7Routes: [string, RegExp, Handler][] = [
       if (!existsSync(root)) return bad(400, 'project folder is missing on disk');
     }
     try { setEnabled(c.runs.home, root, body['enabled'], Date.now(), { stop: (rid) => void c.runs.stop(rid), repoId: repoIdOf(root) }); } catch (e) { return bad(400, (e as Error).message); }
+    // Switching off also stops the live automatic runs of this project that the RUN TABLE shows, whatever the state file says (it may be flagged as tampered and read as empty)
+    if (!body['enabled']) for (const rid of liveAutoRunIds(c.db, id)) c.runs.stop(rid);
     audit(c, { action: body['enabled'] ? 'autouse-enable' : 'autouse-disable', root });
     return ok({ enabled: body['enabled'] });
   }],
@@ -135,7 +141,10 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     if (!meta?.userAction) return needClick;
     const id = typeof body['id'] === 'string' && /^au[0-9a-f]{8}$/.test(body['id']) ? body['id'] : undefined;
     if (!id) return bad(400, 'bad id');
-    return cancelItem(c.runs.home, id, Date.now(), (rid) => void c.runs.stop(rid)) ? ok({ cancelled: true }) : bad(404, 'nothing to cancel');
+    if (cancelItem(c.runs.home, id, Date.now(), (rid) => void c.runs.stop(rid))) return ok({ cancelled: true });
+    // the state file is flagged and read as empty: the item cannot be found, but a live automatic run must still be stoppable
+    if (hasTamper(c.runs.home, 'autouse.json')) { const live = liveAutoRunIds(c.db); for (const rid of live) c.runs.stop(rid); if (live.length) return ok({ cancelled: true, stopped: live.length }); }
+    return bad(404, 'nothing to cancel');
   }],
   // ---- 7.5 (ADR-026): guardrails, the circuit breaker. Reading is open to the panel; every change needs `meta.userAction`, like 7.4. A project's hub.json is never consulted here.
   ['GET', /^\/api\/guardrails$/, (c) => {
@@ -158,7 +167,9 @@ export const phase7Routes: [string, RegExp, Handler][] = [
   }],
   ['POST', /^\/api\/guardrails$/, (c, { body, meta }) => {
     if (!meta?.userAction) return needClick;
-    const cfg = loadUserConfig(), cur = (cfg.guardrails ?? {}) as Record<string, unknown>;
+    // start from what the hub TRUSTS (its own sealed value, or nothing): a config an agent forged is discarded, never copied into a sealed one
+    const cfg = loadUserConfig(), trusted = userCapsRaw(), cur = (trusted ?? {}) as Record<string, unknown>;
+    const discarded = cfg.guardrails !== undefined && trusted === undefined;
     const next: Record<string, unknown> = { ...sanitizeCaps(cur), ...(cur['enabled'] === false ? { enabled: false } : {}) };
     let did = '';
     if (body['reset'] === true) { for (const k of Object.keys(next)) delete next[k]; did = 'reset'; }
@@ -176,8 +187,8 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     if (!did) return bad(400, 'nothing to change: send caps, enabled or reset');
     saveUserConfig({ ...cfg, guardrails: next });
     sealGuardrailsConfig(HUB_HOME);   // what the route saved is what the hub will trust (integrity.ts)
-    auditGuard(c.runs.home, { action: `guardrails-${did}`, ...(body['caps'] !== undefined ? { caps: body['caps'] } : {}) });
-    return ok({ ok: true });
+    auditGuard(c.runs.home, { action: `guardrails-${did}`, ...(body['caps'] !== undefined ? { caps: body['caps'] } : {}), ...(discarded ? { discardedForgedConfig: true } : {}) });
+    return ok({ ok: true, ...(discarded ? { discarded: true } : {}) });
   }],
   ['POST', /^\/api\/guardrails\/ack$/, (c, { body, meta }) => {
     if (!meta?.userAction) return needClick;
@@ -187,10 +198,14 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     return ok({ ok: true });
   }],
   // The user looked at a settings file the hub did not write: drop what it held (switches OFF, caps back to the defaults, no acknowledgement stands). Needs the same panel request as every switch.
-  ['POST', /^\/api\/integrity\/reset$/, (c, { meta }) => {
+  ['POST', /^\/api\/integrity\/reset$/, (c, { body, meta }) => {
     if (!meta?.userAction) return needClick;
+    // the typed word, like switching the protection off; and only the files that were FLAGGED are reset (a reset of one never undoes the other)
+    if (typeof body['confirm'] !== 'string' || body['confirm'].normalize('NFC').trim() !== 'СБРОС') return bad(400, 'type СБРОС to confirm');
+    const flagged = tamperList([c.runs.home, HUB_HOME]);
+    if (!flagged.length) return bad(400, 'nothing is flagged: nothing to reset');
     resetTamper([c.runs.home], HUB_HOME);
-    auditGuard(c.runs.home, { action: 'integrity-reset' });
+    auditGuard(c.runs.home, { action: 'integrity-reset', files: flagged.map((t) => t.file) });
     return ok({ ok: true });
   }],
 ];

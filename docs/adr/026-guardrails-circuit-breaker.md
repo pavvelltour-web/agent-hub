@@ -27,3 +27,12 @@ Known limits (accepted, labelled): the default numbers are unmeasured; a run is 
 ### What an unattended agent can reach
 
 Same statement as in ADR-025: an agent running as the user can write the hub's own files. Sealing `config.json`'s `guardrails` and the acknowledgements makes a naive change visible and keeps the protection ON, but an agent that rewrites `integrity.json` as well is not stopped. The breaker is a seat belt for runaway cost and loops, not a sandbox.
+
+## Second review round
+
+- **Only a runaway RUN is a failure (S2).** A stop for the per-run cap ends as `guard` (a failure for routing and the forecast). A stop for a SHARED limit (the day cap, a continuation chain) ends as `guard-stop`: it scores nothing, is left out of the routing statistics and the failure streak and `repeated-stops`, so a day cap that stops three runs does not leave a project blocked after the day clears. Guard-stopped runs (both outcomes) stay out of the token profiles, are in the shared cases (numbers only), are named in the panel, and cannot be rated.
+- **The caps route starts from the trusted value (B2).** `POST /api/guardrails` builds the new config from what the hub trusts (its own sealed value, or nothing). A `guardrails` block an agent forged is discarded, never copied into a sealed config, and the response says `discarded: true`.
+- **A reset touches only what was flagged and needs a typed word (S5).** `POST /api/integrity/reset` needs `СБРОС` on top of the panel request, refuses when nothing is flagged, resets only the flagged files (a flagged `autouse.json` leaves the caps and the acknowledgements alone and the other way round) and writes the file names to the audit log. The panel dialog has Cancel focused and shows the server's answer.
+- **A missing value is tamper (N1).** Once the hub has sealed a `guardrails` config, deleting it is reported (it would silently loosen tightened caps to the defaults).
+- **Ceiling.** Done in the first round: 3 times the default.
+- **Upgrade (N3).** A `guardrails` block in `config.json` or an acknowledgements file written before the seals existed is read as changed: the defaults apply and the panel asks the user to reset and set the caps again.
