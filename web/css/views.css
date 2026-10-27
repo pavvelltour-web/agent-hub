@@ -235,3 +235,7 @@ details > summary { cursor: pointer; }
 .sd-foot { align-items: center; flex-wrap: wrap; position: sticky; bottom: 0; background: var(--hub-surface); padding-top: var(--hub-space-3); }
 .alert .stack span { white-space: pre-wrap; }
 .sd .btn { white-space: normal; text-align: left; max-width: 100%; height: auto; padding-top: 8px; padding-bottom: 8px; }
+/* a mode that cannot start here: one wrapping sentence, and the fix as its own monospace line with a 44 px copy button */
+.mode-warn { margin: 0; padding: 8px 12px; border-radius: var(--hub-radius-control); background: var(--hub-warning-bg); color: var(--hub-warning-ink); font: var(--hub-type-meta); overflow-wrap: anywhere; }
+.cmd-line { display: flex; align-items: center; gap: var(--hub-space-3); flex-wrap: wrap; min-width: 0; }
+.cmd-line code { flex: 1 1 220px; min-width: 0; padding: 8px 12px; border-radius: var(--hub-radius-control); background: var(--hub-plate); border: 1px solid var(--hub-line); color: var(--hub-ink); font-size: 12px; overflow-wrap: anywhere; user-select: all; }

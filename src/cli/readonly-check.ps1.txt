@@ -1,0 +1,97 @@
+# Allowlist checker for scripts/install.ps1 (used by src/cli/start.test.ts, run with powershell.exe; not shipped).
+# Parses each file with the PowerShell parser and reports anything that is not a plain read-only check. Output: one line per file, "<path><TAB>OK" or "<path><TAB>REJECT: reasons".
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Paths)
+Set-StrictMode -Version Latest
+$L = 'System.Management.Automation.Language'
+$allowedCmd = @('Set-StrictMode', 'Split-Path', 'Get-Command', 'Select-Object', 'Write-Host')
+$allowedMember = @('Trim')
+$allowedProp = @('Source', 'Major', 'Minor')
+$allowedType = @('version', 'char', 'char[]', 'string')
+$tools = @('node', 'git', 'claude', 'codex')
+
+foreach ($path in $Paths) {
+  $tokens = $null; $errs = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errs)
+  $bad = New-Object System.Collections.Generic.List[string]
+  if ($errs.Count -gt 0) { $bad.Add('parse error: ' + $errs[0].Message) }
+  $all = @($ast.FindAll({ param($n) $true }, $true))
+  $own = @($all | Where-Object { $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] } | ForEach-Object { $_.Name })
+
+  # loop variables that iterate only over literal tool names
+  $loopOk = @()
+  foreach ($f in @($all | Where-Object { $_ -is [System.Management.Automation.Language.ForEachStatementAst] })) {
+    $lits = @($f.Condition.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+    $other = @($f.Condition.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -or $n -is [System.Management.Automation.Language.VariableExpressionAst] -or $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true))
+    if ($other.Count -eq 0 -and $lits.Count -gt 0 -and @($lits | Where-Object { $tools -notcontains $_ }).Count -eq 0) { $loopOk += $f.Variable.VariablePath.UserPath }
+  }
+  # a tool name handed to Get-Command or to a helper that wraps it: a literal tool name, or such a loop variable
+  $argOk = {
+    param($e)
+    if ($e -is [System.Management.Automation.Language.StringConstantExpressionAst]) { return ($tools -contains $e.Value) }
+    if ($e -is [System.Management.Automation.Language.VariableExpressionAst]) { return ($loopOk -contains $e.VariablePath.UserPath) }
+    return $false
+  }
+  $wrappers = @()
+  foreach ($fn in @($all | Where-Object { $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] })) {
+    $cmds = @($fn.Body.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })
+    if ($cmds -contains 'Get-Command') { $wrappers += $fn.Name }
+  }
+  # variables that may be called with & : every assignment to them is a wrapper call or Get-Command with a tool name
+  $callable = @()
+  $assigned = @($all | Where-Object { $_ -is [System.Management.Automation.Language.AssignmentStatementAst] -and $_.Left -is [System.Management.Automation.Language.VariableExpressionAst] })
+  foreach ($name in @($assigned | ForEach-Object { $_.Left.VariablePath.UserPath } | Select-Object -Unique)) {
+    $okAll = $true
+    foreach ($a in @($assigned | Where-Object { $_.Left.VariablePath.UserPath -eq $name })) {
+      $c = $a.Right.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | Select-Object -First 1
+      $isCall = $c -and (($wrappers -contains $c.GetCommandName()) -or $c.GetCommandName() -eq 'Get-Command')
+      $arg = $null; if ($c) { $arg = @($c.CommandElements | Select-Object -Skip 1) }
+      if (-not $isCall -or $arg.Count -lt 1 -or -not (& $argOk $arg[0])) { $okAll = $false }
+    }
+    if ($okAll) { $callable += $name }
+  }
+
+  foreach ($n in $all) {
+    if ($n -is [System.Management.Automation.Language.CommandAst]) {
+      $op = $n.InvocationOperator.ToString()
+      $nm = $n.GetCommandName()
+      $first = $n.CommandElements[0]
+      if ($op -eq 'Dot') { $bad.Add('dot-sourcing') }
+      elseif ($op -eq 'Ampersand') {
+        if (-not ($first -is [System.Management.Automation.Language.VariableExpressionAst] -and $callable -contains $first.VariablePath.UserPath)) { $bad.Add('call operator on something that is not a Get-Command result: ' + $first.Extent.Text) }
+      }
+      elseif (-not $nm) { $bad.Add('dynamic command: ' + $first.Extent.Text) }
+      elseif (($allowedCmd + $own) -notcontains $nm) { $bad.Add('command not allowed: ' + $nm) }
+      else {
+        if ($nm -eq 'Get-Command' -or $wrappers -contains $nm) {
+          $isDef = $false
+          foreach ($fn in @($all | Where-Object { $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wrappers -contains $_.Name })) { if ($n.Extent.StartOffset -ge $fn.Extent.StartOffset -and $n.Extent.EndOffset -le $fn.Extent.EndOffset) { $isDef = $true } }
+          $arg = @($n.CommandElements | Select-Object -Skip 1)
+          if (-not $isDef -and ($arg.Count -lt 1 -or -not (& $argOk $arg[0]))) { $bad.Add($nm + ' with an argument that is not a tool name: ' + $n.Extent.Text) }
+        }
+      }
+    }
+    elseif ($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) {
+      if ($n.Static) { $bad.Add('static method call: ' + $n.Extent.Text) }
+      elseif ($allowedMember -notcontains $n.Member.Extent.Text) { $bad.Add('method not allowed: ' + $n.Member.Extent.Text) }
+    }
+    elseif ($n -is [System.Management.Automation.Language.MemberExpressionAst]) {
+      if ($n.Static) { $bad.Add('static member: ' + $n.Extent.Text) }
+      elseif ($allowedProp -notcontains $n.Member.Extent.Text) { $bad.Add('property not allowed: ' + $n.Member.Extent.Text) }
+    }
+    elseif ($n -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { $bad.Add('script block') }
+    elseif ($n -is [System.Management.Automation.Language.ConvertExpressionAst]) {
+      if ($allowedType -notcontains $n.Type.TypeName.Name -and $allowedType -notcontains $n.Type.TypeName.FullName) { $bad.Add('type not allowed: ' + $n.Type.Extent.Text) }
+    }
+    elseif ($n -is [System.Management.Automation.Language.ExpandableStringExpressionAst]) {
+      foreach ($ne in $n.NestedExpressions) {
+        if ($ne -is [System.Management.Automation.Language.SubExpressionAst] -and @($ne.FindAll({ param($x) $x -is [System.Management.Automation.Language.CommandAst] -or $x -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true)).Count -gt 0) { $bad.Add('command inside a string: ' + $ne.Extent.Text) }
+      }
+    }
+    elseif ($n -is [System.Management.Automation.Language.FileRedirectionAst]) {
+      $loc = $n.Location
+      if (-not ($loc -is [System.Management.Automation.Language.VariableExpressionAst] -and $loc.VariablePath.UserPath -eq 'null')) { $bad.Add('redirection to a file: ' + $n.Extent.Text) }
+    }
+    elseif ($n -is [System.Management.Automation.Language.UsingStatementAst]) { $bad.Add('using statement') }
+  }
+  if ($bad.Count -eq 0) { Write-Host ($path + [char]9 + 'OK') } else { Write-Host ($path + [char]9 + 'REJECT: ' + (($bad | Select-Object -Unique) -join '; ')) }
+}

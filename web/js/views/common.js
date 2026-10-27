@@ -1,5 +1,5 @@
 import { api, prefs } from '../api.js';
-import { agentBadge, agentName, avatar, btn, chip, closeBtn, dialog, fmt, h, icon, meter, pills, toast } from '../ui.js';
+import { agentBadge, agentName, avatar, btn, chip, closeBtn, copy, dialog, fmt, h, icon, meter, pills, toast } from '../ui.js';
 
 export const go = (path) => { location.hash = '#' + path; };
 const themeBtn = (t, ic, label) => h('button', { type: 'button', 'aria-pressed': String((prefs.get().theme || 'dark') === t), 'aria-label': label, title: label, onclick: () => { prefs.set({ theme: t }); render(); } }, icon(ic, 'sm'));
@@ -169,10 +169,11 @@ export const DEPTHS = [['strict', 'Строго'], ['normal', 'Обычно'], [
 export function workModePicker(modes, cur, onpick, depth, ondepth) {
   const m = modes.find((x) => x.id === cur) || modes[0];
   if (!m) return h('div');
-  const why = m.unavailable ? (/\((.+)\)$/.exec(m.unavailable)?.[1] ?? m.unavailable) : null;
+  const why = m.unavailable ? (m.unavailableRu ?? m.unavailable) : null;   // the server sends the Russian sentence and the command as separate fields
   return h('div.stack', { style: { gap: '8px' } },
     pills(modes.map((x) => [x.id, x.title]), m.id, onpick, 'Как работаем'),
     h('span.t-meta', m.hint),
-    why ? chip('Недоступно: ' + why, 'warn', m.unavailable) : null,
+    why ? h('p.mode-warn', { role: 'status', title: m.unavailable }, 'Недоступно: ' + why) : null,
+    m.fix ? h('div.cmd-line', h('code.mono', { tabindex: 0, 'aria-label': 'Команда для PowerShell' }, m.fix), btn('Копировать', { kind: 'glass', icon: 'copy', aria: 'Копировать команду', onclick: () => copy(m.fix) })) : null,
     m.id === 'autopilot' ? pills(DEPTHS, depth, ondepth, 'Глубина автопилота') : null);
 }

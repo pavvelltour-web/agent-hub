@@ -86,15 +86,15 @@ test('interview: links grill-me when it is there (claude only), runs without it 
   assert.equal(linked.permission, 'plan', 'still read-only');
   const cx = applyWorkMode(mode('interview'), { ...req, agent: 'codex' }, { home, ...noLib });
   assert.ok(!cx.prompt.startsWith('/'), 'a Codex-only skill folder and no verified slash syntax: no /grill-me for Codex');
-  const other = proj();   // a project-level link counts too
+  const other = proj();   // a plain project-level folder does not count (N1: a clone can bring its own); see workmodes-fixes.test.ts
   link(join(other.root, '.claude', 'skills'), 'grill-me');
-  assert.ok(applyWorkMode(mode('interview'), { ...req, projectRoot: other.root }, { home: other.home, ...noLib }).prompt.startsWith('/grill-me '));
+  assert.ok(!applyWorkMode(mode('interview'), { ...req, projectRoot: other.root }, { home: other.home, ...noLib, hubRoots: [] }).prompt.startsWith('/grill-me'));
 });
 
 test('autopilot: the refusal names the exact fix; a skill that is only in the hub library says "link", not "install"', () => {
   const { root, home } = proj();
   const req = { agent: 'claude' as const, prompt: 'go', projectRoot: root };
-  assert.throws(() => applyWorkMode(mode('autopilot'), req, { home, ...noLib }), (e: Error) => /install the autopilot skill in Tools/.test(e.message) && e.message.includes(`hub init "${root}" --add skill/autopilot --yes`) && /Установите навык autopilot/.test(e.message));
+  assert.throws(() => applyWorkMode(mode('autopilot'), req, { home, ...noLib }), (e: Error) => /install the autopilot skill in Tools/.test(e.message) && e.message.includes("node bin/hub.js init '") && e.message.includes('--add skill/autopilot --yes') && /Установите навык autopilot/.test(e.message));
   const lib = [{ id: 'skill/autopilot', kind: 'skill', source: { type: 'local', path: 'x' }, scope: 'hub', visibleTo: [] }] as never[];
   assert.throws(() => applyWorkMode(mode('autopilot'), req, { home, library: lib }), (e: Error) => /in your hub library but not linked/.test(e.message) && e.message.includes('--add skill/autopilot') && !/install the autopilot skill/.test(e.message));
   link(join(root, '.claude', 'skills'), 'autopilot');

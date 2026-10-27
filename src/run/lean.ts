@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, wr
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { AgentId, RegistryEntry } from '../core/types.ts';
-import { skillLinked, type WorkMode } from '../core/workmodes.ts';
+import { trustedSkillLinked, type WorkMode } from '../core/workmodes.ts';
 import { HUB_HOME, loadCatalog, shippedCatalogIds } from '../core/registry.ts';
 
 export interface LeanOpts {
@@ -22,6 +22,8 @@ export interface LeanOpts {
   platform?: NodeJS.Platform; profile?: string;
   /** Tests: the user folder that holds `.claude/skills` for the `skillsIfLinked` check (default: this machine's home). */
   home?: string;
+  /** Tests: the folders that count as the hub library when a project's skill link is checked. */
+  hubRoots?: string[];
 }
 export interface LeanPlan { args: string[]; notes: string[]; cleanup: () => void }
 
@@ -105,7 +107,7 @@ export function leanPlan(agent: AgentId, mode: WorkMode | undefined, o: LeanOpts
   if (resolve(o.cwd).toLowerCase() !== resolve(o.projectRoot).toLowerCase() && existsSync(local)) args.push('--settings', local);
   // A mode with no skills is off, unless one of its `skillsIfLinked` is linked for Claude: then the list is non-empty and skills stay on.
   const optional = mode?.skillsIfLinked ?? [], home = o.home ?? homedir();
-  const linkedOptional = optional.filter((n) => skillLinked('claude', o.projectRoot, n, home));
+  const linkedOptional = optional.filter((n) => trustedSkillLinked(o.projectRoot, n, home, o.hubRoots));
   const skillsOff = mode ? mode.skills.length === 0 && linkedOptional.length === 0 : ROTE.has(o.cls ?? '');
   if (skillsOff) args.push('--disable-slash-commands');
   if (mode && mode.skills.length === 0) for (const n of optional) if (!linkedOptional.includes(n)) notes.push(`skill ${n} is not linked: ${mode.id} runs without it`);

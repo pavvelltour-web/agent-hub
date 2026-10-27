@@ -23,6 +23,7 @@ export interface StartReq {
   extraArgs?: string[];                                      // INTERNAL only (review gate): appended to the CLI args; api.ts must never forward it from a request body
   isolatedCwd?: string;                                      // INTERNAL only (review gate): run in this empty folder, without project hooks or settings; api.ts must never forward it
   cls?: string; workMode?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
+  startNote?: string;                                        // INTERNAL (api.ts, mode reviewer): a warn event at the start of the run; never forwarded from a request body
   autoContinue?: boolean;                                    // INTERNAL (cascade): false = a run stopped for context size leaves its card but is not restarted; api.ts must never forward it
 }
 export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null; baseSha: string | null; verifyPassed: number | null }
@@ -174,6 +175,7 @@ export class RunManager {
       catch { modeWarn = `work mode ${label}: a mode file is unreadable or malformed, so the tool set follows the task class`; }
     }
     if (modeWarn) emit({ kind: 'warn', message: modeWarn });
+    if (req.startNote) emit({ kind: 'warn', message: req.startNote });
     const lean = reviewer ? undefined : leanPlan(req.agent, mode, { projectRoot: req.projectRoot, cwd, mcpNeeded: mode?.mcp ?? [], ...(req.cls ? { cls: req.cls } : {}), tmpDir: join(home, 'tmp'), ...(this.opts.lean?.catalog ? { catalog: this.opts.lean.catalog } : {}), ...(this.opts.lean?.profile ? { profile: this.opts.lean.profile } : {}) });
     lean?.notes.forEach((message) => emit({ kind: 'warn', message }));
     let handle: RunHandle;

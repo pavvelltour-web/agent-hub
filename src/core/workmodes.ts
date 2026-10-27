@@ -1,10 +1,10 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Permission } from '../adapters/types.ts';
 import { MODEL_ID, type TaskClass } from '../econ/router.ts';
 import type { StartReq } from '../run/runner.ts';
-import { REPO_ROOT, library } from './registry.ts';
+import { HUB_HOME, REPO_ROOT, library, loadUserConfig } from './registry.ts';
 import type { AgentId, RegistryEntry } from './types.ts';
 
 export interface WorkMode {
@@ -59,7 +59,25 @@ export function skillLinked(agent: 'claude' | 'codex', projectRoot: string, name
   return folders.some((d) => existsSync(join(d, name, 'SKILL.md')));
 }
 
-export interface ApplyOpts { home?: string; /** the hub library (tests inject it; default: `library(project)`, read only when a skill is not linked) */ library?: RegistryEntry[] }
+/** Folders whose skills the hub vouches for: its own library and the folders the user added. */
+const defaultHubRoots = (): string[] => { try { return [join(HUB_HOME, 'skills'), ...(loadUserConfig().extraSkillRoots ?? [])]; } catch { return []; } };
+const real = (p: string): string | undefined => { try { return realpathSync.native(p); } catch { return undefined; } };
+const inside = (p: string, root: string): boolean => { const a = p.toLowerCase().replace(/\\/g, '/'), b = root.toLowerCase().replace(/\\/g, '/').replace(/\/+$/, ''); return a === b || a.startsWith(b + '/'); };
+
+/**
+ * Like `skillLinked` for Claude, but for a skill the hub types as a slash command and turns skills on for: the user's own `~/.claude/skills`
+ * count, a project folder counts only when it is a link that resolves into the hub library (what `hub init` makes). A plain folder in the
+ * project is not trusted: a cloned repository can ship its own `.claude/skills/<name>` and the hub would then type `/<name>` for it.
+ */
+export function trustedSkillLinked(projectRoot: string, name: string, home: string, hubRoots: string[] = defaultHubRoots()): boolean {
+  if (existsSync(join(home, '.claude', 'skills', name, 'SKILL.md'))) return true;
+  const dir = join(projectRoot, '.claude', 'skills', name);
+  if (!existsSync(join(dir, 'SKILL.md'))) return false;
+  const r = real(dir);
+  return !!r && hubRoots.some((h) => { const hr = real(h); return !!hr && inside(r, hr); });
+}
+
+export interface ApplyOpts { home?: string; /** the hub library (tests inject it; default: `library(project)`, read only when a skill is not linked) */ library?: RegistryEntry[]; /** tests: the folders that count as the hub library for `trustedSkillLinked` */ hubRoots?: string[] }
 
 /** The skill is linked for this agent, only in the hub library (present, but no agent loads it), or nowhere. */
 function skillState(agent: 'claude' | 'codex', projectRoot: string, name: string, o: ApplyOpts): 'linked' | 'in-library' | 'missing' {
@@ -69,39 +87,69 @@ function skillState(agent: 'claude' | 'codex', projectRoot: string, name: string
   return lib.some((e) => e.id === `skill/${name}` && e.source?.type === 'local') ? 'in-library' : 'missing';
 }
 
-const FIX_AP = (root: string): string => `hub init "${root}" --add skill/autopilot --yes`;
+/** A refusal with a Russian sentence the panel shows, and the command to run (when one can be printed safely) shown apart from the sentence. */
+export class WorkModeError extends Error {
+  readonly ru: string; readonly command: string | undefined;
+  constructor(en: string, ru: string, command?: string) { super(`${en}${command ? `: ${command}` : ''} (${ru})`); this.name = 'WorkModeError'; this.ru = ru; this.command = command; }
+}
 
-/** `ready[agent]`: installed and signed in (from the adapter status, never from a credential file). */
+const UNSAFE_RU = 'путь содержит символы, которые нельзя безопасно вставить: добавьте скилл вручную в окне Начало';
+/** Characters that cannot go into a command line safely: `%` (cmd expands it even inside quotes), `"`, control characters and line breaks, and the typographic single quotes PowerShell also treats as quotes. */
+const UNSAFE = /[%"\u0000-\u001f\u007f-\u009f\u2018-\u201b\u2028\u2029]/;
+/**
+ * The command that links the autopilot skill into a project, for PowerShell: `node bin/hub.js` (run in the Agent Hub folder; `hub` is not on the PATH
+ * for the clone-and-run start and collides with GitHub's `hub`), the root as a SINGLE-quoted literal (nothing expands in it, `$old` stays `$old`; a
+ * quote is doubled). A root with a character that cannot be quoted safely gets no command, only the sentence that says what to do by hand.
+ */
+export function autopilotFix(root: string): { command: string; ru?: undefined } | { command?: undefined; ru: string } {
+  if (UNSAFE.test(root)) return { ru: UNSAFE_RU };
+  return { command: `node bin/hub.js init '${root.replace(/'/g, "''")}' --add skill/autopilot --yes` };
+}
+
+/** `ready[agent]`: installed, signed in (from the adapter status, never from a credential file) and not at its limit. */
 export type Ready = Partial<Record<AgentId, boolean>>;
-export interface ModeReviewer { agent: AgentId; model?: string; effort: string; note: string }
+export interface ModeReviewer { agent: AgentId; model?: string; effort: string; note: string; /** the run's warn event, when the pick is not what the mode promises */ warn?: string }
 
 /**
- * The mode's own reviewer choice (`reviewer` data): `prefer` when it is ready, else `fallback`, else a plain refusal. Nothing here changes the
- * permission: the caller still passes the request through `applyWorkMode`, which keeps review at `plan`. Claude is Opus; Codex keeps the
- * account's default model (no model id is guessed). `undefined` for a mode with no reviewer data.
+ * The mode's own reviewer choice (`reviewer` data): `prefer` when it is ready, else `fallback`, else a plain refusal. When the caller says who wrote
+ * the change (`implementedBy`) the other vendor is taken if it is ready; the same one only when it is the only one left, and then `warn` says the
+ * review is not cross-vendor. Nothing here changes the permission: the caller still passes the request through `applyWorkMode`, which keeps review
+ * at `plan`. Claude is Opus; Codex keeps the account's default model (no model id is guessed). `undefined` for a mode with no reviewer data.
  */
-export function pickModeReviewer(m: WorkMode, ready: Ready): ModeReviewer | undefined {
+export function pickModeReviewer(m: WorkMode, ready: Ready, o: { implementedBy?: AgentId } = {}): ModeReviewer | undefined {
   if (!m.reviewer) return undefined;
+  const who = (a: AgentId): string => (a === 'codex' ? 'Codex' : 'Claude');
   const label = (a: AgentId): string => (a === 'codex' ? 'Codex' : 'Opus');
-  const mk = (a: AgentId, note: string): ModeReviewer => ({ agent: a, ...(a === 'claude' ? { model: MODEL_ID.opus } : {}), effort: 'high', note });
-  if (ready[m.reviewer.prefer]) return mk(m.reviewer.prefer, `${label(m.reviewer.prefer)} is signed in: another vendor reviews, read-only`);
-  if (ready[m.reviewer.fallback]) return mk(m.reviewer.fallback, `${m.reviewer.prefer === 'codex' ? 'Codex' : 'Claude'} is not signed in: ${label(m.reviewer.fallback)} reviews, read-only`);
-  throw new Error(`${m.title} needs a signed-in agent: sign in to Codex or Claude (Войдите в Codex или Claude, чтобы запустить ревью)`);
+  const mk = (a: AgentId, note: string, warn?: string): ModeReviewer => ({ agent: a, ...(a === 'claude' ? { model: MODEL_ID.opus } : {}), effort: 'high', note, ...(warn ? { warn } : {}) });
+  const ok = [m.reviewer.prefer, m.reviewer.fallback].filter((a, i, all) => all.indexOf(a) === i && ready[a]);
+  const first = ok[0];
+  if (!first) throw new Error(`${m.title} needs a signed-in agent that is under its limit: sign in to Codex or Claude, or wait for the limit to reset (Войдите в Codex или Claude либо дождитесь сброса лимита, чтобы запустить ревью)`);
+  const by = o.implementedBy;
+  if (by) {
+    const other = ok.find((a) => a !== by);
+    if (other) return mk(other, `${who(by)} wrote the change, so ${label(other)} reviews, read-only`);
+    return mk(first, `only ${label(first)} is available and it is the one that wrote the change; it reviews, read-only`, `${who(by)} wrote this change and only ${label(first)} can review it now: the review is not cross-vendor`);
+  }
+  return mk(first, first === m.reviewer.prefer ? `${label(first)} is signed in and under its limit: it reviews, read-only` : `${who(m.reviewer.prefer)} is not available (not signed in or at its limit): ${label(first)} reviews, read-only`);
 }
 
 /** Turns a work mode and a request into the request the runner takes. Throws a plain message when the mode cannot work here. */
 export function applyWorkMode(m: WorkMode, req: StartReq, o: ApplyOpts = {}): StartReq {
   let prompt = req.prompt;
   if (m.autopilot) {
-    if (req.agent !== 'claude') throw new Error('autopilot works with Claude only (Автопилот работает только с Claude)');
+    if (req.agent !== 'claude') throw new WorkModeError('autopilot works with Claude only', 'Автопилот работает только с Claude');
     const st = skillState('claude', req.projectRoot, 'autopilot', o);
-    if (st === 'in-library') throw new Error(`autopilot is in your hub library but not linked to Claude in this project. Link it: ${FIX_AP(req.projectRoot)} (Навык autopilot есть в библиотеке, но не подключён к проекту: выполните команду выше)`);
-    if (st === 'missing') throw new Error(`install the autopilot skill in Tools, then link it: ${FIX_AP(req.projectRoot)} (Установите навык autopilot во вкладке «Инструменты» и подключите его командой выше)`);
+    if (st !== 'linked') {
+      const fix = autopilotFix(req.projectRoot);
+      if (fix.command === undefined) throw new WorkModeError('the autopilot skill is not linked to Claude here, and the project path has characters that cannot be pasted into a command safely: install the autopilot skill in Tools and link it by hand in the Start window', fix.ru);
+      if (st === 'in-library') throw new WorkModeError('autopilot is in your hub library but not linked to Claude in this project. Link it (PowerShell, in the Agent Hub folder)', 'Навык autopilot есть в библиотеке, но не подключён к проекту: подключите его командой для PowerShell в папке Agent Hub (она показана отдельной строкой)', fix.command);
+      throw new WorkModeError('install the autopilot skill in Tools, then link it (PowerShell, in the Agent Hub folder)', 'Установите навык autopilot во вкладке «Инструменты», затем подключите его командой для PowerShell в папке Agent Hub (она показана отдельной строкой)', fix.command);
+    }
     prompt = `/autopilot ${m.autopilot.mode} ${m.autopilot.depth} ${prompt}`;
   } else {
     if (m.promptPrefix) prompt = m.promptPrefix + prompt;
     // optional skills: only Claude takes a slash command here; a missing one is not an error (leanPlan says so in the run)
-    const first = req.agent === 'claude' ? (m.skillsIfLinked ?? []).find((n) => skillLinked('claude', req.projectRoot, n, o.home ?? homedir())) : undefined;
+    const first = req.agent === 'claude' ? (m.skillsIfLinked ?? []).find((n) => trustedSkillLinked(req.projectRoot, n, o.home ?? homedir(), o.hubRoots)) : undefined;
     if (first) prompt = `/${first} ${prompt}`;
   }
   return {

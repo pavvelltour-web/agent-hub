@@ -4,7 +4,7 @@ import { detectAgents, type AgentInfo } from '../adapters/locate.ts';
 import { authStatus, forgetAuth, type AuthInfo } from '../adapters/auth.ts';
 import { openLogin, pickFolder } from '../adapters/native.ts';
 import { loadMatrix } from '../adapters/probe.ts';
-import { applyWorkMode, loadWorkModes, pickModeReviewer, type ModeReviewer, type Ready } from '../core/workmodes.ts';
+import { applyWorkMode, loadWorkModes, pickModeReviewer, WorkModeError, type ModeReviewer, type Ready, type WorkMode } from '../core/workmodes.ts';
 import { applyPlan, describe, listBackups, undoBackup } from '../core/plan.ts';
 import { planInit, listPacks } from '../core/init.ts';
 import { graphStatus, locateGraphify, updateGraph, type GraphTool } from '../core/graph.ts';
@@ -120,6 +120,20 @@ function limitState(c: Ctx, agent: AgentId): (LimitState & { resetsAt: number | 
 const learned = (c: Ctx): { stats: ReturnType<typeof modelStats>; effortProfiles: ReturnType<typeof effortProfiles>; priceWeight: number; explore: number } => { const r = loadUserConfig().routing ?? {}; return { stats: modelStats(c.db), effortProfiles: effortProfiles(c.db), priceWeight: Math.min(5, Math.max(0.2, r.priceWeight ?? 1)), explore: Math.min(0.3, Math.max(0, r.explore ?? 0)) }; };
 const limitsFor = (c: Ctx): Partial<Record<AgentId, LimitState>> => Object.fromEntries((['claude', 'codex'] as AgentId[]).map((a) => [a, limitState(c, a)]).filter(([, v]) => v)) as Partial<Record<AgentId, LimitState>>;
 
+/** Agents a mode reviewer may use now: installed, signed in (adapter status, no credential file) and not at its limit. */
+const readyAgents = (c: Ctx): Ready => {
+  const info = (c.agents ?? detectAgents)(), lim = limitsFor(c), ready: Ready = {};
+  for (const id of ['claude', 'codex'] as AgentId[]) ready[id] = info[id].installed && (c.auth ?? authStatus)(id, info[id]).loggedIn === true && !lim[id]?.reached;
+  return ready;
+};
+const implementedByOf = (body: Record<string, unknown>): AgentId | undefined => (body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? body['implementedBy'] : undefined);
+/** The mode reviewer for this moment, or the reason there is none. */
+const modeReviewer = (c: Ctx, wm: WorkMode, implementedBy?: AgentId): { pick: ModeReviewer } | { error: string } => {
+  try { return { pick: pickModeReviewer(wm, readyAgents(c), implementedBy ? { implementedBy } : {}) as ModeReviewer }; } catch (e) { return { error: (e as Error).message }; }
+};
+/** A model name belongs to one vendor: Claude takes claude-* ids and the aliases, everything else is Codex's. */
+const vendorOfModel = (m: string): AgentId => (/^(claude|opus|sonnet|haiku|fable)/i.test(m) ? 'claude' : 'codex');
+
 const entryView = (e: RegistryEntry): Record<string, unknown> => ({ id: e.id, kind: e.kind, title: e.title, description: clip(e.description, 220), tokenCost: e.tokenCost, license: e.license ?? 'unknown', compat: e.compat, risk: e.risk, source: e.source.type, sourceVerified: e.sourceVerified, downloads: e.downloads ?? null, scan: e.scan ?? null, scope: e.scope ?? null, visibleTo: e.visibleTo ?? [], globalVisibleTo: e.globalVisibleTo ?? [] });
 
 const NAME = /^[\w.@ -]{1,120}$/;
@@ -142,7 +156,13 @@ const ROUTES: [string, RegExp, Handler][] = [
   ['GET', /^\/api\/workmodes$/, (c, { q }) => {
     const agent = q.get('agent') === 'codex' ? 'codex' : 'claude'; const pid = num(q.get('project'));
     const root = pid != null ? (c.db.prepare('SELECT root FROM project WHERE id = ?').get(pid) as { root: string } | undefined)?.root : undefined;
-    return ok(loadWorkModes().map((m) => { let unavailable: string | null = null; if (root) { try { applyWorkMode(m, { agent, prompt: 'x', projectRoot: root }); } catch (e) { unavailable = (e as Error).message; } } return { ...m, unavailable }; }));
+    return ok(loadWorkModes().map((m) => {
+      let unavailable: string | null = null, unavailableRu: string | null = null, fix: string | null = null;
+      if (root) { try { applyWorkMode(m, { agent, prompt: 'x', projectRoot: root }); } catch (e) { unavailable = (e as Error).message; if (e instanceof WorkModeError) { unavailableRu = e.ru; fix = e.command ?? null; } } }
+      // a mode with its own reviewer: the pick the run will make now, so the panel shows that and not a generic advice
+      const rv = m.reviewer ? modeReviewer(c, m) : undefined;
+      return { ...m, unavailable, unavailableRu, fix, ...(rv ? ('pick' in rv ? { reviewerPick: { agent: rv.pick.agent, model: rv.pick.model ?? null, effort: rv.pick.effort, why: rv.pick.note }, reviewerError: null } : { reviewerPick: null, reviewerError: rv.error }) : {}) };
+    }));
   }],
   ['GET', /^\/api\/modes\/matrix$/, (c) => {
     const agents = (c.agents ?? detectAgents)(); const saved = loadMatrix();
@@ -440,12 +460,13 @@ const ROUTES: [string, RegExp, Handler][] = [
     const resuming = !!(str(body['resumeRunId']) || sid);
     const wm = !resuming && str(body['workMode']) ? loadWorkModes().find((m) => m.id === body['workMode']) : undefined;
     if (!resuming && str(body['workMode']) && !wm) return bad(400, 'unknown work mode');
-    let agent = (sess ? sess.agent : str(body['agent'])) as AgentId | 'auto' | undefined; let model = str(body['model']); let effort = str(body['effort']); let advice: unknown;
+    let agent = (sess ? sess.agent : str(body['agent'])) as AgentId | 'auto' | undefined; let model = str(body['model']); let effort = str(body['effort']); let advice: unknown; let startNote: string | undefined;
     if ((!agent || agent === 'auto') && wm?.reviewer) {   // the mode names its own reviewer (data in modes/review.json): signed-in status from the adapter check only
-      const info = (c.agents ?? detectAgents)(); const ready: Ready = {};
-      for (const id of ['claude', 'codex'] as AgentId[]) ready[id] = info[id].installed && (c.auth ?? authStatus)(id, info[id]).loggedIn === true;
-      try { const r = pickModeReviewer(wm, ready) as ModeReviewer; agent = r.agent; model ??= r.model; effort ??= r.effort; advice = { agent: r.agent, model: model ?? '', effort, rule: 'mode-reviewer', reason: r.note }; } catch (e) { return bad(400, (e as Error).message); }
-    } else if (!agent || agent === 'auto') { const ch = advise({ cls: (str(body['cls']) as TaskClass) ?? wm?.cls ?? 'implement', limits: limitsFor(c), ...learned(c), ...(body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? { implementedBy: body['implementedBy'] } : {}) }); agent = ch.agent; model ??= ch.model; effort ??= ch.effort; advice = ch; }
+      const rv = modeReviewer(c, wm, implementedByOf(body));
+      if ('error' in rv) return bad(400, rv.error);
+      const r = rv.pick; agent = r.agent; if (model && vendorOfModel(model) !== agent) model = undefined; model ??= r.model; effort ??= r.effort; startNote = r.warn;
+      advice = { agent: r.agent, model: model ?? '', effort, rule: 'mode-reviewer', reason: r.note, ...(r.warn ? { warn: r.warn } : {}) };
+    } else if (!agent || agent === 'auto') { const ch = advise({ cls: (str(body['cls']) as TaskClass) ?? wm?.cls ?? 'implement', limits: limitsFor(c), ...learned(c), ...(body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? { implementedBy: body['implementedBy'] } : {}) }); agent = ch.agent; if (model && vendorOfModel(model) !== agent) model = undefined; model ??= ch.model; effort ??= ch.effort; advice = ch; }
     if (agent !== 'claude' && agent !== 'codex') return bad(400, 'agent must be claude, codex or auto');
     const cls = str(body['cls']) && (str(body['cls']) as string) in ROUTING ? (str(body['cls']) as TaskClass) : wm?.cls;
     const est = cls && model ? estimate(profileFromHistory(c.db, agent), model, calibrate(c.db, agent), 1) : undefined;
@@ -453,7 +474,7 @@ const ROUTES: [string, RegExp, Handler][] = [
     try { if (Array.isArray(body['sparse']) && body['sparse'].length) sparse = checkSparse((body['sparse'] as unknown[]).filter((x): x is string => typeof x === 'string')); } catch (e) { return bad(400, (e as Error).message); }
     const askedPerm = body['permission'] === 'plan' || body['permission'] === 'full' || body['permission'] === 'edit' ? body['permission'] : undefined;
     try {
-      let req: StartReq = { agent, prompt, projectRoot: root, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(askedPerm ? { permission: askedPerm } : {}), ...(wm ? {} : { mode: body['mode'] === 'task' ? 'task' : 'chat' }), ...(sparse ? { sparse } : {}), ...(cls ? { cls } : {}), ...(est ? { est } : {}), ...(str(body['task']) ? { task: str(body['task']) as string } : {}), ...(str(body['resumeRunId']) ? { resumeRunId: str(body['resumeRunId']) as string } : {}), ...(sess && sid ? { resumeNativeId: sess.nativeId, resumeOfSession: sid } : {}) };
+      let req: StartReq = { agent, prompt, projectRoot: root, ...(startNote ? { startNote } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(askedPerm ? { permission: askedPerm } : {}), ...(wm ? {} : { mode: body['mode'] === 'task' ? 'task' : 'chat' }), ...(sparse ? { sparse } : {}), ...(cls ? { cls } : {}), ...(est ? { est } : {}), ...(str(body['task']) ? { task: str(body['task']) as string } : {}), ...(str(body['resumeRunId']) ? { resumeRunId: str(body['resumeRunId']) as string } : {}), ...(sess && sid ? { resumeNativeId: sess.nativeId, resumeOfSession: sid } : {}) };
       if (wm) { const depth = str(body['depth']); req = applyWorkMode(depth && wm.autopilot && ['strict', 'normal', 'deep'].includes(depth) ? { ...wm, autopilot: { ...wm.autopilot, depth: depth as 'strict' | 'normal' | 'deep' } } : wm, req); }
       if (body['strategy'] === 'cascade') return await cascadeStart(c, body, req, !!(resuming || wm), model, effort, advice);
       if (body['strategy'] !== undefined && body['strategy'] !== 'single') return bad(400, "strategy must be 'single' or 'cascade'");

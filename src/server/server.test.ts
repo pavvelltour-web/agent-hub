@@ -399,6 +399,69 @@ test('review mode over the API: no agent named = the mode cross-vendor reviewer 
   } finally { stub.loggedIn = was.c; stub.codexIn = was.x; }
 });
 
+test('review mode over the API (S1, S2, N3): a Codex at its limit is skipped, implementedBy picks the other vendor, the same one only alone (with a warn event), nobody usable is 400, a client model of the other vendor is dropped, the panel can see the pick', async () => {
+  scenario.v = 'claude-ok'; env();
+  const root = mkRepo();
+  const id = (await api('/api/projects', { method: 'POST', body: { path: root } })).json.id;
+  const was = { c: stub.loggedIn, x: stub.codexIn };
+  const limit = async (agent: string, usedPercent: number): Promise<void> => { await new Promise((r) => setTimeout(r, 12)); await api('/api/limits', { method: 'POST', body: { agent, usedPercent } }); };
+  const review = async (extra: Record<string, unknown> = {}): Promise<{ status: number; json: any }> => {   // each run is waited for: at most 4 run at once
+    const r = await api('/api/runs', { method: 'POST', body: { projectId: id, prompt: 'look', workMode: 'review', ...extra } });
+    if (r.status === 200) await until(async () => !(await api(`/api/runs/${r.json.run.id}`)).json.run.live);
+    return r;
+  };
+  const pickOf = async (): Promise<any> => (await api(`/api/workmodes?project=${id}&agent=claude`)).json.find((m: { id: string }) => m.id === 'review');
+  try {
+    stub.loggedIn = true; stub.codexIn = true;
+    // S2: the panel's preview is the same pick the run will use
+    assert.equal((await pickOf()).reviewerPick.agent, 'codex'); assert.match((await pickOf()).reviewerPick.why, /Codex/);
+    await limit('codex', 100);
+    const limited = await review();
+    assert.equal(limited.status, 200); assert.equal(limited.json.run.agent, 'claude'); assert.equal(limited.json.run.model, 'claude-opus-5-5'); assert.match(limited.json.advice.reason, /not available/);
+    const pv = await pickOf(); assert.equal(pv.reviewerPick.agent, 'claude'); assert.equal(pv.reviewerPick.model, 'claude-opus-5-5'); assert.equal(pv.reviewerPick.agent, limited.json.run.agent, 'preview = what runs');
+    await limit('codex', 20);
+    const byCodex = await review({ implementedBy: 'codex' });
+    assert.equal(byCodex.json.run.agent, 'claude'); assert.match(byCodex.json.advice.reason, /Codex wrote the change/);
+    assert.equal((await review({ implementedBy: 'claude' })).json.run.agent, 'codex');
+    // N3: a client model of the other vendor does not follow the pick; a model of the picked vendor is kept
+    const dropped = await review({ agent: 'auto', model: 'claude-sonnet-5-5' });
+    assert.equal(dropped.json.run.agent, 'codex'); assert.ok(dropped.json.run.model !== 'claude-sonnet-5-5', 'a Claude model must not be sent to Codex');
+    const droppedBack = await review({ implementedBy: 'codex', model: 'gpt-6.1-sol' });
+    assert.equal(droppedBack.json.run.agent, 'claude'); assert.equal(droppedBack.json.run.model, 'claude-opus-5-5', 'a GPT model must not be sent to Claude');
+    const kept = await review({ implementedBy: 'codex', model: 'claude-sonnet-5-5' });
+    assert.equal(kept.json.run.model, 'claude-sonnet-5-5', 'the same vendor: the explicit choice stays');
+    // the same vendor as the author, only when it is alone: said in the run
+    stub.codexIn = false;
+    const alone = await review({ implementedBy: 'claude' });
+    assert.equal(alone.status, 200); assert.equal(alone.json.run.agent, 'claude'); assert.match(alone.json.advice.warn, /not cross-vendor/);
+    await until(async () => (await api(`/api/runs/${alone.json.run.id}`)).json.events.some((e: { kind: string; data: { message?: string } }) => e.kind === 'warn' && /not cross-vendor/.test(e.data?.message ?? '')));
+    // nobody usable: not signed in, or both at their limit
+    stub.loggedIn = false;
+    const none = await review();
+    assert.equal(none.status, 400); assert.match(JSON.stringify(none.json), /sign in to Codex or Claude/);
+    const nopick = await pickOf(); assert.equal(nopick.reviewerPick, null); assert.match(nopick.reviewerError, /sign in to Codex or Claude/);
+    stub.loggedIn = true; stub.codexIn = true;
+    await limit('codex', 100); await limit('claude', 100);
+    assert.equal((await review()).status, 400);
+    // a named agent is still the user's choice, limit or not
+    assert.equal((await review({ agent: 'codex' })).json.run.agent, 'codex');
+  } finally { stub.loggedIn = was.c; stub.codexIn = was.x; await limit('codex', 20); await limit('claude', 97); }
+});
+
+test('non-review auto pick (N3): a client model of the other vendor is not kept; the work-mode list gives the autopilot fix as separate fields (S3)', async () => {
+  scenario.v = 'claude-ok'; env();
+  const root = mkRepo();
+  const id = (await api('/api/projects', { method: 'POST', body: { path: root } })).json.id;
+  const r = await api('/api/runs', { method: 'POST', body: { projectId: id, prompt: 'do it', agent: 'auto', model: 'gpt-6.1-sol', cls: 'implement' } });
+  assert.equal(r.status, 200);
+  const vendor = (m: string): string => (/^(claude|opus|sonnet|haiku|fable)/i.test(m) ? 'claude' : 'codex');
+  assert.equal(vendor(r.json.run.model), r.json.run.agent, 'the model belongs to the agent that runs');
+  const ap = (await api(`/api/workmodes?project=${id}&agent=claude`)).json.find((m: { id: string }) => m.id === 'autopilot');
+  assert.match(ap.unavailable, /install the autopilot skill/); assert.match(ap.unavailableRu, /Установите навык autopilot/);
+  assert.ok(ap.fix.startsWith("node bin/hub.js init '") && ap.fix.endsWith(' --add skill/autopilot --yes')); assert.ok(!ap.unavailableRu.includes(ap.fix));
+  assert.equal((await api(`/api/workmodes?project=${id}&agent=claude`)).json.find((m: { id: string }) => m.id === 'chat').fix, null);
+});
+
 // A resume needs the previous run's session id, which the agent reports a moment after start: wait for it, not for a fixed time.
 async function sessionReady(runId: string): Promise<void> {
   for (let i = 0; i < 100; i++) { if ((await api(`/api/runs/${runId}`)).json.run.sessionNativeId) return; await new Promise((r) => setTimeout(r, 100)); }

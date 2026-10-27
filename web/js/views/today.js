@@ -40,6 +40,7 @@ function start(projects, models, state) {
   async function drawWay() {
     modes = await api.get(`/workmodes?project=${pid}&agent=${s.agent === 'codex' ? 'codex' : 'claude'}`, true).catch(() => modes);
     wayBox.replaceChildren(workModePicker(modes, s.workMode, (k) => { s.workMode = k; const m = modes.find((x) => x.id === k); if (m) { s.cls = m.cls; clsTouched = true; clsSel.value = m.cls; } drawWay(); if (s.agent === 'auto') ask(); }, s.depth, (d) => { s.depth = d; drawWay(); }));
+    if (s.agent === 'auto') ask();
   }
 
   const drawProject = () => {
@@ -59,7 +60,16 @@ function start(projects, models, state) {
         s.agent === 'auto' ? null : h('div.field', h('select.select', { 'aria-label': 'Глубина мышления', onchange: (e) => { s.effort = e.target.value; } }, EFFORT.map(([v, t]) => h('option', { value: v, selected: s.effort === v }, v ? 'Мышление: ' + t.toLowerCase() : 'Мышление: авто'))))),
       s.agent === 'auto' ? advice : null);
   };
+  // A mode with its own reviewer (Ревью): show THAT pick, the one the run will make, not the generic advice for the task class.
+  function drawReviewer(mode) {
+    const rp = mode.reviewerPick;
+    advice.replaceChildren(rp
+      ? h('div.stack', { style: { gap: '8px' } }, h('div.row-flex', agentBadge(rp.agent, modelName(guide, rp.agent, shortModel(rp.agent, rp.model))), chip('мышление: ' + (({ low: 'быстро', medium: 'обычно', high: 'глубоко', max: 'максимум' })[rp.effort] || rp.effort), 'line'), chip('только чтение', 'line')), h('p', { style: { margin: 0 } }, 'Ревью: ' + (rp.agent === 'codex' ? 'проверяет Codex (GPT): вошли и лимит не исчерпан.' : 'проверяет Claude Opus: Codex сейчас недоступен (не вошли или лимит исчерпан).')))
+      : h('p.mode-warn', { role: 'status' }, 'Ревью сейчас не запустить: войдите в Codex или Claude либо дождитесь сброса лимита.'));
+  }
   async function ask() {
+    const mode = modes.find((x) => x.id === s.workMode);
+    if (mode && 'reviewerPick' in mode) return drawReviewer(mode);
     const r = await api.post('/advise', { cls: s.cls }, true).catch(() => null);
     if (!r) return;
     const c = r.choice, e = r.estimate, alt = c.alt;
