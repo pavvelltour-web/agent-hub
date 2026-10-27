@@ -162,8 +162,11 @@ test('estimate vs actual: a classified run stores its estimate and /api/outcomes
   assert.equal(r.status, 200);
   await until(async () => (await api(`/api/runs/${r.json.run.id}`)).json.run.outcome === 'done');
   const o = await api('/api/outcomes');
+  assert.ok(o.json.rows, JSON.stringify(o));
   const row = o.json.rows.find((x: any) => x.cls === 'implement' && x.model === 'claude-sonnet-5-5');
   assert.ok(row && row.runs >= 1 && row.done >= 1 && row.withEstimate >= 1 && row.estHighMw > row.estLowMw, JSON.stringify(o.json));
+  assert.deepEqual(o.json.strategies.map((x: any) => x.strategy), ['always-max', 'manual', 'cheap-first', 'router'], 'the cost of a solved task under four strategies comes with the same data');
+  assert.ok(o.json.strategies.every((x: any) => x.label === 'measured' || x.label === 'estimated'));
 });
 
 test('config: extra skill roots are validated, listed and removable; sparse paths are validated', async () => {

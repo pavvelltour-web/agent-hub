@@ -102,9 +102,21 @@ async function overview() {
         h('li', 'Если шаг не получается дважды, добавляется мышление; трижды — переход на Opus.'),
         h('li', 'Код, написанный Claude, проверяет GPT, и наоборот: чужие ошибки видно лучше.'),
         h('li', 'Если у Claude лимит почти кончился, а у Codex запас есть, работа уходит в Codex. Если кончились оба, hub предложит подождать сброса.')))),
+    h('section.group', sectionHead('Сколько стоит решённая задача'), h('div.plane.card.tight.stack', h('p.t-meta', { style: { padding: '0 6px' } }, 'Главное число — доля недельного лимита подписки на одну решённую задачу; доллары по цене API нужны для сравнения. «Замерено» — числа взяты из настоящих запусков; «прикидка» — часть числа посчитана (цена по токенам, доля лимита по калибровке или цепочка из раздельных запусков).'), h('div', { style: { overflowX: 'auto' } }, strategyTable(oc.strategies)))),
     reviewQuality(rq),
     h('section.group', sectionHead('Расход за 30 дней', h('span.t-meta', `цены Claude проверены ${m.pricesVerifiedAt}; цены GPT не известны`)), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, usage)),
     h('details.group', h('summary', h('span.t-heading', 'Точность прогнозов')), h('p.t-meta', 'Прогноз и факт в миллионах токенов с учётом кэша. Чем больше запусков, тем точнее советы.'), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, outcomes))) };
+}
+
+const STRATEGY_RU = { 'always-max': ['Всегда самая сильная модель', 'самая дорогая пара «модель + мышление» из ваших запусков'], manual: ['Как вы выбирали сами', 'всё, что вы запускали'], 'cheap-first': ['Сначала дешёвая, не вышло — дороже', 'считается по раздельным запускам, это прикидка'], router: ['Выбор hub', 'пара, которую hub выбрал бы для типа задачи'] };
+/** «Сколько стоит решённая задача»: four ways to pick a model, on the user's own runs. «нет данных» is not zero; «прикидка» = some number is computed, not read off real runs. */
+function strategyTable(rows) {
+  const usd = (v) => (typeof v === 'number' ? (v < 0.01 ? '<$0.01' : '$' + v.toFixed(2)) : h('span.t-meta', 'нет данных'));
+  const pct = (v) => (typeof v === 'number' ? (v < 0.1 ? '<0,1%' : (Math.round(v * 10) / 10).toLocaleString('ru-RU') + '%') : h('span.t-meta', 'нет данных'));
+  const list = Array.isArray(rows) ? rows.filter((r) => STRATEGY_RU[r.strategy]) : [];
+  return list.some((r) => r.n > 0) ? h('table.tbl', h('thead', h('tr', h('th', 'Способ выбора'), h('th.r', 'Подписка: % недели за решённую'), h('th.r', 'По API: $ за решённую'), h('th.r.hide-s', 'Попыток'), h('th', 'Данные'))),
+    h('tbody', list.map((r) => h('tr', h('td', h('b', STRATEGY_RU[r.strategy][0]), h('div.t-meta', STRATEGY_RU[r.strategy][1])), h('td.r.num', pct(r.limitPctPerSolved)), h('td.r.num', usd(r.costPerSolved)), h('td.r.num.hide-s', r.n), h('td', r.n ? chip(r.label === 'measured' ? 'замерено' : 'прикидка', r.label === 'measured' ? 'ok' : 'warn') : null)))))
+    : empty('Пока нечего сравнивать', 'Когда вы запустите несколько задач и они закончатся, здесь появится сравнение способов выбора модели.');
 }
 
 /** «Качество ревью»: the last saved measurement of the reviewers on the known cases (numbers only, never the diffs). Hostile or missing data shows «не измерялось». */

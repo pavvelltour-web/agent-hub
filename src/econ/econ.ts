@@ -170,22 +170,32 @@ export function modelStats(db: Db): Record<string, { n: number; score: number }>
 }
 
 // ---------- estimate vs actual ----------
-export interface OutcomeRow { cls: string; model: string; effort: string; runs: number; done: number; limit: number; failed: number; pending: number; actualMw: number; estLowMw: number | null; estHighMw: number | null; withinRange: number; withEstimate: number }
+export interface OutcomeRow { cls: string; model: string; effort: string; runs: number; done: number; limit: number; failed: number; pending: number; actualMw: number; estLowMw: number | null; estHighMw: number | null; withinRange: number; withEstimate: number; costUsd: number | null; costEstimated: boolean }
 
-/** Finished runs grouped by task class, model and effort: how often they succeed and whether the shown estimate held (weighted Mtok). A branch still in review is `pending`, not done. */
+/**
+ * Finished runs grouped by task class, model and effort: how often they succeed and whether the shown estimate held (weighted Mtok). A branch still in review is `pending`, not done.
+ * `costUsd` = mean API-equivalent dollars of the group's settled runs (done + failed): the run's own recorded cost, else the price table applied to its tokens
+ * (`costEstimated`); null when any settled run has neither (unknown, never 0).
+ */
 export function outcomes(db: Db): OutcomeRow[] {
-  const rows = db.prepare(`SELECT r.cls, r.model, r.effort, r.outcome, ${REVIEW_STATE_SQL} AS rstate, r.tokens_in AS tin, r.tokens_cached AS tc, r.tokens_out AS tout, r.est_json AS est FROM run r WHERE r.outcome IS NOT NULL AND r.outcome != 'interrupted' AND ${NOT_REVIEWER_SQL}`).all() as unknown as { cls: string | null; model: string | null; effort: string | null; outcome: string; rstate: string | null; tin: number | null; tc: number | null; tout: number | null; est: string | null }[];
-  const g = new Map<string, OutcomeRow & { lowSum: number; highSum: number; actualSum: number }>();
+  const rows = db.prepare(`SELECT r.cls, r.model, r.effort, r.outcome, ${REVIEW_STATE_SQL} AS rstate, r.tokens_in AS tin, r.tokens_cached AS tc, r.tokens_out AS tout, r.cost_usd AS cost, r.est_json AS est FROM run r WHERE r.outcome IS NOT NULL AND r.outcome != 'interrupted' AND ${NOT_REVIEWER_SQL}`).all() as unknown as { cls: string | null; model: string | null; effort: string | null; outcome: string; rstate: string | null; tin: number | null; tc: number | null; tout: number | null; cost: number | null; est: string | null }[];
+  const g = new Map<string, OutcomeRow & { lowSum: number; highSum: number; actualSum: number; costSum: number; settled: number; unpriced: number }>();
   for (const r of rows) {
     const key = [r.cls ?? 'unclassified', canonicalModel(r.model) ?? r.model ?? 'unknown', r.effort ?? '-'].join('|');
-    const o = g.get(key) ?? { cls: r.cls ?? 'unclassified', model: canonicalModel(r.model) ?? r.model ?? 'unknown', effort: r.effort ?? '-', runs: 0, done: 0, limit: 0, failed: 0, pending: 0, actualMw: 0, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, lowSum: 0, highSum: 0, actualSum: 0 };
+    const o = g.get(key) ?? { cls: r.cls ?? 'unclassified', model: canonicalModel(r.model) ?? r.model ?? 'unknown', effort: r.effort ?? '-', runs: 0, done: 0, limit: 0, failed: 0, pending: 0, actualMw: 0, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, costUsd: null, costEstimated: false, lowSum: 0, highSum: 0, actualSum: 0, costSum: 0, settled: 0, unpriced: 0 };
     const out = settledOutcome(r.outcome, r.rstate);
     o.runs++; if (out === 'done') o.done++; else if (out === 'review') o.pending++; else if (out === 'limit') o.limit++; else if (out === 'failed') o.failed++;
     const cached = r.tc ?? 0;
     const actual = weighted({ uncachedIn: Math.max(0, (r.tin ?? 0) - cached), cachedIn: cached, out: r.tout ?? 0 });
     o.actualSum += actual;
+    if (out === 'done' || out === 'failed') {
+      o.settled++;
+      const own = typeof r.cost === 'number' && Number.isFinite(r.cost) ? r.cost : null;
+      const priced = own ?? costUsd(r.model, { uncachedIn: Math.max(0, (r.tin ?? 0) - cached), cachedIn: cached, out: r.tout ?? 0 });
+      if (priced == null) o.unpriced++; else { o.costSum += priced; if (own == null) o.costEstimated = true; }
+    }
     if (r.est) { try { const e = (JSON.parse(r.est) as { estimate?: Estimate } & Partial<Estimate>); const t = e.estimate?.tokens ?? e.tokens; if (t) { const lo = weighted(t.low), hi = weighted(t.high); o.withEstimate++; o.lowSum += lo; o.highSum += hi; if (actual >= lo && actual <= hi) o.withinRange++; } } catch { /* ignore a malformed estimate */ } }
     g.set(key, o);
   }
-  return [...g.values()].map(({ lowSum, highSum, actualSum, ...o }) => ({ ...o, actualMw: o.runs ? actualSum / o.runs : 0, estLowMw: o.withEstimate ? lowSum / o.withEstimate : null, estHighMw: o.withEstimate ? highSum / o.withEstimate : null })).sort((a, b) => b.runs - a.runs);
+  return [...g.values()].map(({ lowSum, highSum, actualSum, costSum, settled, unpriced, ...o }) => ({ ...o, costUsd: settled > 0 && unpriced === 0 ? costSum / settled : null, costEstimated: o.costEstimated && unpriced === 0, actualMw: o.runs ? actualSum / o.runs : 0, estLowMw: o.withEstimate ? lowSum / o.withEstimate : null, estHighMw: o.withEstimate ? highSum / o.withEstimate : null })).sort((a, b) => b.runs - a.runs);
 }

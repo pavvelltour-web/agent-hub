@@ -19,6 +19,8 @@ import type { AgentId, RegistryEntry } from '../core/types.ts';
 import { build, KINDS, render, type Format, type Kind } from '../diagram/index.ts';
 import { advise, MODEL_GUIDE, ROUTING, type LimitState, type TaskClass } from '../econ/advisor.ts';
 import { calibrate, costUsd, effortProfiles, estimate, modelStats, outcomes, PRICES_VERIFIED_AT, profileFromHistory } from '../econ/econ.ts';
+import { compareStrategies } from '../econ/strategies.ts';
+import { agentOf, modelKey } from '../econ/router.ts';
 import { PRIORS, TAGS } from '../econ/priors.ts';
 import { buildCases, exportCases, NEVER_INCLUDED } from '../econ/cases.ts';
 import { startOverhead } from '../econ/overhead.ts';
@@ -322,7 +324,13 @@ const ROUTES: [string, RegExp, Handler][] = [
   }],
   ['GET', /^\/api\/cases\/preview$/, (c, { q }) => { const all = buildCases(c.db); return ok({ count: all.length, sample: all.slice(-Math.min(20, num(q.get('limit')) ?? 5)), neverIncluded: NEVER_INCLUDED }); }],
   ['POST', /^\/api\/cases\/export$/, (c) => { try { return ok(exportCases(c.db, !!loadUserConfig().sharing?.consent)); } catch (e) { return bad(403, (e as Error).message); } }],
-  ['GET', /^\/api\/outcomes$/, (c) => ok({ rows: outcomes(c.db) })],
+  ['GET', /^\/api\/outcomes$/, (c) => {
+    const rows = outcomes(c.db);
+    // limit share needs a MEASURED calibration (the wide prior is not a number to divide by); the middle of the measured range per agent
+    const cal = { claude: calibrate(c.db, 'claude'), codex: calibrate(c.db, 'codex') };
+    const mwPerPct = (model: string): number | null => { const k = cal[agentOf(modelKey(model))]; return k.source === 'measured' ? (k.lowMwPerPct + k.highMwPerPct) / 2 : null; };
+    return ok({ rows, strategies: compareStrategies(rows, { mwPerPct }) });
+  }],
   ['POST', /^\/api\/limits$/, (c, { body }) => {
     const agent = body['agent'] === 'claude' || body['agent'] === 'codex' ? body['agent'] : undefined; const p = num(body['usedPercent']);
     if (!agent || p == null || p < 0 || p > 100) return bad(400, 'agent and usedPercent (0–100) required');
