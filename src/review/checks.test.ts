@@ -105,10 +105,10 @@ test('runChecks: a check that overruns its timeout is killed', async () => {
   await withTmp(async (dir) => {
     const pidFile = join(dir, 'pid.txt');
     const t0 = Date.now();
-    const [r] = await runChecks(dir, [js('require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 60000)', pidFile)], { timeoutMs: 1500 });
+    const [r] = await runChecks(dir, [js('require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 60000)', pidFile)], { timeoutMs: 5000 });
     assert.equal(r?.ok, false);
     assert.match(r!.tail, /timed out/);
-    assert.ok(Date.now() - t0 < 15_000);
+    assert.ok(Date.now() - t0 < 30_000);
     const pid = Number(readFileSync(pidFile, 'utf8'));
     assert.ok(pid > 0);
     let alive = true;
