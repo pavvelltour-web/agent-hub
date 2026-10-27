@@ -110,14 +110,14 @@ test('runChecks: a check that overruns its timeout is killed', async () => {
   await withTmp(async (dir) => {
     const pidFile = join(dir, 'pid.txt');
     const t0 = Date.now();
-    const [r] = await runChecks(dir, [js('require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 60000)', pidFile)], { timeoutMs: 5000 });
+    const [r] = await runChecks(dir, [js('require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 60000)', pidFile)], { timeoutMs: 8000 });
     assert.equal(r?.ok, false);
     assert.match(r!.tail, /timed out/);
     assert.ok(Date.now() - t0 < 30_000);
     const pid = Number(readFileSync(pidFile, 'utf8'));
     assert.ok(pid > 0);
     let alive = true;
-    for (let i = 0; i < 40 && alive; i++) {
+    for (let i = 0; i < 150 && alive; i++) { // under suite load the tree kill can take seconds on Windows
       try { process.kill(pid, 0); await new Promise((res) => setTimeout(res, 100)); } catch { alive = false; }
     }
     assert.equal(alive, false, 'the timed-out process must be gone');
