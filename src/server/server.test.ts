@@ -23,10 +23,10 @@ const scenario = { v: 'claude-ok' };
 const runs = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe } });
 const env = (): void => { runs['opts'].env = { ...process.env, FAKE_SCENARIO: scenario.v }; };
 env();
-const stub = { picked: null as string | null, opened: [] as string[], loggedIn: false };
+const stub = { picked: null as string | null, opened: [] as string[], loggedIn: false, codexIn: true };
 const graphCtx = { tool: null as { cmd: string; prefix: string[] } | null };   // graph features off unless a test sets a (fake) graphify
 const starterCtx = { fetch: undefined as ((url: string) => Promise<string>) | undefined };   // starter kit: a fake GitHub, never the network
-const srv = await startServer({ db, runs, graph: graphCtx, starter: starterCtx, agents: () => ({ claude: { installed: true, version: 'fake', path: 'C:/fake/claude.exe' }, codex: { installed: true, version: 'fake', path: 'C:/fake/codex.exe' } }), auth: (id) => ({ loggedIn: id === 'codex' ? true : stub.loggedIn, how: id === 'codex' ? 'ChatGPT' : '' }), native: { pickFolder: () => ({ path: stub.picked }), openLogin: (id) => { stub.opened.push(id); } } });
+const srv = await startServer({ db, runs, graph: graphCtx, starter: starterCtx, agents: () => ({ claude: { installed: true, version: 'fake', path: 'C:/fake/claude.exe' }, codex: { installed: true, version: 'fake', path: 'C:/fake/codex.exe' } }), auth: (id) => ({ loggedIn: id === 'codex' ? stub.codexIn : stub.loggedIn, how: id === 'codex' ? 'ChatGPT' : '' }), native: { pickFolder: () => ({ path: stub.picked }), openLogin: (id) => { stub.opened.push(id); } } });
 after(async () => { await srv.close(); });
 const base = `http://127.0.0.1:${srv.port}`;
 const cookie = `hub_token=${srv.token}`;
@@ -376,6 +376,27 @@ test('work modes over the API: list with availability, review forces read-only t
   assert.equal((await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'go', workMode: 'nope' } })).status, 400);
   const t = await api('/api/runs', { method: 'POST', body: { projectId: id, agent: 'claude', prompt: 'do', workMode: 'task', task: 'wm1' } });
   assert.equal(t.status, 200); assert.match(t.json.run.branch, /^hub\/wm1\/claude$/, 'task mode runs in its own branch');
+});
+
+test('review mode over the API: no agent named = the mode cross-vendor reviewer (Codex signed in, else Opus), always plan; a named agent is respected; nobody signed in is 400', async () => {
+  scenario.v = 'claude-ok'; env();
+  const root = mkRepo();
+  const id = (await api('/api/projects', { method: 'POST', body: { path: root } })).json.id;
+  const was = { c: stub.loggedIn, x: stub.codexIn };
+  try {
+    stub.loggedIn = true; stub.codexIn = true;
+    const a = await api('/api/runs', { method: 'POST', body: { projectId: id, prompt: 'look', workMode: 'review', agent: 'auto', permission: 'full' } });
+    assert.equal(a.status, 200); assert.equal(a.json.run.agent, 'codex'); assert.equal(a.json.run.permission, 'plan'); assert.equal(a.json.run.branch, null);
+    assert.equal(a.json.advice.rule, 'mode-reviewer'); assert.match(a.json.advice.reason, /Codex/);
+    stub.codexIn = false;
+    const b = await api('/api/runs', { method: 'POST', body: { projectId: id, prompt: 'look', workMode: 'review' } });
+    assert.equal(b.status, 200); assert.equal(b.json.run.agent, 'claude'); assert.equal(b.json.run.model, 'claude-opus-5-5'); assert.equal(b.json.run.permission, 'plan');
+    const named = await api('/api/runs', { method: 'POST', body: { projectId: id, prompt: 'look', workMode: 'review', agent: 'claude', model: 'claude-sonnet-5-5' } });
+    assert.equal(named.json.run.agent, 'claude'); assert.equal(named.json.run.model, 'claude-sonnet-5-5', 'an explicit agent and model are a user choice');
+    stub.loggedIn = false;
+    const none = await api('/api/runs', { method: 'POST', body: { projectId: id, prompt: 'look', workMode: 'review' } });
+    assert.equal(none.status, 400); assert.match(JSON.stringify(none.json), /sign in to Codex or Claude/);
+  } finally { stub.loggedIn = was.c; stub.codexIn = was.x; }
 });
 
 // A resume needs the previous run's session id, which the agent reports a moment after start: wait for it, not for a fixed time.

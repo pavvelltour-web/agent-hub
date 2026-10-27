@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyWorkMode, loadWorkModes, parseWorkMode, type WorkMode } from './workmodes.ts';
+import { MODEL_ID } from '../econ/router.ts';
+import { applyWorkMode, loadWorkModes, parseWorkMode, pickModeReviewer, type ModeReviewer, type WorkMode } from './workmodes.ts';
 
 const proj = (): { root: string; home: string } => {
   const base = mkdtempSync(join(tmpdir(), 'hub-wm-'));
@@ -31,7 +32,7 @@ test('parseWorkMode refuses malformed modes', () => {
 test('autopilot: prefixes /autopilot <mode> <depth> for Claude when the skill is linked; asks to install it otherwise', () => {
   const { root, home } = proj();
   const req = { agent: 'claude' as const, prompt: 'сделай всё', projectRoot: root };
-  assert.throws(() => applyWorkMode(mode('autopilot'), req, { home }), /install the autopilot skill in Tools/);
+  assert.throws(() => applyWorkMode(mode('autopilot'), req, { home, library: [] }), /install the autopilot skill in Tools/);
   link(join(root, '.claude', 'skills'), 'autopilot');
   const r = applyWorkMode(mode('autopilot'), req, { home });
   assert.equal(r.prompt, '/autopilot semi normal сделай всё'); assert.equal(r.permission, 'edit'); assert.equal(r.mode, 'task');
@@ -46,7 +47,7 @@ test('autopilot works with Claude only; a Codex-only skill folder does not count
   const { root, home } = proj();
   link(join(root, '.agents', 'skills'), 'autopilot');
   assert.throws(() => applyWorkMode(mode('autopilot'), { agent: 'codex', prompt: 'x', projectRoot: root }, { home }), /Claude/);
-  assert.throws(() => applyWorkMode(mode('autopilot'), { agent: 'claude', prompt: 'x', projectRoot: root }, { home }), /install the autopilot skill/);
+  assert.throws(() => applyWorkMode(mode('autopilot'), { agent: 'claude', prompt: 'x', projectRoot: root }, { home, library: [] }), /install the autopilot skill/);
 });
 
 test('review forces plan whatever was asked; other modes keep an explicit permission; prefixes and worktree come from the mode', () => {
@@ -66,4 +67,59 @@ test('autopilot keeps its own class (a lighter class would switch slash commands
   link(join(root, '.claude', 'skills'), 'autopilot');
   const r = applyWorkMode(mode('autopilot'), { agent: 'claude', prompt: 'x', projectRoot: root, cls: 'mechanical' }, { home });
   assert.equal(r.cls, 'implement'); assert.equal(r.workMode, 'autopilot');
+});
+
+// ---- Task 5.3: shipped modes wired to installed skills and the cross-vendor reviewer ----
+
+const noLib = { library: [] as never[] };   // the machine's own hub library must not decide a test
+
+test('interview: links grill-me when it is there (claude only), runs without it and says so when it is not; skills stay on/off as ADR-020 says', () => {
+  const { root, home } = proj();
+  const req = { agent: 'claude' as const, prompt: 'идея', projectRoot: root };
+  const plain = applyWorkMode(mode('interview'), req, { home, ...noLib });
+  assert.ok(plain.prompt.startsWith('Before doing anything, interview me') && plain.prompt.endsWith('идея'), 'absent: no throw, no slash command'); assert.equal(plain.permission, 'plan');
+  assert.deepEqual(mode('interview').skills, [], 'the mode itself still lists no skills (ADR-020: interview is off by default)');
+  assert.deepEqual(mode('interview').skillsIfLinked, ['grill-me']);
+  link(join(home, '.claude', 'skills'), 'grill-me');
+  const linked = applyWorkMode(mode('interview'), req, { home, ...noLib });
+  assert.ok(linked.prompt.startsWith('/grill-me Before doing anything, interview me') && linked.prompt.endsWith('идея'));
+  assert.equal(linked.permission, 'plan', 'still read-only');
+  const cx = applyWorkMode(mode('interview'), { ...req, agent: 'codex' }, { home, ...noLib });
+  assert.ok(!cx.prompt.startsWith('/'), 'a Codex-only skill folder and no verified slash syntax: no /grill-me for Codex');
+  const other = proj();   // a project-level link counts too
+  link(join(other.root, '.claude', 'skills'), 'grill-me');
+  assert.ok(applyWorkMode(mode('interview'), { ...req, projectRoot: other.root }, { home: other.home, ...noLib }).prompt.startsWith('/grill-me '));
+});
+
+test('autopilot: the refusal names the exact fix; a skill that is only in the hub library says "link", not "install"', () => {
+  const { root, home } = proj();
+  const req = { agent: 'claude' as const, prompt: 'go', projectRoot: root };
+  assert.throws(() => applyWorkMode(mode('autopilot'), req, { home, ...noLib }), (e: Error) => /install the autopilot skill in Tools/.test(e.message) && e.message.includes(`hub init "${root}" --add skill/autopilot --yes`) && /Установите навык autopilot/.test(e.message));
+  const lib = [{ id: 'skill/autopilot', kind: 'skill', source: { type: 'local', path: 'x' }, scope: 'hub', visibleTo: [] }] as never[];
+  assert.throws(() => applyWorkMode(mode('autopilot'), req, { home, library: lib }), (e: Error) => /in your hub library but not linked/.test(e.message) && e.message.includes('--add skill/autopilot') && !/install the autopilot skill/.test(e.message));
+  link(join(root, '.claude', 'skills'), 'autopilot');
+  assert.equal(applyWorkMode(mode('autopilot'), req, { home, library: lib }).prompt, '/autopilot semi normal go', 'linked wins over the library');
+});
+
+test('review: cross-vendor reviewer from the mode file: Codex when signed in, else Opus; both read-only; nobody signed in is a plain refusal', () => {
+  const m = mode('review');
+  assert.deepEqual(m.reviewer, { prefer: 'codex', fallback: 'claude' }); assert.equal(m.permission, 'plan'); assert.deepEqual(m.skills, []);
+  const cx = pickModeReviewer(m, { claude: true, codex: true }) as ModeReviewer;
+  assert.equal(cx.agent, 'codex'); assert.equal(cx.model, undefined, 'Codex keeps the account default model: no model id is guessed'); assert.match(cx.note, /Codex/);
+  const op = pickModeReviewer(m, { claude: true, codex: false }) as ModeReviewer;
+  assert.equal(op.agent, 'claude'); assert.equal(op.model, MODEL_ID.opus); assert.equal(op.effort, 'high'); assert.match(op.note, /Opus/);
+  assert.throws(() => pickModeReviewer(m, { claude: false, codex: false }), /sign in to Codex or Claude/);
+  assert.equal(pickModeReviewer(m, { claude: false, codex: true })?.agent, 'codex');
+  assert.equal(pickModeReviewer(mode('chat'), { claude: true, codex: true }), undefined, 'a mode without reviewer data picks nothing');
+  const { root, home } = proj();   // whoever reviews, the request stays read-only and the review prefix stays
+  for (const agent of ['codex', 'claude'] as const) {
+    const r = applyWorkMode(m, { agent, prompt: 'look', projectRoot: root, permission: 'full' }, { home, ...noLib });
+    assert.equal(r.permission, 'plan'); assert.ok(r.prompt.startsWith('Review the current changes read-only.'));
+  }
+});
+
+test('parseWorkMode: reviewer and skillsIfLinked are validated (names and agents only)', () => {
+  const ok = { id: 'x', title: 'X', hint: 'h', permission: 'plan', cls: 'review', worktree: false, skills: [], review: 'none' };
+  assert.deepEqual(parseWorkMode({ ...ok, reviewer: { prefer: 'codex', fallback: 'claude' }, skillsIfLinked: ['grill-me'] }).skillsIfLinked, ['grill-me']);
+  for (const bad of [{ reviewer: { prefer: 'gemini', fallback: 'claude' } }, { reviewer: { prefer: 'codex' } }, { reviewer: 'codex' }, { skillsIfLinked: ['*'] }, { skillsIfLinked: ['../x'] }, { skillsIfLinked: 'grill-me' }]) assert.throws(() => parseWorkMode({ ...ok, ...bad }), /work mode/, JSON.stringify(bad));
 });

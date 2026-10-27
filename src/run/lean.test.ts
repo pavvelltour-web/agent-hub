@@ -109,7 +109,7 @@ test('work modes: skills accepts "*" as the one explicit wildcard; any non-empty
   const ok = { id: 'x', title: 't', hint: 'h', permission: 'edit', cls: 'implement', worktree: false, review: 'none' };
   assert.deepEqual(parseWorkMode({ ...ok, skills: ['*'] }).skills, ['*']);
   for (const bad of [['*', 'x'], ['x*'], ['**'], ['.*'], [' *']]) assert.throws(() => parseWorkMode({ ...ok, skills: bad }), /bad skills/, JSON.stringify(bad));
-  const root = tmp('hub-lean-'), o = { projectRoot: root, cwd: root, mcpNeeded: [] as string[] };
+  const root = tmp('hub-lean-'), o = { projectRoot: root, cwd: root, mcpNeeded: [] as string[], home: root };   // home: the machine's own skill folders must not decide
   const byId = Object.fromEntries(loadWorkModes().map((m) => [m.id, leanArgs('claude', m, o)]));
   assert.deepEqual(byId['task'], [], 'task runs keep skills'); assert.deepEqual(byId['chat'], [], 'chat keeps skills');
   assert.deepEqual(byId['autopilot'], [], 'autopilot keeps its skill');
@@ -180,4 +180,18 @@ test('work modes: the optional mcp list is validated like skills', () => {
   assert.deepEqual(parseWorkMode({ ...ok, mcp: ['shadcn', 'mobbin'] }).mcp, ['shadcn', 'mobbin']);
   assert.equal(parseWorkMode(ok).mcp, undefined);
   for (const bad of ['shadcn', [1], ['../x'], ['a b'], ['']]) assert.throws(() => parseWorkMode({ ...ok, mcp: bad }), /bad mcp/, JSON.stringify(bad));
+});
+
+test('lean: skillsIfLinked keeps skills on only when one of them is linked for Claude; otherwise skills stay off and a note says so', () => {
+  const root = tmp('hub-lean-'), home = tmp('hub-lean-home-');
+  const m = mode({ id: 'interview', skills: [], skillsIfLinked: ['grill-me'] });
+  const o = { projectRoot: root, cwd: root, mcpNeeded: [] as string[], home };
+  const off = leanPlan('claude', m, o);
+  assert.deepEqual(off.args, ['--disable-slash-commands']);
+  assert.equal(off.notes.length, 1); assert.match(off.notes[0] as string, /grill-me is not linked.*interview runs without it/);
+  mkdirSync(join(home, '.claude', 'skills', 'grill-me'), { recursive: true }); writeFileSync(join(home, '.claude', 'skills', 'grill-me', 'SKILL.md'), '---\nname: grill-me\n---\n');
+  const on = leanPlan('claude', m, o);
+  assert.deepEqual(on.args, [], 'linked: skills stay on (any non-empty set keeps them)'); assert.deepEqual(on.notes, []);
+  assert.deepEqual(leanPlan('codex', m, o).notes, [], 'Codex: nothing is passed, nothing to say');
+  assert.deepEqual(leanPlan('claude', mode({ skills: [] }), o).notes, [], 'a mode without optional skills says nothing');
 });

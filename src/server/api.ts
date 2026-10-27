@@ -4,7 +4,7 @@ import { detectAgents, type AgentInfo } from '../adapters/locate.ts';
 import { authStatus, forgetAuth, type AuthInfo } from '../adapters/auth.ts';
 import { openLogin, pickFolder } from '../adapters/native.ts';
 import { loadMatrix } from '../adapters/probe.ts';
-import { applyWorkMode, loadWorkModes } from '../core/workmodes.ts';
+import { applyWorkMode, loadWorkModes, pickModeReviewer, type ModeReviewer, type Ready } from '../core/workmodes.ts';
 import { applyPlan, describe, listBackups, undoBackup } from '../core/plan.ts';
 import { planInit, listPacks } from '../core/init.ts';
 import { graphStatus, locateGraphify, updateGraph, type GraphTool } from '../core/graph.ts';
@@ -426,7 +426,11 @@ const ROUTES: [string, RegExp, Handler][] = [
     const wm = !resuming && str(body['workMode']) ? loadWorkModes().find((m) => m.id === body['workMode']) : undefined;
     if (!resuming && str(body['workMode']) && !wm) return bad(400, 'unknown work mode');
     let agent = (sess ? sess.agent : str(body['agent'])) as AgentId | 'auto' | undefined; let model = str(body['model']); let effort = str(body['effort']); let advice: unknown;
-    if (!agent || agent === 'auto') { const ch = advise({ cls: (str(body['cls']) as TaskClass) ?? wm?.cls ?? 'implement', limits: limitsFor(c), ...learned(c), ...(body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? { implementedBy: body['implementedBy'] } : {}) }); agent = ch.agent; model ??= ch.model; effort ??= ch.effort; advice = ch; }
+    if ((!agent || agent === 'auto') && wm?.reviewer) {   // the mode names its own reviewer (data in modes/review.json): signed-in status from the adapter check only
+      const info = (c.agents ?? detectAgents)(); const ready: Ready = {};
+      for (const id of ['claude', 'codex'] as AgentId[]) ready[id] = info[id].installed && (c.auth ?? authStatus)(id, info[id]).loggedIn === true;
+      try { const r = pickModeReviewer(wm, ready) as ModeReviewer; agent = r.agent; model ??= r.model; effort ??= r.effort; advice = { agent: r.agent, model: model ?? '', effort, rule: 'mode-reviewer', reason: r.note }; } catch (e) { return bad(400, (e as Error).message); }
+    } else if (!agent || agent === 'auto') { const ch = advise({ cls: (str(body['cls']) as TaskClass) ?? wm?.cls ?? 'implement', limits: limitsFor(c), ...learned(c), ...(body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? { implementedBy: body['implementedBy'] } : {}) }); agent = ch.agent; model ??= ch.model; effort ??= ch.effort; advice = ch; }
     if (agent !== 'claude' && agent !== 'codex') return bad(400, 'agent must be claude, codex or auto');
     const cls = str(body['cls']) && (str(body['cls']) as string) in ROUTING ? (str(body['cls']) as TaskClass) : wm?.cls;
     const est = cls && model ? estimate(profileFromHistory(c.db, agent), model, calibrate(c.db, agent), 1) : undefined;
