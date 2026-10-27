@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { btn, chip, closeBtn, dialog, field, h, icon, toast } from '../ui.js';
 import {
   ANSWER_RU, EFFORTS, EFFORT_RU, IN_PROGRESS, RISK_RU, ROUND_CAP, SEV_RU, STATE_RU, STEPS, STEP_TEXT,
-  NOT_APPROVED_RE, blockers, cardText, closedCount, countsText, errRu, groupByFile, model, nothingFound, pick, plural, reasonRu, redCheck, riskWhyRu, short, stepStates, str, votesText, warnRu,
+  NOT_APPROVED_RE, argVis, blockers, cardText, closedCount, countsText, errRu, groupByFile, model, nothingFound, pick, plural, reasonRu, redCheck, riskWhyRu, short, stepStates, str, vis, votesText, warnRu,
 } from '../review-model.js';
 import { go, pageHead } from './common.js';
 
@@ -192,19 +192,21 @@ export default async function view(ctx) {
   function checkPlanBlock(m) {
     const p = m.checkPlan;
     if (!p.checks.length) return null;
-    if (p.tooLarge) {
+    if (p.tooLarge || p.unreadable) {
       return h('section.stack.rv-gap.rv-approve', { 'aria-label': 'Одобрение проверок' },
-        h('div.alert.err', { role: 'alert' }, icon('alert'), h('div.stack', h('b', 'Список проверок слишком большой'), h('span', 'Его нельзя показать целиком (больше 64 КБ), поэтому одобрить его нельзя. Сократите команды или скрипты package.json.'))));
+        h('div.alert.err', { role: 'alert' }, icon('alert'), h('div.stack', h('b', p.tooLarge ? 'Список проверок слишком большой' : 'Проверки нельзя одобрить'),
+          h('span', p.tooLarge ? 'Его нельзя показать целиком (больше 64 КБ), поэтому одобрить его нельзя. Сократите команды или скрипты package.json.' : p.unreadable))));
     }
-    // Every byte the digest covers is shown (scrollable <pre>, textContent): the commands, ALL package.json scripts, the hashes of the files.
+    // Every byte the digest covers is shown (scrollable <pre>, textContent), each value escaped so newlines and bidi/invisible characters
+    // are visible: the commands, ALL package.json scripts, the hashes of the files.
     const runs = new Set(p.runs);
     const body = [
-      h('p', p.note || 'Проверки запускают код ветки с вашими правами, вне песочницы агента.'),
+      h('p', p.note || 'Проверки выполняют код ветки с вашими правами; одобрение покрывает только перечисленное.'),
       h('b.t-label', 'Команды'),
-      h('pre.rv-pre', p.checks.map((c) => c.map((a) => (/[\s"]/.test(a) || !a ? JSON.stringify(a) : a)).join(' ')).join('\n')),
-      p.scripts.length ? [h('b.t-label', 'Скрипты package.json (все; «▶» — те, что запустятся)'), h('pre.rv-pre', p.scripts.map(([k, v]) => `${runs.has(k) ? '▶' : ' '} ${k}: ${v}`).join('\n'))] : null,
-      p.files.length ? [h('b.t-label', 'Файлы, которые запустятся (отпечаток SHA-256)'), h('pre.rv-pre', p.files.map(([k, v]) => `${k}  ${v ?? 'нет в коммите'}`).join('\n'))] : null,
-      h('p.t-meta', 'Одобрение действует на этом компьютере, пока команды, скрипты и эти файлы не меняются: проверки запускаются в чистой копии коммита, ровно с теми байтами, что показаны. Любая их правка в ветке потребует одобрить снова.'),
+      h('pre.rv-pre', p.checks.map((c) => c.map(argVis).join(' ')).join('\n')),
+      p.scripts.length ? [h('b.t-label', 'Скрипты package.json (все; «▶» — те, что запустятся)'), h('pre.rv-pre', p.scripts.map(([k, v]) => `${runs.has(k) ? '▶' : ' '} ${vis(k)}: ${vis(v)}`).join('\n'))] : null,
+      p.files.length ? [h('b.t-label', 'Файлы, которые запустятся (отпечаток SHA-256)'), h('pre.rv-pre', p.files.map(([k, v]) => `${vis(k)}  ${v ?? 'нет в коммите'}`).join('\n'))] : null,
+      h('p.t-meta', 'Проверки выполняют код ветки: тесты и всё, что они подключают, в одобрение не входят. Одобрение покрывает только перечисленное и действует на этом компьютере, пока оно не меняется; запуск идёт в чистой копии коммита, ровно с показанными байтами.'),
     ];
     if (p.approved) return h('details.rv-checks', h('summary', 'Что запускают проверки'), h('div.stack.rv-gap', body));
     const b = IN_PROGRESS.has(m.review.state) ? null : btn('Одобрить проверки', { kind: 'primary', icon: 'check', onclick: () => approveChecks(m, b) });

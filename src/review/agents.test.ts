@@ -280,3 +280,10 @@ test('parseHunt (F4): an empty findings list never wipes out a real one; lists a
   const two = parseHunt(`${JSON.stringify({ findings: [real] })} and ${JSON.stringify({ findings: [{ ...real, line: 9, title: 'Second' }, real] })}`, 'correctness');
   assert.deepEqual(two.map((f) => f.title), ['Off-by-one', 'Second'], 'joined, each finding once');
 });
+
+test('parseHunt (E7): the 30-finding cap applies after the lists are joined', () => {
+  const f = (i: number) => ({ category: 'bug', file: 'src/a.ts', line: i + 1, title: `t${i}`, evidence: 'e', classOfBug: '' });
+  const a = JSON.stringify({ findings: Array.from({ length: 20 }, (_, i) => f(i)) }), b = JSON.stringify({ findings: Array.from({ length: 20 }, (_, i) => f(i + 20)) });
+  assert.throws(() => parseHunt(`${a}\n${b}`, 'correctness'), (e: unknown) => e instanceof ReviewError && /more than 30/.test(e.message));
+  assert.equal(parseHunt(`${a}\n${a}`, 'correctness').length, 20, 'repeats are joined once and stay under the cap');
+});

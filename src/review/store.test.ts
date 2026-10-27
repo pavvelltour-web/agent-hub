@@ -120,7 +120,16 @@ test('markCleared records the clearing sha and marks the finding fixed', () => {
   const r = createReview(db, mkReview());
   const f = addFindings(db, r.id, 1, [stored(raw())])[0]!;
   const c = markCleared(db, f.id, 'ddd');
-  assert.equal(c.clearedBy, 'ddd'); assert.equal(c.answer, 'fixed');
+  assert.equal(c.clearedBy, 'ddd'); assert.equal(c.answer, 'fixed'); assert.equal(c.cleared, true);
+});
+
+test('markCleared (E3) never overwrites an answer given meanwhile: only an open finding becomes fixed', () => {
+  const db = openDb(':memory:');
+  const r = createReview(db, mkReview());
+  const f = addFindings(db, r.id, 1, [stored(raw())])[0]!;
+  answerFinding(db, f.id, 'rejected', 'not a bug, see the spec');
+  const c = markCleared(db, f.id, 'eee');
+  assert.equal(c.cleared, false); assert.equal(c.answer, 'rejected'); assert.equal(c.reason, 'not a bug, see the spec'); assert.equal(c.clearedBy, undefined);
 });
 
 test('human approval is stored for a sha with a time and can be cleared', () => {

@@ -99,10 +99,11 @@ export function answerFinding(db: Db, findingId: string, answer: Exclude<Answer,
   return toFinding(mustFinding(db, findingId));
 }
 
-export function markCleared(db: Db, findingId: string, sha: string): Finding {
+/** Marks an OPEN finding fixed by commit `sha`. An answer given meanwhile (by the user, between the round's snapshot and now) is never overwritten: `cleared` says whether it changed. */
+export function markCleared(db: Db, findingId: string, sha: string): Finding & { cleared: boolean } {
   mustFinding(db, findingId);
-  db.prepare("UPDATE finding SET answer = 'fixed', cleared_by = ? WHERE id = ?").run(sha, findingId);
-  return toFinding(mustFinding(db, findingId));
+  const r = db.prepare("UPDATE finding SET answer = 'fixed', cleared_by = ? WHERE id = ? AND answer = 'open'").run(sha, findingId);
+  return { ...toFinding(mustFinding(db, findingId)), cleared: Number(r.changes) === 1 };
 }
 
 export function setHumanApproval(db: Db, reviewId: string, sha: string): Review {

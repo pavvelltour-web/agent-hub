@@ -31,7 +31,7 @@ export function relFile(f: string, root?: string): string {
 }
 
 /** `"<file>:<line>"` keys → per-file line lists keyed by the folded path (case-insensitive on Windows), keeping the diff's own spelling. */
-function indexDiff(keys: Set<string>): Map<string, { file: string; lines: number[] }> {
+export function indexDiff(keys: Set<string>): Map<string, { file: string; lines: number[] }> {
   const m = new Map<string, { file: string; lines: number[] }>();
   for (const k of keys) {
     const i = k.lastIndexOf(':'); if (i <= 0) continue;
@@ -49,7 +49,7 @@ function indexDiff(keys: Set<string>): Map<string, { file: string; lines: number
  * give or take LINE_SLACK, and the ADDED line it matched (the nearest one; the hunter's own number when nothing matched). The slack is for
  * matching only: the stored line and its text are the matched added line, so clearing follows the right line.
  */
-function matchDiff(idx: Map<string, { file: string; lines: number[] }>, file: string, line: number): { file: string; inDiff: boolean; line: number } {
+export function matchDiff(idx: Map<string, { file: string; lines: number[] }>, file: string, line: number): { file: string; inDiff: boolean; line: number } {
   let found: { file: string; lines: number[] } | undefined;
   for (const cand of [file, file.replace(/^[ab]\//, '')]) {
     const e = idx.get(fold(cand)); if (!e) continue;

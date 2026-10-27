@@ -145,12 +145,13 @@ export function parseHunt(text: string, lens: Lens, warn?: (s: string) => void):
   const lists = jsonObjects(text).filter((o) => Array.isArray(o.value['findings']));
   if (!lists.length) throw new ReviewError(NO_RESULT);
   const max = HUNT_SCHEMA.properties?.['findings']?.maxItems ?? 30;
-  for (const l of lists) { const n = (l.value['findings'] as unknown[]).length; if (n > max) throw new ReviewError(`${n} findings in one answer, more than ${max}: not reviewed in full`); }
   const full = lists.filter((l) => (l.value['findings'] as unknown[]).length > 0);
   if (!full.length && !lists.at(-1)?.trailing) throw new ReviewError(`${NO_RESULT}: an empty findings list that is not the answer itself`);
   if (full.length && full.length < lists.length) warn?.(`${lens} reviewer: its answer holds both empty and non-empty findings lists; the findings of all lists were kept`);
   const seen = new Set<string>(); const items: unknown[] = [];
-  for (const l of full) for (const it of l.value['findings'] as unknown[]) { const k = JSON.stringify(it); if (!seen.has(k)) { seen.add(k); items.push(it); } }
+  for (const l of full) for (const it of l.value['findings'] as unknown[]) { const k = JSON.stringify(it); if (!seen.has(k)) { seen.add(k); items.push(it); } if (items.length > max) break; }
+  // the cap applies to the JOINED findings: several lists cannot carry more than the schema allows in one answer
+  if (items.length > max) throw new ReviewError(`more than ${max} findings in one answer: not reviewed in full`);
   const out: RawFinding[] = [];
   for (const item of items) {
     const v = validate(FINDING_SCHEMA, item);

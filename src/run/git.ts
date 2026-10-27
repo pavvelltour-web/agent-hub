@@ -86,10 +86,10 @@ export const NOT_HUB_DIR = ['--', '.', ':(exclude).hub'];
 export function checkpoint(cwd: string, message: string, o: { home?: string; env?: NodeJS.ProcessEnv } = {}): { committed: boolean; sha: string; note?: string } {
   const env = o.env ?? minimalEnv();
   const noHooks = ['-c', `core.hooksPath=${noHooksDir(o.home ?? HUB_HOME)}`];
-  git(cwd, [...noHooks, 'add', '-A', ...NOT_HUB_DIR], env);
+  git(cwd, [...noHooks, '-c', 'core.fsmonitor=false', 'add', '-A', ...NOT_HUB_DIR], env);
   git(cwd, [...noHooks, 'reset', '-q', '--', '.hub'], env);
   if (git(cwd, ['diff', '--cached', '--quiet'], env).ok) return { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out };
-  const c = git(cwd, [...noHooks, '-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', 'commit', '--no-verify', '-m', message], env);
+  const c = git(cwd, [...noHooks, '-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', '-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', 'commit', '--no-verify', '-m', message], env);
   return c.ok ? { committed: true, sha: git(cwd, ['rev-parse', 'HEAD']).out } : { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out, note: `commit refused: ${c.err.split('\n')[0] ?? ''}` };
 }
 
@@ -111,8 +111,11 @@ export function minimalEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Proces
   return out;
 }
 
-/** Env for review checks: the allowlist + `git push` blocked (push-guard hook under `home`). */
-export const checkEnv = (home: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => pushGuardEnv(home, minimalEnv(base));
+/**
+ * Env for review checks: the allowlist + `git push` blocked (push-guard hook under `home`) + `NoDefaultCurrentDirectoryInExePath=1`, so cmd.exe
+ * (npm's script shell on Windows) does not pick a `node.cmd` / `tsc.cmd` planted in the checks copy's own folder before PATH.
+ */
+export const checkEnv = (home: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({ ...pushGuardEnv(home, minimalEnv(base)), NoDefaultCurrentDirectoryInExePath: '1' });
 
 /** An empty hooks folder under `home`: `-c core.hooksPath=<it>` makes git run no repository hook (husky's files are branch files). */
 export function noHooksDir(home: string): string {

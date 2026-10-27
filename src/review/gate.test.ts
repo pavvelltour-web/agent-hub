@@ -12,7 +12,7 @@ import { waitForRun } from '../run/wait.ts';
 import { handle, type Ctx } from '../server/api.ts';
 import { startServer } from '../server/server.ts';
 import { answerFinding } from './store.ts';
-import { GateError, RECONSIDER_MESSAGE, answer, approve, blockingLines, canAccept, canAcceptNow, gitProblem, launchReview, normLine, pickReviewers, reviewView, startFix, startReview } from './gate.ts';
+import { GateError, RECONSIDER_MESSAGE, answer, approve, blockingLines, canAccept, canAcceptNow, codePart, gitProblem, launchReview, LINE_MAX, lineKey, pickReviewers, reviewView, startFix, startReview } from './gate.ts';
 import { sweepReviewerDirs } from './agents.ts';
 import { HUB_HOME } from '../core/registry.ts';
 import { addFindings, getReview, listFindings, listReviewsForRun } from './store.ts';
@@ -532,11 +532,55 @@ test('integrity 2 (B2): REMOVING a trailing comment that held the longest identi
   assert.equal(listFindings(w.db, r.id)[0]!.answer, 'fixed', 'a real change of the code part still clears it');
 });
 
-test('normLine (F1): linear on hostile lines (100k "#" and a quote at the end), capped, and keeps its comment rule', () => {
+test('lineKey (F1, D1, D2): linear on hostile lines; one symmetric key: code before the FIRST // or #, no whitespace; unreliable keys are null', () => {
   const t0 = Date.now();
-  normLine('#'.repeat(100_000) + '"'); normLine('a//'.repeat(50_000) + "'");
+  lineKey('#'.repeat(100_000) + '"'); lineKey('a//'.repeat(50_000) + "'"); codePart('#'.repeat(100_000) + '"');
   assert.ok(Date.now() - t0 < 500, `took ${Date.now() - t0} ms`);
-  assert.equal(normLine('x = 1; // note'), 'x=1'); assert.equal(normLine("s = '#1' # c"), 's="#1"'); assert.equal(normLine('// only a comment'), '//onlyacomment');
+  assert.equal(lineKey('x = 10; // note'), 'x=10');
+  assert.equal(lineKey("total = n + 1; // don't touch"), lineKey('total = n + 1;'), 'a comment with a quote is still a comment');
+  assert.equal(lineKey('url = "http://x/y"'), 'url="http:', 'cut at the first // even inside a string: shorter key, never a false clear');
+  assert.equal(lineKey('// only a comment'), null, 'a comment-only line has no key: never auto-closed');
+  assert.equal(lineKey('a=1'), null, 'shorter than 4: no key');
+  assert.equal(lineKey('    ' + 'x'.repeat(LINE_MAX)), null, 'longer than LINE_MAX raw characters: no key');
+  assert.equal(lineKey('\t\tlet  total =\tn+1'), lineKey('let total = n+1'), 'whitespace never matters');
+});
+
+test('integrity 2 (D1): a flagged line longer than 2000 characters (indented) is never auto-closed', async () => {
+  const long = '        const data = [' + Array.from({ length: 300 }, (_, i) => `"item${i}"`).join(', ') + '];';
+  assert.ok(long.length > 2000);
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Huge literal')] } });
+  w.commit({ 'src/a.ts': `export const a = 1;\n${long}\n` }); const r = await w.go();
+  w.script({}); w.commit({ 'docs/x.md': 'x\n' }); await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open', 'unchanged long line: open');
+  w.commit({ 'src/a.ts': 'export const a = 1;\n' }); await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open', 'even removed: the key is unreliable, so a human answers it');
+});
+
+test('integrity 2 (D2): removing or adding a comment WITH a quote does not clear; a real code edit before the marker does; a URL in a string does not clear falsely', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Wrong total')] } });
+  w.commit({ 'src/a.ts': "export const a = 1;\nlet total = n + 1; // don't change this\n" }); const r = await w.go();
+  w.script({}); w.commit({ 'src/a.ts': 'export const a = 1;\nlet total = n + 1;\n' }); await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open', 'removed a quoted comment');
+  w.commit({ 'src/a.ts': 'export const a = 1;\nlet total = n + 2;\n' }); await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'fixed', 'a real edit of the code part clears it');
+  const v = world(); v.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Wrong total')] } });
+  v.commit({ 'src/a.ts': 'export const a = 1;\nlet total = n + 1;\n' }); const rv = await v.go();
+  v.script({}); v.commit({ 'src/a.ts': "export const a = 1;\nlet total = n + 1; # it's fine\n" }); await v.go();
+  assert.equal(listFindings(v.db, rv.id)[0]!.answer, 'open', 'added a quoted comment');
+  const u = world(); u.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Bad URL')] } });
+  u.commit({ 'src/a.ts': 'export const a = 1;\nconst endpoint = "http://example.test/api";\n' }); const ru = await u.go();
+  u.script({}); u.commit({ 'src/a.ts': 'export const a = 1;\nconst endpoint = "http://example.test/v2";\n' }); await u.go();
+  assert.equal(listFindings(u.db, ru.id)[0]!.answer, 'open', 'same code before // : not cleared (the safe direction)');
+});
+
+test('E9: a finding already posted is not sent to the verifiers again when the hunter reports it a few lines off', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 5, 'Mark is wrong')] } });   // added lines are 2 and 3: line 5 anchors to 3
+  w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  const f = listFindings(w.db, r.id)[0]!; assert.equal(f.line, 3);
+  const before = w.spawned().length;
+  w.commit({ 'docs/x.md': 'x\n' }); await w.go();
+  const verifiers = w.spawned().slice(before).filter((s) => /<<<DATA:finding:/.test(s.prompt)).length;
+  assert.equal(verifiers, 0, 'no verifier spent on a posted finding');
 });
 
 test('integrity 2: a security finding is never cleared automatically, even when its line is gone', async () => {
@@ -714,9 +758,15 @@ test('integrity (g): reviewers run in an empty folder under <home>/reviewers, ne
 test('reviewer folders (F7): history never turns them into projects; old leftovers are swept when the panel starts, failures are reported', async () => {
   const d = openDb(':memory:');
   assert.equal(projectId(d, join(HUB_HOME, 'reviewers', 'rv-abc')), null);
-  assert.equal(projectId(d, 'C:/Users/u/AppData/Local/Temp/hub-reviewer-x1'), null, 'old %TEMP% reviewer folders too');
-  d.prepare("INSERT INTO project (key, root, slug) VALUES ('k', 'C:/Users/u/AppData/Local/Temp/hub-reviewer-old', 'hub-reviewer-old')").run();
+  assert.equal(projectId(d, join(tmpdir(), 'hub-reviewer-x1')), null, 'old <tmpdir>/hub-reviewer-* folders too');
+  const junk = join(tmpdir(), 'hub-reviewer-old').replace(/\\/g, '/');
+  d.prepare("INSERT INTO project (key, root, slug) VALUES ('k', ?, 'hub-reviewer-old')").run(junk);
   assert.deepEqual(listProjects(d).map((p) => p.slug), [], 'a junk project from before is not listed');
+  // E6: only those canonical prefixes: a user project in a folder that happens to be named hub-reviewer-* elsewhere stays a project
+  const mine = join(tmp, 'work', 'hub-reviewer-tools');
+  assert.notEqual(projectId(d, mine), null);
+  assert.ok(listProjects(d).some((p) => p.slug === 'hub-reviewer-tools'));
+  assert.notEqual(projectId(d, join(tmp, 'reviewers', 'rv-x')), null, 'a "reviewers" folder outside the hub home is a normal project');
   const home = join(tmp, 'sweep-home'); const old = join(home, 'reviewers', 'rv-old'), fresh = join(home, 'reviewers', 'rv-new');
   mkdirSync(old, { recursive: true }); mkdirSync(fresh, { recursive: true });
   const past = new Date(Date.now() - 2 * 3_600_000); utimesSync(old, past, past);
@@ -843,6 +893,18 @@ test('checks run in a clean copy of the commit (B4): a skip-worktree edit and an
   assert.match(all, /npmrc=false/, 'the ignored .npmrc of the task folder is not there');
   assert.doesNotMatch(all.toLowerCase(), new RegExp(w.wt.toLowerCase().replace(/[\\/.*+?^${}()|[\]]/g, '.'), 'i'), 'not run in the task folder');
   assert.deepEqual(existsSync(join(w.home, 'check-runs')) ? readdirSync(join(w.home, 'check-runs')) : [], [], 'the copy is removed');
+});
+
+test('licences are read before the checks run (E2): a check that plants an MIT licence in the root node_modules does not clear a new dependency', async () => {
+  const plant = 'const fs = require("fs"); fs.mkdirSync("node_modules/evil-dep", { recursive: true }); fs.writeFileSync("node_modules/evil-dep/package.json", JSON.stringify({ name: "evil-dep", license: "MIT" })); console.log("planted")\n';
+  const w = world({ base: { 'hub.json': JSON.stringify({ review: { checks: [['node', 'plant.js']] } }), 'plant.js': plant, '.gitignore': 'node_modules/\n', 'package.json': '{\n  "dependencies": {\n  }\n}\n' } });
+  mkdirSync(join(w.root, 'node_modules'), { recursive: true });                      // the user's own install (ignored, not committed)
+  w.commit({ 'package.json': '{\n  "dependencies": {\n    "evil-dep": "^1.0.0"\n  }\n}\n' }); w.approveChecks();
+  const r = await w.go();
+  const v = reviewView(w.db, r.id);
+  assert.match(v.checks.map((c) => c.tail).join('\n'), /planted/, 'the check ran (and wrote through the link: a known limitation)');
+  assert.ok(existsSync(join(w.root, 'node_modules', 'evil-dep', 'package.json')));
+  assert.ok(listFindings(w.db, r.id).some((f) => f.severity === 'security' && /evil-dep/.test(f.title)), 'the dependency is still a security finding');
 });
 
 test('launchReview answers before the round does its work (F2): a finding is cleared only after the call returned', async () => {

@@ -120,3 +120,17 @@ test('model: the check plan is typed (argv lists, scripts, file hashes, digest);
   for (const t of ['Одобрить проверки', 'checks/approve', 'Проверки ждут вашего одобрения', 'Скрипты package.json', 'Список проверок слишком большой']) assert.ok(src.includes(t), t);
   assert.match(readFileSync(join(here, '..', '..', 'src', 'review', 'checks.ts'), 'utf8'), /с вашими правами, вне песочницы агента/);
 });
+
+test('vis / argVis (E8): newlines, CR, quotes, backslashes and bidi / zero-width characters are shown as visible escapes', () => {
+  const vis = M['vis'] as (s: string) => string, argVis = M['argVis'] as (s: string) => string;
+  const ch = (n: number): string => String.fromCharCode(n);
+  const RLO = ch(0x202e), ZWSP = ch(0x200b), LS = ch(0x2028), LF = ch(10), CR = ch(13), BS = ch(92);
+  const body = 'node ok.js' + RLO + 'sj.live' + LF + 'x test: fake' + CR + 'x' + ZWSP + LS + BS;
+  const shown = vis(body);
+  assert.ok(![RLO, ZWSP, LS, LF, CR].some((c) => shown.includes(c)), 'no raw control, bidi or invisible character remains');
+  for (const esc of [BS + 'u202e', BS + 'u200b', BS + 'u2028', BS + 'n', BS + 'r', BS + BS]) assert.ok(shown.includes(esc), esc);
+  assert.equal(argVis('src/a.test.js'), 'src/a.test.js', 'a plain argument stays bare');
+  assert.equal(argVis('a b'), '"a b"'); assert.ok(argVis('x' + RLO + 'y').includes(BS + 'u202e'));
+  const src = readFileSync(join(here, '..', '..', 'web', 'js', 'views', 'review.js'), 'utf8');
+  assert.ok(src.includes('c.map(argVis)') && src.includes('${vis(k)}: ${vis(v)}'), 'structure: the screen escapes args, script names and bodies');
+});

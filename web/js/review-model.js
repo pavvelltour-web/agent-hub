@@ -59,6 +59,18 @@ export function model(raw) {
   return { review, findings, checks, warnings: lines(r.warnings), reasons: lines(r.reasons), riskWhy: lines(r.riskWhy), humanWhy: lines(r.humanWhy), checkPlan: checkPlanOf(r.checkPlan) };
 }
 
+/**
+ * A value as the approval screen shows it: JSON-quoted (newlines, CR, tabs, quotes and backslashes become visible escapes) and every bidi,
+ * zero-width or other invisible format character as \uXXXX, so a script body cannot fake extra lines or hide its real text.
+ */
+const INVISIBLE = new RegExp('[' + [[0x80, 0x9f], [0xad, 0xad], [0x61c, 0x61c], [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e], [0x2060, 0x2064], [0x2066, 0x206f], [0xfeff, 0xfeff], [0xfff9, 0xfffb]]
+  .map(([a, b]) => String.fromCharCode(a) + '-' + String.fromCharCode(b)).join('') + ']', 'g');
+export function vis(v) {
+  return JSON.stringify(String(v)).replace(INVISIBLE, (c) => '\\' + 'u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+/** A command argument: bare when it is plain, else `vis()`. */
+export const argVis = (a) => (/^[\w./:@=+,%-]+$/.test(a) ? a : vis(a));
+
 /** Same limit as the server (MAX_PLAN_BYTES): what the digest covers must be shown in full, so a larger plan is never approvable here. */
 export const MAX_PLAN_BYTES = 64 * 1024;
 
@@ -80,7 +92,7 @@ export function checkPlanOf(raw) {
   const size = new TextEncoder().encode(JSON.stringify([checks, scripts, files])).length;
   return {
     checks, scripts, files, runs: list(p.runs).map(full), source: str(p.source, 40),
-    digest, approved: p.approved === true, noTests: p.noTests === true, note: str(p.note, 600), tooLarge: p.tooLarge === true || size > MAX_PLAN_BYTES,
+    digest, approved: p.approved === true, noTests: p.noTests === true, note: str(p.note, 600), tooLarge: p.tooLarge === true || size > MAX_PLAN_BYTES, unreadable: str(p.unreadable, 400),
   };
 }
 export const NOT_APPROVED_RE = /^Проверки из .+ не одобрены$/;

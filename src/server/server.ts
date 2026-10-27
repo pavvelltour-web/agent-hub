@@ -6,6 +6,7 @@ import { REPO_ROOT } from '../core/registry.ts';
 import { safeJoin } from '../lib/paths.ts';
 import { handle, type Ctx } from './api.ts';
 import { sweepReviewerDirs } from '../review/agents.ts';
+import { sweepCheckRuns } from '../review/checks.ts';
 import { markInterruptedReviews } from '../review/store.ts';
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
@@ -24,7 +25,7 @@ const cookieOf = (req: IncomingMessage, name: string): string | undefined => req
 export async function startServer(ctx: Ctx, o: { port?: number; token?: string; webDir?: string } = {}): Promise<Started> {
   // This process runs the review rounds: one left mid-round by a crash is open again ("interrupted by a restart"); old reviewer folders go.
   markInterruptedReviews(ctx.db);
-  const warnings = sweepReviewerDirs(ctx.runs.home);
+  const warnings = [...sweepReviewerDirs(ctx.runs.home), ...sweepCheckRuns(ctx.runs.home)];
   for (const w of warnings) process.stderr.write(`agent-hub: ${w}
 `);
   const token = o.token ?? randomBytes(24).toString('base64url');

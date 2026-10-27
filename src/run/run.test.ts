@@ -141,6 +141,17 @@ test('checkpoint runs no repository hook (F6): a husky pre-commit or post-commit
   } finally { for (const d of [r, home]) rmSync(d, { recursive: true, force: true, maxRetries: 3 }); }
 });
 
+test('checkpoint (E4) commits even when the repository asks for gpg signing with a gpg that does not exist', () => {
+  const r = repo(); const home = mkdtempSync(join(tmpdir(), 'hub-home-'));
+  try {
+    git(r, ['config', 'commit.gpgsign', 'true']); git(r, ['config', 'gpg.program', 'no-such-gpg-xyz']); git(r, ['config', 'core.fsmonitor', 'true']);
+    writeFileSync(join(r, 'w.txt'), 'w\n');
+    assert.equal(git(r, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qam', 'x', '--allow-empty']).ok, false, 'a plain commit would fail on signing');
+    const cp = checkpoint(r, 'cp', { home });
+    assert.equal(cp.committed, true, cp.note); assert.equal(cp.note, undefined);
+  } finally { for (const d of [r, home]) rmSync(d, { recursive: true, force: true, maxRetries: 3 }); }
+});
+
 const readdirName = (d: string): string => (readdirSyncSafe(d)[0] as string);
 import { readdirSync } from 'node:fs';
 const readdirSyncSafe = (d: string): string[] => readdirSync(d);

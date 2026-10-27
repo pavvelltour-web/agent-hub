@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { HubConfig } from '../core/types.ts';
 import { spawnSync } from 'node:child_process';
-import { NO_CHECKS_WARNING, MAX_PLAN_BYTES, approveChecks, defaultChecks, dependencyFindings, exportCommit, gateChecks, nodeFiles, planChecks, readReviewConfig, runCheck, runChecks, scanDiffForSecrets } from './checks.ts';
+import { NO_CHECKS_WARNING, MAX_BLOB_BYTES, MAX_PLAN_BYTES, approveChecks, pathProblem, sweepCheckRuns, defaultChecks, dependencyFindings, exportCommit, gateChecks, nodeFiles, planChecks, readReviewConfig, runCheck, runChecks, scanDiffForSecrets } from './checks.ts';
 import { checkEnv, minimalEnv } from '../run/git.ts';
 import type { CheckResult } from './checks.ts';
 
@@ -374,6 +374,81 @@ test('planChecks (B3): a list too large to show in full is never approvable; the
   });
 });
 
+test('planChecks (D3): a BOM package.json parses and gives its real digest; broken JSON and a package.json over 1 MB make approval impossible', async () => {
+  await withTmp((dir) => {
+    const hub = { 'hub.json': JSON.stringify({ review: { checks: [['npm', 'test']] } }) };
+    const p = project(dir, { ...hub, 'package.json': '﻿' + JSON.stringify({ scripts: { test: 'node --test' } }) });
+    const h1 = p.commit({ 'b.txt': 'b\n' });
+    const bom = planChecks(p.root, p.wt, h1, p.home);
+    assert.equal(bom.unreadable, null); assert.deepEqual(bom.scripts, { test: 'node --test' }, 'the BOM is dropped as npm does');
+    approveChecks(p.root, p.wt, h1, bom.digest, p.home);
+    const h2 = p.commit({ 'package.json': '{ "scripts": { "test": "node evil.js" ' });
+    const broken = planChecks(p.root, p.wt, h2, p.home);
+    assert.match(broken.unreadable ?? '', /package\.json ветки не читается/); assert.equal(broken.approved, false);
+    assert.throws(() => approveChecks(p.root, p.wt, h2, broken.digest, p.home), /не читается/);
+    const h3 = p.commit({ 'package.json': JSON.stringify({ scripts: { test: 'node evil.js' }, pad: 'x'.repeat(1_100_000) }) });
+    const big = planChecks(p.root, p.wt, h3, p.home);
+    assert.match(big.unreadable ?? '', /больше 1 МБ/); assert.equal(big.approved, false);
+  });
+});
+
+test('planChecks (E10): a file the plan must hash over 16 MB makes it unreadable; a plan is cached per commit but the approval is re-read', async () => {
+  await withTmp((dir) => {
+    const p = project(dir, { 'hub.json': JSON.stringify({ review: { checks: [['node', 'big.js']] } }) });
+    const h1 = p.commit({ 'big.js': '//' + 'x'.repeat(MAX_BLOB_BYTES + 10) + '\n' });
+    const plan = planChecks(p.root, p.wt, h1, p.home);
+    assert.match(plan.unreadable ?? '', /16 МБ/); assert.equal(plan.approved, false);
+    const h2 = p.commit({ 'big.js': 'console.log(1)\n' });
+    const t0 = Date.now(); const a = planChecks(p.root, p.wt, h2, p.home); const first = Date.now() - t0;
+    approveChecks(p.root, p.wt, h2, a.digest, p.home);
+    const t1 = Date.now(); const b = planChecks(p.root, p.wt, h2, p.home); const second = Date.now() - t1;
+    assert.equal(b.approved, true, 'the approval is not cached'); assert.equal(b.digest, a.digest);
+    assert.ok(second <= first, `cached plan (${second} ms) is not slower than the first (${first} ms)`);
+  });
+});
+
+test('pathProblem (E1): case-only differences on Windows/macOS, reserved names and ":" on Windows; Linux keeps them', () => {
+  assert.match(pathProblem(['src/Test.js', 'src/test.js'], 'win32') ?? '', /регистром/);
+  assert.match(pathProblem(['src/Test.js', 'src/test.js'], 'darwin') ?? '', /регистром/);
+  assert.equal(pathProblem(['src/Test.js', 'src/test.js'], 'linux'), null);
+  for (const p of ['a/con.js', 'NUL', 'a/b:stream', 'dir./x.js', 'x ']) assert.match(pathProblem([p], 'win32') ?? '', /недопустим/, p);
+  assert.equal(pathProblem(['src/a.js', 'console.js', 'nullable.ts'], 'win32'), null);
+});
+
+test('exportCommit (E1, E2): a commit with case-clashing paths is refused on Windows; a node_modules committed to the branch never comes along', async () => {
+  await withTmp((dir) => {
+    const p = project(dir, { 'check.js': '1\n' });
+    const h = p.commit({ 'node_modules/evil/index.js': 'evil\n', 'pkg/node_modules/x/i.js': 'x\n' });
+    const copy = exportCommit(p.wt, h, p.home, p.root);
+    try {
+      assert.equal(existsSync(join(copy.dir, 'node_modules')), false, 'no root node_modules and the branch one is dropped');
+      assert.equal(existsSync(join(copy.dir, 'pkg', 'node_modules')), false);
+      assert.equal(existsSync(join(copy.dir, 'check.js')), true);
+    } finally { assert.equal(copy.done(), null); }
+    if (process.platform === 'win32') {
+      const blob = g(p.wt, 'hash-object', '-w', '--stdin');
+      g(p.wt, 'update-index', '--add', '--cacheinfo', `100644,${blob},src/Test.js`); g(p.wt, 'update-index', '--add', '--cacheinfo', `100644,${blob},src/test.js`);
+      g(p.wt, 'commit', '-q', '-m', 'clash');
+      assert.throws(() => exportCommit(p.wt, g(p.wt, 'rev-parse', 'HEAD'), p.home, p.root), /регистром/);
+      assert.deepEqual(readdirSync(join(p.home, 'check-runs')), [], 'the refused copy is removed');
+    }
+  });
+});
+
+test('sweepCheckRuns (E5): old copies go, the node_modules link is taken off first (the root install survives), fresh copies stay', async () => {
+  await withTmp((dir) => {
+    const home = join(dir, 'home'), rootNm = join(dir, 'root', 'node_modules');
+    mkdirSync(join(rootNm, 'pkg'), { recursive: true }); writeFileSync(join(rootNm, 'pkg', 'index.js'), 'keep');
+    const old = join(home, 'check-runs', 'c-old'), fresh = join(home, 'check-runs', 'c-new');
+    mkdirSync(join(old, 'tree'), { recursive: true }); mkdirSync(join(fresh, 'tree'), { recursive: true });
+    symlinkSync(rootNm, join(old, 'tree', 'node_modules'), 'junction');
+    const past = new Date(Date.now() - 2 * 3_600_000); utimesSync(old, past, past);
+    assert.deepEqual(sweepCheckRuns(home), []);
+    assert.equal(existsSync(old), false); assert.equal(existsSync(fresh), true);
+    assert.equal(readFileSync(join(rootNm, 'pkg', 'index.js'), 'utf8'), 'keep', 'never deleted through the link');
+  });
+});
+
 test('nodeFiles (F9): the script, file arguments and -r/--require/--import/--loader/--env-file paths are hashed; option values and packages are not', () => {
   assert.deepEqual(nodeFiles(['--import', 'tsx', 'x.ts']), ['x.ts']);
   assert.deepEqual(nodeFiles(['-r', './a.js', 'b.js', 'data.json']), ['a.js', 'b.js', 'data.json']);
@@ -427,7 +502,7 @@ test('checkEnv (F10): an allowlist: tokens, API keys, NODE_OPTIONS and npm_confi
     const secrets = { GITHUB_TOKEN: 'gh-x', NPM_TOKEN: 'npm-x', OPENAI_API_KEY: 'sk-x', ANTHROPIC_API_KEY: 'a-x', AWS_SECRET_ACCESS_KEY: 'aws-x', NODE_OPTIONS: '--require ./evil.js', npm_config_script_shell: 'evil.exe', HUB_SESSION_TOKEN: 'h-x' };
     const env = checkEnv(join(dir, 'home'), { ...process.env, ...secrets });
     for (const k of Object.keys(secrets)) assert.equal(env[k], undefined, k);
-    assert.ok(Object.keys(env).some((k) => k.toUpperCase() === 'PATH')); assert.equal(env['CI'], '1'); assert.equal(env['GIT_CONFIG_KEY_0'], 'core.hooksPath');
+    assert.ok(Object.keys(env).some((k) => k.toUpperCase() === 'PATH')); assert.equal(env['CI'], '1'); assert.equal(env['NoDefaultCurrentDirectoryInExePath'], '1', 'cmd.exe does not run node.cmd/tsc.cmd from the copy folder'); assert.equal(env['GIT_CONFIG_KEY_0'], 'core.hooksPath');
     const [r] = await runChecks(dir, [js('console.log(Object.keys(process.env).filter((k) => /token|api_key|secret|node_options|npm_config/i.test(k)).join(",") || "none")')], { env });
     assert.equal(r?.ok, true); assert.match(r!.tail, /^none$/m);
     const npm = await runCheck(dir, ['npm', '--version'], 60_000, env);

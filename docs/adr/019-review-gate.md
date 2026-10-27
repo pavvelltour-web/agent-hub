@@ -35,9 +35,24 @@ Plainly, what is and is not protected:
 - **Reviewer runs** are plumbing: marked `gate-reviewer`, left out of run lists, econ, model stats and routing, they never write a handoff card, and a checkpoint never commits `.hub/`. They start in `<home>/reviewers/<id>` (removed after; a failed removal is a review warning); history gives their CLI sessions no project and the project list hides them; the panel removes leftovers older than an hour when it starts and prints what it could not remove.
 - **Who marks interrupted rounds.** Only the panel process, when it starts (`startServer`); a `hub run` / `hub chat` RunManager on the same database leaves running rounds alone.
 
+### What the digest does not cover (by design)
+
+The digest can never be complete: `npm test` executes the branch's code by its nature. The approval covers only what the screen lists (commands, all `package.json` scripts, hashes of the files node is started with, `.npmrc`); the screen says «Проверки выполняют код ветки … одобрение покрывает только перечисленное». Not covered, and not chased by parsing:
+
+- the tests themselves and everything they (or any listed file) import or read: test files a runner globs, `imports`/`exports` maps, config files read at run time;
+- programs started other than as `node <file>`: `cross-env X=1 node …`, `X=1 node …`, `npm-run-all`/`run-p`/`concurrently`, `npx`, shell built-ins, binaries in `node_modules/.bin`;
+- `npm run` chains deeper than 3 levels, other package managers' config (`.yarnrc.yml`, `bunfig.toml`, `.pnpmfile.cjs`), user / global npm config;
+- `node_modules`: linked from the project root (the user's own install, not the branch's).
+
 ### Known limitations (accepted)
 
-- `node_modules` (linked from the project root), programs a script starts other than through `node <file>`, and test files the runner globs are not in the digest: an approval is of the list, not a sandbox.
+- **Writes through the link.** The checks copy links the PROJECT ROOT `node_modules` (junction); a check can write into it. Licences are therefore read before any check runs, and a link is always taken off before a copy is deleted. A committed branch `node_modules/` (at any depth) never comes into the copy.
+- **New dependencies.** A branch that adds a dependency not installed in the project root fails its checks until the user installs it there; the approval screen says so.
+- **Case-insensitive file systems.** A commit with paths equal but for case (and on Windows reserved names, `:`, trailing dot or space) cannot be copied faithfully: the round closes with that reason instead of running the wrong blob.
+- **Unreadable plans.** A branch `package.json` that exists but cannot be read (over 1 MB, not JSON; a UTF-8 BOM is accepted, as npm does) or any file the plan must hash over 16 MB makes the plan unapprovable, and the review stays `open` with that reason.
+- **Long lines.** A flagged line longer than 2000 characters (or whose key is shorter than 4) is never auto-closed; a human answers it. The clearing key cuts at the first `//` or `#` anywhere (also inside strings): that errs on the side of keeping findings open.
+- **One panel per database.** There is no single-instance guard: a second `hub ui` on the same database marks the first one's running rounds interrupted at start.
+- **cmd.exe search order.** Checks get `NoDefaultCurrentDirectoryInExePath=1`, so npm's cmd.exe does not run a `node.cmd`/`tsc.cmd` from the copy's folder before PATH; programs that do their own lookup are not covered.
 - Branch `.gitattributes` filters (e.g. Git LFS smudge) are not applied in the checks copy: an LFS file is a pointer there.
 - The checkpoint and the git probe in `begin()` stay synchronous (they must finish before the review exists); the round itself starts on a later tick and its git work is asynchronous.
 - A RunManager constructor still marks unfinished RUNS (not reviews) of the database as interrupted; a second process can therefore mark the panel's live runs. Not changed here.

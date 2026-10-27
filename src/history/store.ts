@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { HUB_HOME } from '../core/registry.ts';
@@ -64,10 +65,14 @@ export function projectRoot(cwd: string): string {
 
 /** Where review-gate reviewers run: `<home>/reviewers/<id>`. Their CLI sessions are plumbing and never become a project. */
 export const reviewersDir = (home: string = HUB_HOME): string => join(home, 'reviewers');
-/** A reviewer folder: under the hub's reviewers folder, or an old `%TEMP%/hub-reviewer-*` one (before reviewers moved under the hub home). */
-export function isReviewerCwd(cwd: string, home: string = HUB_HOME): boolean {
+/**
+ * A reviewer folder: under `<home>/reviewers/`, or an old `<tmpdir>/hub-reviewer-*` one (before reviewers moved under the hub home). Both are
+ * PREFIX matches on canonical paths (case-insensitive only where paths are, i.e. drive paths on Windows): a project of the user's that merely
+ * sits in a folder named `hub-reviewer-*` elsewhere is not hidden.
+ */
+export function isReviewerCwd(cwd: string, home: string = HUB_HOME, tmp: string = tmpdir()): boolean {
   const p = pathKey(cwd);
-  return p.startsWith(pathKey(reviewersDir(home)) + '/') || /\/hub-reviewer-[^/]+(?:\/|$)/i.test(p);
+  return p.startsWith(pathKey(reviewersDir(home)) + '/') || p.startsWith(pathKey(join(tmp, 'hub-reviewer-')));
 }
 
 export function projectId(db: Db, cwd: string | null | undefined): number | null {

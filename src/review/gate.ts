@@ -10,11 +10,11 @@ import { redact } from '../lib/redact.ts';
 import { NOT_HUB_DIR, checkEnv, checkpoint, git } from '../run/git.ts';
 import type { RunManager, RunRow } from '../run/runner.ts';
 import { ReviewError, diffTooLarge, hunt, verifyMany } from './agents.ts';
-import { NO_CHECKS_WARNING, TOO_LARGE_REASON, approveChecks, dependencyFindings, exportCommit, gateChecks, notApprovedReason, planChecks, readReviewConfig, type CheckPlan, type CheckResult } from './checks.ts';
+import { CopyError, NO_CHECKS_WARNING, TOO_LARGE_REASON, approveChecks, dependencyFindings, exportCommit, gateChecks, notApprovedReason, planChecks, readReviewConfig, type CheckPlan, type CheckResult } from './checks.ts';
 import { humanPathsForChanges, loadReviewMd } from './reviewmd.ts';
 import { riskTier } from './risk.ts';
 import { addFindings, answerFinding, clearHumanApproval, createReview, getReview, listFindings, listReviewsForBranch, listReviewsForRun, markCleared, repeatFingerprints, setHumanApproval, updateReview } from './store.ts';
-import { diffLinesFromUnified, triage } from './triage.ts';
+import { diffLinesFromUnified, indexDiff, matchDiff, relFile, triage } from './triage.ts';
 import { fingerprint } from './types.ts';
 import type { Answer, Effort, Finding, Lens, RawFinding, Review, ReviewerPick, Severity, VerifiedFinding } from './types.ts';
 
@@ -119,39 +119,45 @@ function gitAsync(cwd: string, args: string[]): Promise<{ status: number | null;
   });
 }
 
-const NORM_MAX = 2000;
+/** Longest raw line the clearing rule trusts. A longer flagged line is stored as "no key" and its finding is never auto-closed. */
+export const LINE_MAX = 2000;
+const KEY_MIN = 4;
 /**
- * The code part of a line, as the clearing rule sees it: a trailing `//` or `#` comment (one after the last quote) is dropped, unless the line is
- * only a comment. Linear time, and lines are capped at NORM_MAX characters first (hostile lines can be huge).
+ * The code part of a line: everything before the FIRST `//` or `#`, wherever it is (inside a string literal too). Deterministic and the same
+ * for both sides; cutting too much only makes keys match more often, so a finding stays open rather than being cleared by mistake.
  */
-function codePart(s0: string): string {
-  const s = s0.slice(0, NORM_MAX);
-  const from = Math.max(s.lastIndexOf("'"), s.lastIndexOf('"'), s.lastIndexOf('`')) + 1;
-  const marks = [s.indexOf('//', from), s.indexOf('#', from)].filter((i) => i >= 0);
-  const at = marks.length ? Math.min(...marks) : -1;
-  return at > 0 && s.slice(0, at).trim() ? s.slice(0, at) : s;
+export function codePart(s: string): string {
+  const marks = [s.indexOf('//'), s.indexOf('#')].filter((i) => i >= 0);
+  return marks.length ? s.slice(0, Math.min(...marks)) : s;
 }
-/** A line as the clearing rule compares it: no whitespace, one quote style, a trailing `//` or `#` comment dropped. Cosmetic edits keep it equal. */
-export function normLine(s: string): string {
-  return codePart(s).replace(/['`]/g, '"').replace(/[\s;]+/g, '');
+/**
+ * The ONE key the clearing rule compares, for the stored line and for every `git grep` line alike: code part, one quote style, no whitespace or
+ * `;`. `null` when the key is unreliable (raw line longer than LINE_MAX, or a key shorter than 4 characters): such a finding never auto-closes.
+ */
+export function lineKey(raw: string): string | null {
+  if (typeof raw !== 'string' || raw.length > LINE_MAX) return null;
+  const key = codePart(raw).replace(/['`]/g, '"').replace(/[\s;]+/g, '');
+  return key.length < KEY_MIN ? null : key;
 }
+/** What is stored for a flagged line: the raw line, or null when it is too long to key (the finding then never auto-closes). */
+export const storedLine = (raw: string): string | null => (raw && raw.length < LINE_MAX ? raw : null);
 
 /**
- * Is a flagged line still anywhere in the tracked files of `sha`? Searched with `git grep` for the longest identifier of its CODE part (so a
- * removed or reworded trailing comment cannot hide it), then compared normalised, so moving the file (`git mv`) or a whitespace / quote /
- * comment edit does not count as a fix. User and repository grep config cannot change the output shape (no line numbers, columns, names).
- * `undefined` = cannot tell.
+ * Is a flagged line still anywhere in the tracked files of `sha`? Searched with `git grep` for the longest identifier of its code part, then
+ * compared by `lineKey`, so moving the file (`git mv`) or a whitespace / quote / comment edit does not count as a fix. User and repository grep
+ * config cannot change the output shape (no line numbers, columns, names). `undefined` = cannot tell (never clears).
  */
 async function stillPresent(cwd: string, sha: string, stored: string): Promise<boolean | undefined> {
-  const target = normLine(stored);
-  if (!HEX40.test(sha) || target.length < 3) return undefined;
+  // a stored line of LINE_MAX+ characters may be an old row cut at 2000 characters: never trusted
+  const target = stored.length >= LINE_MAX ? null : lineKey(stored);
+  if (!HEX40.test(sha) || target === null) return undefined;
   const word = (codePart(stored).match(/[A-Za-z_$][\w$]+/g) ?? []).reduce((a, b) => (b.length > a.length ? b : a), '');
   if (word.length < 2) return undefined;
   const r = await gitAsync(cwd, ['--no-pager', `--attr-source=${EMPTY_TREE}`, '-c', 'grep.lineNumber=false', '-c', 'grep.column=false', '-c', 'grep.fullName=false', '-c', 'grep.patternType=fixed',
     'grep', '-h', '--no-line-number', '--no-column', '--text', '-F', '--no-color', '-e', word, sha, '--']);
   if (r.status === 1) return false;
   if (r.status !== 0) return undefined;
-  return r.out.split(/\r?\n/).some((l) => normLine(l) === target);
+  return r.out.split(/\r?\n/).some((l) => lineKey(l) === target);
 }
 
 /** Text of `file` in commit `sha`: `null` = not in that commit (deleted, moved), `undefined` = cannot tell. Argument arrays only; model-supplied paths are checked first. */
@@ -499,7 +505,10 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     const home = o.home ?? o.runs.home;
     const plan = planChecks(root, cwd, head, home);
     if (plan.checks.length && plan.tooLarge) return finish(close(TOO_LARGE_REASON));
+    if (plan.checks.length && plan.unreadable) return finish(close(plan.unreadable));
     if (!plan.approved) return finish(close(notApprovedReason(plan)));
+    // Licenses are read from the project root BEFORE any check runs: a check could write into the root node_modules through the link.
+    const depFindings = dependencyFindings(diff.out, root);
     let gate: Awaited<ReturnType<typeof gateChecks>>;
     if (plan.checks.length) {
       const copy = exportCommit(cwd, head, home, root);
@@ -522,26 +531,29 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     const found = (await pool([picks.security, ...picks.hunters].map((h) => () => hunt({ ...common, lens: h.lens, pick: h.pick })), RUN_SLOTS)).flat();
 
     // 2 Verify: only bugs and risks, each once, never what this review already posted (unless it was fixed and came back).
+    // The fingerprint is taken exactly as triage stores it: the matched ADDED line (within the slack) and its text, so a finding already
+    // posted is not verified again every round.
     const posted = repeatFingerprints(db, review.id);
+    const anchors = indexDiff(diffLinesFromUnified(whole.out));
     const seen = new Set<string>(); const todo: RawFinding[] = [];
     for (const f of found) {
       if (f.category !== 'bug' && f.category !== 'risk') continue;
-      const file = f.file.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
-      const key = `${file}\0${f.line}\0${f.title}`;
+      const a = matchDiff(anchors, relFile(f.file, cwd), f.line);
+      const key = `${a.file}\0${a.line}\0${f.title}`;
       if (seen.has(key)) continue; seen.add(key);
-      if (posted.has(fingerprint({ file, title: f.title.slice(0, 300), ...(f.classOfBug ? { classOfBug: f.classOfBug.slice(0, 200) } : {}) }, lineText(file, f.line).slice(0, 2000)))) continue;
+      if (posted.has(fingerprint({ file: a.file, title: f.title.slice(0, 300), ...(f.classOfBug ? { classOfBug: f.classOfBug.slice(0, 200) } : {}) }, lineText(a.file, a.line).slice(0, 2000)))) continue;
       todo.push(f);
     }
     updateReview(db, review.id, { state: 'verifying' });
     const k = Math.max(1, picks.verifiers.length);
     const dropped = Math.max(0, todo.length - MAX_VERIFIED);   // never silent: the round cannot pass while findings are unchecked
     const verified = (await pool(todo.slice(0, MAX_VERIFIED).map((f) => () => verifyMany(f, { picks: picks.verifiers, diffCmd: common.diffCmd, runs: o.runs, cwd, warn, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) })), Math.max(1, Math.floor(RUN_SLOTS / k)))).filter((v): v is VerifiedFinding => v !== null);
-    for (const d of dependencyFindings(diff.out, root)) verified.push({ ...d, votes: { real: 1, notReal: 0 } });   // licenses from the project root, never the agent-writable task folder
+    for (const d of depFindings) verified.push({ ...d, votes: { real: 1, notReal: 0 } });   // licenses from the project root (read before the checks), never the task folder
 
     // 3 Filter and 4 Security tagging (triage), then store.
     const kept = triage(verified, { diffLines: diffLinesFromUnified(whole.out), maxNits: MAX_NITS, posted, reviewId: review.id, round, lineText, root: cwd });
     const stored = addFindings(db, review.id, round, kept.map((f) => ({ ...f, category: 'bug' as const })));
-    stored.forEach((s, i) => { const f = kept[i] as Finding; db.prepare('UPDATE finding SET line_text = ? WHERE id = ?').run(squash(lineText(f.file, f.line)).slice(0, 2000) || null, s.id); });
+    stored.forEach((s, i) => { const f = kept[i] as Finding; db.prepare('UPDATE finding SET line_text = ? WHERE id = ?').run(storedLine(lineText(f.file, f.line)), s.id); });   // raw line: keyed by lineKey on both sides
 
     // 5 Risk from every path the branch changed (not only this round), config from the project root.
     // hub.json + the project's REVIEW.md files (root and the nearest folder file of each changed path), all from the project root, never the branch
@@ -559,7 +571,7 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     updateReview(db, review.id, { state: 'open' });     // 6-7: settle() decides between open / needs-human / passed
     return finish(undefined);
   } catch (e) {
-    close(e instanceof ReviewError ? `reviewer failed: ${e.message}` : `review stopped: ${e instanceof Error ? e.message : 'unknown error'}`);
+    close(e instanceof ReviewError ? `reviewer failed: ${e.message}` : e instanceof CopyError ? e.message : `review stopped: ${e instanceof Error ? e.message : 'unknown error'}`);
     return finish(undefined);
   }
 

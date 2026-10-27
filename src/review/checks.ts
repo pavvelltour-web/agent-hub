@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { HubConfig } from '../core/types.ts';
 import { isSecretPath, safeJoin } from '../lib/paths.ts';
@@ -258,7 +258,7 @@ export function defaultChecks(cwd: string): string[][] {
 // ---------- what the checks will run, and the user's approval of exactly that ----------
 
 export const NO_CHECKS_WARNING = 'Нет проверок: тесты/типизация не запускались';
-export const BRANCH_CODE_NOTE = 'Проверки запускают код ветки (скрипты package.json, scripts/security.mjs и файлы, которые они вызывают) с вашими правами, вне песочницы агента; запуск идёт в чистой копии этого коммита, node_modules берётся из корня проекта. Агент мог этот код изменить.';
+export const BRANCH_CODE_NOTE = 'Проверки выполняют код ветки (тесты, скрипты package.json и всё, что они подключают) с вашими правами, вне песочницы агента. Одобрение покрывает только перечисленное ниже; запуск идёт в чистой копии этого коммита, node_modules берётся из корня проекта (новая зависимость ветки, не установленная в корне, уронит проверки, пока вы её не установите).';
 export const TOO_LARGE_REASON = 'Список проверок слишком большой для показа (больше 64 КБ): одобрить его нельзя';
 /** Everything the digest covers must fit on the approval screen in full; above this the server refuses to build an approvable plan. */
 export const MAX_PLAN_BYTES = 64 * 1024;
@@ -288,23 +288,41 @@ export interface CheckPlan {
   noTests: boolean;
   /** What the digest covers is larger than MAX_PLAN_BYTES: it cannot be shown in full, so it cannot be approved. */
   tooLarge: boolean;
+  /** Why the plan cannot be approved at all (package.json of the branch unreadable, a file over 16 MB); null when it can. */
+  unreadable: string | null;
   note: string;
 }
 
-type Reader = (rel: string) => Buffer | null;
+/** Largest file the plan reads (one blob). Larger: the plan is `unreadable` and cannot be approved. */
+export const MAX_BLOB_BYTES = 16 * 1024 * 1024;
+const TOO_BIG = Symbol('too big');
+type Reader = (rel: string) => Buffer | null | typeof TOO_BIG;
 const safeRel = (rel: string): boolean => !!rel && !rel.startsWith('-') && !rel.includes('\0') && !isAbsolute(rel) && !/^[A-Za-z]:/.test(rel) && !rel.split(/[\\/]/).includes('..');
-/** Bytes of a file as commit `sha` of `tree` has them (a blob only, no textconv); without a sha, from disk under `tree`. */
+/** Bytes of a file as commit `sha` of `tree` has them (a blob only, no textconv); without a sha, from disk under `tree`. TOO_BIG above MAX_BLOB_BYTES. */
 function treeReader(tree: string, sha: string): Reader {
   if (HEX40.test(sha)) {
     return (rel) => {
       if (!safeRel(rel)) return null;
-      const r = spawnSync('git', ['--no-pager', 'cat-file', 'blob', `${sha}:${rel.replace(/\\/g, '/').replace(/^\.\//, '')}`], { cwd: tree, windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout: 60_000 });
+      const r = spawnSync('git', ['--no-pager', 'cat-file', 'blob', `${sha}:${rel.replace(/\\/g, '/').replace(/^\.\//, '')}`], { cwd: tree, windowsHide: true, maxBuffer: MAX_BLOB_BYTES, timeout: 60_000 });
+      if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ENOBUFS') return TOO_BIG;
       return r.status === 0 && Buffer.isBuffer(r.stdout) ? r.stdout : null;
     };
   }
-  return (rel) => { try { return readFileSync(safeJoin(tree, rel)); } catch { return null; } };
+  return (rel) => { try { const p = safeJoin(tree, rel); return statSync(p).size > MAX_BLOB_BYTES ? TOO_BIG : readFileSync(p); } catch { return null; } };
 }
-const textOf = (b: Buffer | null): string | null => (b === null || b.length > MAX_JSON ? null : b.toString('utf8'));
+
+/**
+ * The branch package.json: `missing`, its parsed object, or `unreadable` (larger than 1 MB, too large to read, not JSON). A UTF-8 BOM is dropped
+ * first, as npm does.
+ */
+function readPackage(read: Reader): { state: 'missing' } | { state: 'ok'; pkg: unknown } | { state: 'unreadable'; why: string } {
+  const b = read('package.json');
+  if (b === null) return { state: 'missing' };
+  if (b === TOO_BIG || b.length > MAX_JSON) return { state: 'unreadable', why: 'больше 1 МБ' };
+  try { return { state: 'ok', pkg: JSON.parse(b.toString('utf8').replace(/^﻿/, '')) }; } catch { return { state: 'unreadable', why: 'не JSON' }; }
+}
+
+const planCache = new Map<string, Omit<CheckPlan, 'approved'>>();
 
 /** A node argument that names a file (not a package such as `tsx`, not a glob). */
 const fileLike = (v: string | undefined): v is string => !!v && !/[*?]/.test(v) && (/^\.{1,2}[\\/]/.test(v) || (NODE_FILE.test(v) && !v.startsWith('-')));
@@ -367,10 +385,21 @@ function approvals(home: string): Record<string, string[]> {
  * check runs (a changed `test` script needs a new approval), `.npmrc`, and the content of every `node <file>` the checks start.
  */
 export function planChecks(root: string, tree: string, sha: string, home: string): CheckPlan {
-  const read = treeReader(tree, sha);
   const configured = readReviewConfig(root).checks;
+  // A commit never changes: the plan of (project, folder, commit, configured list) is cached for the process; only the approval is re-read.
+  const key = HEX40.test(sha) ? JSON.stringify([rootKey(root), resolve(tree), sha, configured ?? null]) : '';
+  const cached = key ? planCache.get(key) : undefined;
+  const core = cached ?? buildPlan(root, tree, sha, configured);
+  if (key && !cached) { if (planCache.size >= 100) planCache.delete(planCache.keys().next().value as string); planCache.set(key, core); }
+  const ok = !core.checks.length || (!core.tooLarge && !core.unreadable && (approvals(home)[rootKey(root)] ?? []).includes(core.digest));
+  return { ...core, approved: ok };
+}
+
+function buildPlan(root: string, tree: string, sha: string, configured: string[][] | undefined): Omit<CheckPlan, 'approved'> {
+  const read = treeReader(tree, sha);
   const checks: string[][] = configured ? configured.map((c) => [...c]) : [];
-  let pkg: unknown; try { const t = textOf(read('package.json')); pkg = t === null ? undefined : JSON.parse(t); } catch { pkg = undefined; }
+  const pj = readPackage(read);
+  const pkg = pj.state === 'ok' ? pj.pkg : undefined;
   const all = isObj(pkg) && isObj(pkg['scripts']) ? Object.fromEntries(Object.entries(pkg['scripts']).filter((e): e is [string, string] => typeof e[1] === 'string')) : {};
   if (!configured) {
     if (typeof all['test'] === 'string') checks.push(['npm', 'test']);
@@ -391,15 +420,62 @@ export function planChecks(root: string, tree: string, sha: string, home: string
   for (const c of checks) for (const n of scriptNames(c)) visit(n, 1);
   // every file node starts: from the argv lists and from the reached scripts
   const files: Record<string, string | null> = {};
+  const big: string[] = [];
+  const hash = (f: string): void => { const b = read(f); if (b === TOO_BIG) big.push(f); files[f] = b === null || b === TOO_BIG ? null : sha256(b); };
   const node = [...checks.filter((c) => /^node(?:\.exe)?$/i.test(c[0] ?? '')), ...runs.flatMap((k) => nodeCommands(all[k] ?? ''))];
-  for (const c of node) for (const f of nodeFiles(c.slice(1))) { const b = read(f); files[f] = b === null ? null : sha256(b); }
-  if (npmLike) { const b = read('.npmrc'); files['.npmrc'] = b === null ? null : sha256(b); }
+  for (const c of node) for (const f of nodeFiles(c.slice(1))) hash(f);
+  if (npmLike) hash('.npmrc');
   const scripts = npmLike ? all : {};
   const shown = JSON.stringify({ checks, scripts, files });
   const digest = sha256(JSON.stringify({ v: 2, checks, scripts, files }));
   const tooLarge = Buffer.byteLength(shown) > MAX_PLAN_BYTES;
   const source = configured ? 'hub.json' : npmLike ? 'package.json' : checks.length ? 'scripts/security.mjs' : 'none';
-  return { checks, source, scripts, runs, files, digest, approved: !checks.length || (!tooLarge && (approvals(home)[rootKey(root)] ?? []).includes(digest)), noTests: !checks.some((c) => !isSecurityCheck(c)), tooLarge, note: BRANCH_CODE_NOTE };
+  // Fail closed: a package.json that exists but cannot be read would give a digest without the scripts that npm will run.
+  const unreadable = pj.state === 'unreadable' && (npmLike || !configured) ? `package.json ветки не читается (${pj.why}): одобрить проверки нельзя`
+    : big.length ? `файл ветки больше 16 МБ (${big.slice(0, 3).join(', ')}): одобрить проверки нельзя` : null;
+  return { checks, source, scripts, runs, files, digest, noTests: !checks.some((c) => !isSecurityCheck(c)), tooLarge, unreadable, note: BRANCH_CODE_NOTE };
+}
+
+/**
+ * Removes `<home>/check-runs/*` copies older than `maxAgeMs` (left by a crash or a failed removal). The node_modules link is taken off first
+ * (never a recursive delete through it); a copy whose link cannot be taken off is left alone and reported.
+ */
+export function sweepCheckRuns(home: string, maxAgeMs = 3_600_000, now = Date.now()): string[] {
+  const base = join(home, 'check-runs'); const failed: string[] = [];
+  let names: string[] = [];
+  try { names = readdirSync(base); } catch { return []; }
+  for (const n of names) {
+    const d = join(base, n);
+    try {
+      if (now - statSync(d).mtimeMs < maxAgeMs) continue;
+      const link = join(d, 'tree', 'node_modules');
+      let st; try { st = lstatSync(link); } catch { st = undefined; }
+      if (st?.isSymbolicLink()) { try { unlinkSync(link); } catch { try { rmdirSync(link); } catch (e) { failed.push(`could not remove the node_modules link in ${d} (${(e as Error).message}): left alone`); continue; } } }
+      rmSync(d, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    } catch (e) { failed.push(`could not remove the old checks copy ${d}: ${(e as Error).message}`); }
+  }
+  return failed;
+}
+
+/** The commit cannot be copied faithfully for the checks; the message is shown to the user as the reason. */
+export class CopyError extends Error { constructor(message: string) { super(message); this.name = 'CopyError'; } }
+
+const WIN_RESERVED = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\..*)?$/i;
+/**
+ * Paths a case-insensitive file system (Windows, macOS) cannot hold faithfully: two paths equal but for case (checkout writes one blob over the
+ * other), and on Windows reserved device names, `:` (alternate data streams) and names ending in a dot or space.
+ */
+export function pathProblem(paths: string[], platform: NodeJS.Platform = process.platform): string | null {
+  if (platform === 'win32' || platform === 'darwin') {
+    const seen = new Map<string, string>();
+    for (const p of paths) { const k = p.toLowerCase(); const o = seen.get(k); if (o !== undefined && o !== p) return `пути различаются только регистром: ${o} и ${p}; проверки на этом компьютере не запускаются`; seen.set(k, p); }
+  }
+  if (platform === 'win32') {
+    for (const p of paths) for (const seg of p.split('/')) {
+      if (seg.includes(':') || WIN_RESERVED.test(seg) || /[. ]$/.test(seg)) return `путь недопустим в Windows: ${p}; проверки на этом компьютере не запускаются`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -421,15 +497,22 @@ export function exportCommit(tree: string, sha: string, home: string, root: stri
   };
   try {
     const env = { ...minimalEnv(), GIT_INDEX_FILE: join(dir, 'index') };
-    const g = (args: string[]): void => {
-      const r = spawnSync('git', [`--attr-source=${EMPTY_TREE}`, '-c', `core.hooksPath=${noHooksDir(home)}`, '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-c', 'core.symlinks=false', '-c', 'core.fsmonitor=false', ...args], { cwd: tree, env, encoding: 'utf8', windowsHide: true, timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+    const g = (args: string[], input?: string): string => {
+      const r = spawnSync('git', [`--attr-source=${EMPTY_TREE}`, '-c', `core.hooksPath=${noHooksDir(home)}`, '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-c', 'core.symlinks=false', '-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false', ...args], { cwd: tree, env, encoding: 'utf8', windowsHide: true, timeout: 300_000, maxBuffer: 64 * 1024 * 1024, ...(input !== undefined ? { input } : {}) });
       if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr ?? '').split('\n')[0]}`);
+      return r.stdout ?? '';
     };
     g(['read-tree', sha]);
+    const paths = g(['ls-files', '-z']).split('\0').filter(Boolean);
+    const bad = pathProblem(paths);
+    if (bad) throw new CopyError(bad);
+    // a node_modules committed to the branch never comes along: dependencies are the project root's install or none
+    const nmPaths = paths.filter((p) => p.split('/').includes('node_modules'));
+    if (nmPaths.length) g(['update-index', '--force-remove', '-z', '--stdin'], nmPaths.join('\0') + '\0');
     g(['checkout-index', '-a', '-f', `--prefix=${work.replace(/\\/g, '/')}/`]);
     mkdirSync(work, { recursive: true });
     const nm = join(root, 'node_modules');
-    if (existsSync(nm) && !existsSync(join(work, 'node_modules'))) { link = join(work, 'node_modules'); symlinkSync(nm, link, 'junction'); }
+    if (existsSync(nm)) { link = join(work, 'node_modules'); symlinkSync(nm, link, 'junction'); }
     return { dir: work, done };
   } catch (e) { done(); throw e; }
 }
@@ -444,6 +527,7 @@ export const notApprovedReason = (p: Pick<CheckPlan, 'source'>): string => `Пр
 export function approveChecks(root: string, tree: string, sha: string, digest: string, home: string): CheckPlan {
   const plan = planChecks(root, tree, sha, home);
   if (plan.tooLarge) throw new Error('слишком большой список проверок: его нельзя показать целиком, поэтому нельзя и одобрить');
+  if (plan.unreadable) throw new Error(plan.unreadable);
   if (typeof digest !== 'string' || digest !== plan.digest) throw new Error('the checks changed since they were shown: look at them again');
   const all = approvals(home); const key = rootKey(root);
   all[key] = [digest, ...(all[key] ?? []).filter((d) => d !== digest)].slice(0, 20);
