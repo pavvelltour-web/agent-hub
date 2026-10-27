@@ -16,6 +16,7 @@ const ROUTES = [
   [/^\/models(?:\/(.+))?$/, () => import('./views/models.js')],
   [/^\/library$/, () => import('./views/library.js')],
   [/^\/logs$/, () => import('./views/logs.js')],
+  [/^\/trace\/(r[0-9a-z]{2,40})$/, () => import('./views/trace.js')],
   [/^\/settings$/, () => import('./views/settings.js')],
 ];
 const NAV = [

@@ -36,6 +36,8 @@ const MAX_KEEP = 400;
 export const CONTEXT_LIMIT = 250_000;
 /** A task gets at most this many sessions in a row stopped for context size (the original and two fresh ones); then the user continues by hand. */
 const CONTEXT_CHAIN_MAX = 3;
+/** ADR-024: at most this many `turn` rows (one per model call) are stored per run; a hostile or runaway CLI cannot grow the log with them. */
+export const MAX_TURN_ROWS = 5000;
 
 /** `summarize`: false = deterministic handoff summary only; a function replaces the model call (tests). Default: try the cheap model, fall back. */
 export interface RunManagerOpts { exe?: Partial<Record<AgentId, { cmd: string; prefix: string[] }>>; env?: NodeJS.ProcessEnv; summarize?: boolean | ((inp: HandoffInput) => Promise<Summary | undefined>); home?: string;
@@ -125,12 +127,27 @@ export class RunManager {
     let ctxWarned = false, ctxStop = false, handleRef: RunHandle | undefined;
     const events: HubEvent[] = [];
     let seq = 0, limit: Extract<HubEvent, { kind: 'limit' }> | undefined, tokIn = 0, tokOut = 0, cost = 0, cached = 0;
+    let turnRows = 0, turnCapWarned = false, lastTurn: { mid: string; seq: number; data: Extract<HubEvent, { kind: 'turn' }> } | undefined;
+    /** Phase 7 (ADR-024): the `context` event of a model call is also stored as a `turn` row (tokens and prompt size, redacted by `sanitizeEvent` like every event). The CLI writes one line per content block, each with the message's
+     *  usage: lines with the same message id are ONE turn (the later line may carry the final output count). The row is never sent to the panel and `events()` leaves it out; the trace and the gauge read it. */
+    const recordTurn = (e: Extract<HubEvent, { kind: 'context' }>): void => {
+      const data: Extract<HubEvent, { kind: 'turn' }> = { kind: 'turn', newIn: e.newIn ?? e.tokens, cachedIn: e.cachedIn ?? 0, out: e.out ?? 0, context: e.tokens, ...(e.mid ? { mid: e.mid } : {}) };
+      if (e.mid && lastTurn?.mid === e.mid) {
+        lastTurn.data = { ...lastTurn.data, out: Math.max(lastTurn.data.out, data.out) };
+        this.db.prepare('UPDATE run_event SET data = ? WHERE run_id = ? AND seq = ?').run(JSON.stringify(lastTurn.data), id, lastTurn.seq);
+        return;
+      }
+      if (turnRows >= MAX_TURN_ROWS) { if (!turnCapWarned) { turnCapWarned = true; emit({ kind: 'warn', message: `шагов больше ${MAX_TURN_ROWS}: подробный разбор показывает первые ${MAX_TURN_ROWS}` }); } return; }
+      const n = ++seq;
+      this.db.prepare('INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES (?,?,?,?,?)').run(id, n, new Date().toISOString(), 'turn', JSON.stringify(data));
+      turnRows++; lastTurn = { mid: e.mid ?? '', seq: n, data };
+    };
     const emit = (raw: HubEvent): void => {
       const e = sanitizeEvent(raw);
       if (e.kind === 'limit' && e.reached && limit) return;   // Codex reports the same limit as `error` and `turn.failed`: keep one
       if (ctxStop && e.kind === 'warn' && e.message === 'stopped by user') return;   // the hub stopped it, the user did not
       if (e.kind === 'context') {
-        // Per-call prompt size: watched, never stored or shown. A run in a hub task folder is stopped and continued from a card; a chat in the user's own folder is only warned.
+        // Per-call prompt size: watched, never shown (and not stored as such: `recordTurn` keeps a `turn` row). A run in a hub task folder is stopped and continued from a card; a chat in the user's own folder is only warned.
         if (this.live.get(id)?.stopped) return;   // the user already clicked Stop: stopped wins, whatever was still buffered
         if (ctxLimit > 0 && e.tokens > ctxLimit && !ctxWarned) {
           ctxWarned = true;
@@ -141,6 +158,7 @@ export class RunManager {
           }
           else emit({ kind: 'warn', message: `контекст большой (${Math.round(e.tokens / 1000)} тыс.): лучше начать новый чат, так дешевле` });
         }
+        recordTurn(e);
         return;
       }
       const row: StoredEvent = { seq: ++seq, ts: new Date().toISOString(), kind: e.kind, data: e };
@@ -249,8 +267,9 @@ export class RunManager {
   list(f: { projectId?: number; limit?: number } = {}): RunRow[] {
     return this.db.prepare(`SELECT ${COLS} FROM run WHERE (work_mode IS NULL OR work_mode != '${REVIEWER_MODE}') ${f.projectId != null ? 'AND project_id = ?' : ''} ORDER BY started_at DESC LIMIT ?`).all(...(f.projectId != null ? [f.projectId] : []), f.limit ?? 50) as unknown as RunRow[];
   }
+  /** The transcript of a run. `turn` rows (Phase 7) are not part of it: the trace and the gauge read them with `readTraceEvents`. */
   events(id: string, afterSeq = 0): StoredEvent[] {
-    return (this.db.prepare('SELECT seq, ts, kind, data FROM run_event WHERE run_id = ? AND seq > ? ORDER BY seq').all(id, afterSeq) as unknown as { seq: number; ts: string; kind: string; data: string }[]).map((r) => ({ ...r, data: JSON.parse(r.data) as unknown }));
+    return (this.db.prepare("SELECT seq, ts, kind, data FROM run_event WHERE run_id = ? AND seq > ? AND kind != 'turn' ORDER BY seq").all(id, afterSeq) as unknown as { seq: number; ts: string; kind: string; data: string }[]).map((r) => ({ ...r, data: JSON.parse(r.data) as unknown }));
   }
   subscribe(id: string, cb: (e: StoredEvent) => void): () => void {
     let s = this.subs.get(id); if (!s) this.subs.set(id, (s = new Set()));

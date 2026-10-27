@@ -59,6 +59,9 @@ export const text = (v: unknown, n: number, fallback = ''): string => (typeof v 
 export const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
 const s0 = (v: unknown): string => (typeof v === 'string' ? v : '');
 const optCount = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined);
+/** A token count from untrusted data: a finite, non-negative whole number, capped so sums and JSON stay exact. */
+const TOKEN_CAP = 1e12;
+const big = (v: unknown): number => Math.min(Math.floor(count(v)), TOKEN_CAP);
 const TODO_STATES = new Set(['pending', 'active', 'done']);
 
 /**
@@ -83,7 +86,14 @@ export function sanitizeEvent(raw: HubEvent): HubEvent {
       const reasoning = optCount(e['reasoning']), ms = optCount(e['ms']), cost = e['costUsd'];
       return { kind: 'usage', uncachedIn: count(e['uncachedIn']), cachedIn: count(e['cachedIn']), out: count(e['out']), ...(reasoning !== undefined ? { reasoning } : {}), ...(typeof cost === 'number' && Number.isFinite(cost) ? { costUsd: cost } : {}), ...(ms !== undefined ? { ms } : {}) };
     }
-    case 'context': return { kind: 'context', tokens: Math.floor(count(e['tokens'])) };
+    case 'context': {
+      const part = (k: string): { [x: string]: number } => (e[k] === undefined ? {} : { [k]: big(e[k]) }), mid = text(e['mid'], 120);
+      return { kind: 'context', tokens: big(e['tokens']), ...part('newIn'), ...part('cachedIn'), ...part('out'), ...(mid ? { mid } : {}) };
+    }
+    case 'turn': {
+      const reasoning = optCount(e['reasoning']), mid = text(e['mid'], 120);
+      return { kind: 'turn', newIn: big(e['newIn']), cachedIn: big(e['cachedIn']), out: big(e['out']), ...(reasoning !== undefined ? { reasoning: Math.min(Math.floor(reasoning), TOKEN_CAP) } : {}), context: big(e['context']), ...(mid ? { mid } : {}) };
+    }
     case 'unknown': return { kind: 'unknown', type: text(e['type'], 60, '(none)') };
     case 'limit': {
       const p = e['usedPercent'], r = e['resetsAt'];

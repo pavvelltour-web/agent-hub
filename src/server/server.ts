@@ -64,6 +64,7 @@ export async function startServer(ctx: Ctx, o: { port?: number; token?: string; 
           try { body = chunks.length ? (JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>) : {}; } catch { return send(res, 400, JSON.stringify({ error: 'invalid JSON' })); }
         }
         const r = await handle(ctx, method, url.pathname, url.searchParams, body);
+        if (r.text !== undefined) return send(res, r.status, r.text, r.type ?? 'text/plain; charset=utf-8', r.headers ?? {});
         return send(res, r.status, JSON.stringify(r.json ?? {}));
       }
       if (method !== 'GET' && method !== 'HEAD') return send(res, 405, JSON.stringify({ error: 'method not allowed' }));

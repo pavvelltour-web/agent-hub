@@ -6,6 +6,7 @@ import { claudeAdapter } from './claude.ts';
 import { codexAdapter, parseResetTime } from './codex.ts';
 import { startAgent } from './process.ts';
 import type { AgentAdapter, HubEvent } from './types.ts';
+import { sanitizeEvent } from './event-utils.ts';
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), 'fake-agent.mjs');
 const withFake = (a: AgentAdapter): AgentAdapter => ({ ...a, exe: () => ({ cmd: process.execPath, prefix: [fake] }) });
@@ -102,7 +103,8 @@ test('a line that makes parse or the consumer throw cannot escape the stdout lis
 });
 
 test('claude parse: per-call prompt size (input + cache writes + cache reads) becomes a context event; the run total in `result` does not; hostile numbers are ignored', () => {
-  const ctx = (usage: unknown): unknown[] => claudeAdapter.parse({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }], usage } }).filter((e) => e.kind === 'context');
+  // Phase 7 (ADR-024): the context event also carries the call's split (newIn / cachedIn / out), so the size itself is compared here.
+  const ctx = (usage: unknown): unknown[] => claudeAdapter.parse({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }], usage } }).filter((e) => e.kind === 'context').map((e) => ({ kind: e.kind, tokens: (e as { tokens: number }).tokens }));
   assert.deepEqual(ctx({ input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 900, output_tokens: 40 }), [{ kind: 'context', tokens: 915 }]);
   assert.deepEqual(ctx({ input_tokens: 'many', cache_read_input_tokens: -5, cache_creation_input_tokens: Infinity }), []);
   assert.deepEqual(ctx(undefined), []); assert.deepEqual(ctx([1, 2]), []);
@@ -110,8 +112,21 @@ test('claude parse: per-call prompt size (input + cache writes + cache reads) be
 });
 
 test('N4: a subagent\'s call (parent_tool_use_id) does not count toward the parent session\'s context', () => {
-  const line = (extra: object): unknown[] => claudeAdapter.parse({ type: 'assistant', ...extra, message: { content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 900_000 } } }).filter((e) => e.kind === 'context');
+  const line = (extra: object): unknown[] => claudeAdapter.parse({ type: 'assistant', ...extra, message: { content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 900_000 } } }).filter((e) => e.kind === 'context').map((e) => ({ kind: e.kind, tokens: (e as { tokens: number }).tokens }));
   assert.deepEqual(line({ parent_tool_use_id: 'toolu_1' }), []);
   assert.deepEqual(line({ parent_tool_use_id: null }), [{ kind: 'context', tokens: 900_000 }]);
   assert.deepEqual(line({}), [{ kind: 'context', tokens: 900_000 }]);
+});
+
+test('Phase 7: the context event carries the split of the call (new input, cached input, output) and the message id; hostile fields are rebuilt by the sanitizer', () => {
+  const [c] = claudeAdapter.parse({ type: 'assistant', message: { id: 'msg_01abc', content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 900, output_tokens: 40 } } }).filter((e) => e.kind === 'context');
+  assert.deepEqual(c, { kind: 'context', tokens: 915, newIn: 15, cachedIn: 900, out: 40, mid: 'msg_01abc' });
+  const [n] = claudeAdapter.parse({ type: 'assistant', message: { id: { toString: 1 }, content: [], usage: { input_tokens: 3, output_tokens: 'x' } } }).filter((e) => e.kind === 'context');
+  assert.deepEqual(n, { kind: 'context', tokens: 3, newIn: 3, cachedIn: 0, out: 0 }, 'a non-string id and a non-numeric output are dropped, not stringified');
+  const first = claudeAdapter.parse({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }, { type: 'tool_use', id: 't1', name: 'Bash', input: {} }], usage: { input_tokens: 3 } } });
+  assert.equal(first[0]!.kind, 'context', 'the context event comes FIRST in a line: it opens the turn that the tool calls of the line belong to');
+  const s = sanitizeEvent({ kind: 'context', tokens: 10.7, newIn: -1, cachedIn: Infinity, out: 'x', mid: 'k'.repeat(500) } as never) as { tokens: number; newIn: number; cachedIn: number; out: number; mid?: string };
+  assert.deepEqual([s.tokens, s.newIn, s.cachedIn, s.out], [10, 0, 0, 0]); assert.ok((s.mid ?? '').length <= 120);
+  const t = sanitizeEvent({ kind: 'turn', newIn: 5, cachedIn: NaN, out: 7.9, reasoning: -2, context: 1e30, mid: 'm' } as never) as Record<string, unknown>;
+  assert.equal(t['kind'], 'turn'); assert.equal(t['cachedIn'], 0); assert.equal(t['out'], 7); assert.equal(t['reasoning'], undefined); assert.ok(Number.isSafeInteger(t['context']));
 });

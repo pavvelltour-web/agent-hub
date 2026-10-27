@@ -185,6 +185,25 @@ if (scenario.startsWith('fixture:')) {
   if (fresh) call(5000, 'fresh start'); else { call(120000, 'working'); call(260000, 'working more'); }
   if (fresh || process.env.FAKE_BIGCTX_END) out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: { input_tokens: 10, cache_read_input_tokens: 1000, output_tokens: 20 }, total_cost_usd: 0.01 });
   else await sleep(60000);
+} else if (scenario === 'claude-trace') {
+  // Run trace and context gauge (src/run/trace.test.ts, src/econ/context.test.ts): three model calls (message ids m1..m3), the first split over two lines (the CLI writes one line per
+  // content block, each with the message's usage), two tool calls with a pause before the result so that a duration can be measured. FAKE_TRACE_TURNS=N: N calls with no tools instead (cap test).
+  // Shapes follow the Anthropic API; NOT seen on a signed-in CLI here.
+  out({ type: 'system', subtype: 'init', session_id: 'trace-1', model: 'claude-sonnet-5-5' });
+  const u = (i, cr, o) => ({ input_tokens: i, cache_creation_input_tokens: 5, cache_read_input_tokens: cr, output_tokens: o });
+  if (process.env.FAKE_TRACE_TURNS) {
+    for (let i = 0; i < Number(process.env.FAKE_TRACE_TURNS); i++) out({ type: 'assistant', message: { id: 'bulk' + i, content: [{ type: 'text', text: 'x' }], usage: u(1, 100 + i, 1) } });
+  } else {
+    out({ type: 'assistant', message: { id: 'm1', content: [{ type: 'thinking', thinking: 'plan' }], usage: u(10, 900, 10) } });
+    out({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'npm test' } }], usage: u(10, 900, 40) } });
+    await sleep(150);
+    out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'ok\n'.repeat(50) }] } });
+    out({ type: 'assistant', message: { id: 'm2', content: [{ type: 'tool_use', id: 'tu2', name: 'Read', input: { file_path: 'a.txt' } }], usage: u(12, 1000, 30) } });
+    await sleep(60);
+    out({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu2', content: 'no such file', is_error: true }] } });
+    out({ type: 'assistant', message: { id: 'm3', content: [{ type: 'text', text: 'done' }], usage: u(5, 1100, 20) } });
+  }
+  out({ type: 'result', subtype: 'success', is_error: false, duration_ms: 900, result: 'done', usage: { input_tokens: 27, cache_creation_input_tokens: 15, cache_read_input_tokens: 3000, output_tokens: 90 }, total_cost_usd: 0.05 });
 } else if (scenario === 'slow') {
   out({ type: 'system', subtype: 'init', session_id: 'slow-1' });
   await sleep(60000);

@@ -1,5 +1,6 @@
 import { api, qs } from '../api.js';
 import { btn, debounce, empty, fmt, h, icon, pills } from '../ui.js';
+import { filterOptions, kindLabel, matches } from '../log-model.js';
 import { pageHead } from './common.js';
 
 export default async function view() {
@@ -10,6 +11,7 @@ export default async function view() {
 const LEVEL = { error: ['Ошибка', 'error'], warn: ['Внимание', 'warn'], info: ['Событие', 'info'], audit: ['Изменение', 'audit'] };
 const OUTCOME = { done: 'закончил работу', review: 'закончил работу, ждёт ревью', failed: 'остановился с ошибкой', limit: 'остановился: кончился лимит', stopped: 'остановлен вами', interrupted: 'прерван' };
 const who = (a) => (a === 'codex' ? 'Codex' : a === 'claude' ? 'Claude' : 'Hub');
+const RUN_ID = /^r[0-9a-z]{2,40}$/;
 
 /** Turn a raw log row into one plain sentence. */
 function say(r) {
@@ -29,22 +31,50 @@ function say(r) {
   return `${r.agent ? who(r.agent) + ': ' : ''}${m}`;
 }
 
+/** A filter that keeps its element (an open list is not closed by the 5-second refresh); only its choices change. */
+function filterSelect(label, onpick) {
+  let sig = '';
+  const el = h('select.select', { 'aria-label': label, onchange: (e) => onpick(e.target.value) });
+  return { el, set(items, current, anyText) {
+    const next = JSON.stringify([items, anyText]);
+    if (next !== sig) { sig = next; el.replaceChildren(h('option', { value: '' }, anyText), ...items.map(([v, t]) => h('option', { value: v }, t))); }
+    el.value = items.some(([v]) => v === current) ? current : '';
+  } };
+}
+
 export function logsPanel({ projectId }) {
-  let level = '', q = '', rows = [], auto = true;
+  let level = '', q = '', rows = [], auto = true, projects = [];
+  const f = { project: '', agent: '', model: '', kind: '' };
   const box = h('div.plane.card.tight');
   const filters = h('div');
-  const load = async () => { rows = await api.get('/logs' + qs({ project: projectId, limit: 300 }), true).catch(() => rows); draw(); };
+  const redraw = () => draw();
+  const sel = { project: filterSelect('Проект', (v) => { f.project = v; redraw(); }), agent: filterSelect('Кто работал', (v) => { f.agent = v; redraw(); }), model: filterSelect('Модель', (v) => { f.model = v; redraw(); }), kind: filterSelect('Тип записи', (v) => { f.kind = v; redraw(); }) };
+  const bar = h('div.log-filters', projectId == null ? sel.project.el : null, sel.agent.el, sel.model.el, sel.kind.el);
+  const load = async () => {
+    rows = await api.get('/logs' + qs({ project: projectId, limit: 300 }), true).catch(() => rows);
+    if (projectId == null && !projects.length) projects = await api.get('/projects', true).catch(() => []);
+    draw();
+  };
   const draw = () => {
-    const list = rows.filter((r) => (!level || r.level === level) && (!q || (say(r) + r.source + (r.agent || '')).toLowerCase().includes(q)));
+    const o = filterOptions(rows), name = (id) => { const p = Array.isArray(projects) ? projects.find((x) => String(x?.id) === id) : null; return typeof p?.slug === 'string' ? p.slug : 'проект ' + id; };
+    sel.project.set(o.projects.map((id) => [id, name(id)]), f.project, 'Все проекты');
+    sel.agent.set(o.agents.map((a) => [a, who(a)]), f.agent, 'Все агенты');
+    sel.model.set(o.models.map((m) => [m, fmt.model(m)]), f.model, 'Все модели');
+    sel.kind.set(o.kinds.map((k) => [k, kindLabel(k)]), f.kind, 'Все типы');
+    for (const k of Object.keys(f)) if (!sel[k].el.value) f[k] = '';
+    const list = rows.filter((r) => (!level || r.level === level) && matches(r, f) && (!q || (say(r) + r.source + (r.agent || '')).toLowerCase().includes(q)));
     const n = (l) => rows.filter((r) => r.level === l).length;
     filters.replaceChildren(pills([['', 'Всё', rows.length], ['error', 'Ошибки', n('error')], ['warn', 'Лимиты и внимание', n('warn')], ['info', 'Запуски', n('info')], ['audit', 'Изменения файлов', n('audit')]], level, (k) => { level = k; draw(); }, 'Что показать'));
-    box.replaceChildren(...(list.length ? list.map((r) => { const [label, cls] = LEVEL[r.level] || LEVEL.info; return h('div.log-row', h('span.t-meta', fmt.date(r.ts)), h('span.lv.' + cls, label), r.runId ? h('a.msg-t', { href: '#/chat/' + r.runId, title: 'Открыть этот чат' }, say(r)) : h('span.msg-t', say(r))); })
-      : [empty('Записей нет', 'Здесь появятся запуски агентов, ошибки и изменения файлов.')]));
+    box.replaceChildren(...(list.length ? list.map((r) => {
+      const [label, cls] = LEVEL[r.level] || LEVEL.info, ok = typeof r.runId === 'string' && RUN_ID.test(r.runId);
+      return h('div.log-row', h('span.t-meta', fmt.date(r.ts)), h('span.lv.' + cls, label),
+        ok ? h('div.log-msg', h('a.msg-t', { href: '#/chat/' + r.runId, title: 'Открыть этот чат' }, say(r)), h('a.log-more', { href: '#/trace/' + r.runId, title: 'Шаги, токены и вызовы инструментов этого запуска' }, 'Подробно')) : h('span.msg-t', say(r)));
+    }) : [empty('Записей нет', 'Здесь появятся запуски агентов, ошибки и изменения файлов.')]));
   };
   const input = h('input.input', { type: 'search', placeholder: 'Найти в журнале', 'aria-label': 'Найти в журнале' });
   input.addEventListener('input', debounce(() => { q = input.value.trim().toLowerCase(); draw(); }, 150));
   const save = () => { const a = h('a', { href: URL.createObjectURL(new Blob([JSON.stringify(rows, null, 1)], { type: 'application/json' })), download: 'hub-journal.json' }); a.click(); };
   load();
   const timer = setInterval(() => { if (auto && document.visibilityState === 'visible') load(); }, 5000);
-  return { node: h('div.stack', h('div.row-flex', filters, h('div.grow'), h('div.search', { style: { maxWidth: '280px' } }, icon('search', 'sm'), input), btn('Сохранить файлом', { kind: 'glass', icon: 'file', onclick: save }), h('label.row-flex.t-meta', h('input.check', { type: 'checkbox', checked: true, onchange: (e) => { auto = e.target.checked; } }), 'Обновлять сам')), box), cleanup: () => clearInterval(timer) };
+  return { node: h('div.stack', h('div.row-flex', filters, h('div.grow'), h('div.search', { style: { maxWidth: '280px' } }, icon('search', 'sm'), input), btn('Сохранить файлом', { kind: 'glass', icon: 'file', onclick: save }), h('label.row-flex.t-meta', h('input.check', { type: 'checkbox', checked: true, onchange: (e) => { auto = e.target.checked; } }), 'Обновлять сам')), bar, box), cleanup: () => clearInterval(timer) };
 }

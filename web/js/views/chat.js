@@ -64,7 +64,8 @@ export async function chatPanel({ projectId, runId, q, global }) {
     head.replaceChildren(
       global && !current ? h('div.field', { style: { flexDirection: 'row', alignItems: 'center', gap: '8px' } }, icon('folder', 'sm'), projectSelect(projects, pid, (v) => { pid = v; })) : null,
       current ? h('div.row-flex', agentBadge(lastAgent), chip(fmt.model(current.last.model), 'line'), current.last.effort ? chip(current.last.effort, 'line') : null, current.last.branch ? chip(current.last.branch, 'info') : null) : h('span.t-meta', 'Новый чат'),
-      h('div.grow'), current ? btn('Что происходило', { kind: 'glass', icon: 'logs', class: 'btn-sm', onclick: showLog }) : null, ...['claude', 'codex'].map((id) => { const l = limitOf(id); const p = l && !l.stale ? l.usedPercent : null; return h('span.t-meta.row-flex', { style: { gap: '6px' } }, avatar(id), p == null ? 'лимит не известен' : `осталось ${Math.max(0, 100 - Math.round(p))}%`); }));
+      h('div.grow'), current ? h('a.btn.btn-glass', { href: '#/trace/' + current.last.id, title: 'Шаги, токены и вызовы инструментов последнего запуска' }, icon('logs', 'sm'), 'Подробно') : null,
+      current ? btn('Что происходило', { kind: 'glass', icon: 'logs', class: 'btn-sm', onclick: showLog }) : null, ...['claude', 'codex'].map((id) => { const l = limitOf(id); const p = l && !l.stale ? l.usedPercent : null; return h('span.t-meta.row-flex', { style: { gap: '6px' } }, avatar(id), p == null ? 'лимит не известен' : `осталось ${Math.max(0, 100 - Math.round(p))}%`); }));
   }
   /** Full event log of the current thread: every event with time, kind and short content. Downloadable. */
   async function showLog() {

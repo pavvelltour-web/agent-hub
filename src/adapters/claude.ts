@@ -33,7 +33,7 @@ export const claudeAdapter: AgentAdapter = {
   },
 };
 
-type ClaudeLine = { type?: string; subtype?: string; session_id?: string; model?: string; message?: { content?: Block[]; usage?: Record<string, number> }; parent_tool_use_id?: string | null; event?: { type?: string; delta?: { type?: string; text?: string } }; is_error?: boolean; result?: string; duration_ms?: number; usage?: Record<string, number>; total_cost_usd?: number; rate_limit_info?: { status?: string; utilization?: number; resetsAt?: number } };
+type ClaudeLine = { type?: string; subtype?: string; session_id?: string; model?: string; message?: { id?: unknown; content?: Block[]; usage?: Record<string, number> }; parent_tool_use_id?: string | null; event?: { type?: string; delta?: { type?: string; text?: string } }; is_error?: boolean; result?: string; duration_ms?: number; usage?: Record<string, number>; total_cost_usd?: number; rate_limit_info?: { status?: string; utilization?: number; resetsAt?: number } };
 
 function parseLine(line: unknown): HubEvent[] {
   if (!line || typeof line !== 'object' || Array.isArray(line)) return [];
@@ -44,7 +44,15 @@ function parseLine(line: unknown): HubEvent[] {
     case 'system':
       if (l.subtype === 'init' && l.session_id) out.push({ kind: 'session', nativeId: l.session_id, ...(l.model ? { model: l.model } : {}) });
       break;
-    case 'assistant':
+    case 'assistant': {
+      // Per-call prompt size = input + cache writes + cache reads. Shape as the API reports it; not yet seen on a signed-in CLI here (unverified), so every field is checked.
+      // It comes FIRST: it opens the turn that the tool calls of this line belong to (the trace, ADR-024). `mid` lets the runner fold the lines of one message into one turn.
+      const u = l.message?.usage;
+      if (u && typeof u === 'object' && typeof l.parent_tool_use_id !== 'string') {   // a subagent's call has its own context, not the session's
+        const n = (k: string): number => (typeof u[k] === 'number' && Number.isFinite(u[k]) && u[k] > 0 ? u[k] : 0);
+        const newIn = n('input_tokens') + n('cache_creation_input_tokens'), cachedIn = n('cache_read_input_tokens'), tokens = newIn + cachedIn;
+        if (tokens > 0) out.push({ kind: 'context', tokens, newIn, cachedIn, out: n('output_tokens'), ...(typeof l.message?.id === 'string' && l.message.id ? { mid: l.message.id } : {}) });
+      }
       for (const b of blocks) {
         if (b.type === 'text' && b.text?.trim()) out.push({ kind: 'text', text: safe(b.text) });
         else if (b.type === 'thinking' && b.thinking?.trim()) out.push(thinkingEvent(b.thinking));
@@ -58,16 +66,8 @@ function parseLine(line: unknown): HubEvent[] {
           }
         }
       }
-      {
-        // Per-call prompt size = input + cache writes + cache reads. Shape as the API reports it; not yet seen on a signed-in CLI here (unverified), so every field is checked.
-        const u = l.message?.usage;
-        if (u && typeof u === 'object' && typeof l.parent_tool_use_id !== 'string') {   // a subagent's call has its own context, not the session's
-          const n = (k: string): number => (typeof u[k] === 'number' && Number.isFinite(u[k]) && u[k] > 0 ? u[k] : 0);
-          const tokens = n('input_tokens') + n('cache_creation_input_tokens') + n('cache_read_input_tokens');
-          if (tokens > 0) out.push({ kind: 'context', tokens });
-        }
-      }
       break;
+    }
     case 'user':
       for (const b of blocks) if (b.type === 'tool_result') out.push(resultEvent(b.tool_use_id ?? '', resultText(b.content), !!b.is_error));
       break;

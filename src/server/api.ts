@@ -39,6 +39,7 @@ import { checkSparse, git } from '../run/git.ts';
 import { defaultLadder, readCascadeFor, readVerify, runCascade, validArgv, type CascadeResult, type Rung } from '../run/cascade.ts';
 import { approveVerify } from '../review/checks.ts';
 import { RunManager, type RunRow, type StartReq } from '../run/runner.ts';
+import { buildTrace, pageTurns, readTraceEvents, traceJsonl } from '../run/trace.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 import { GateError, answer as answerFindingGate, approve as approveReview, approveReviewChecks, canAcceptNow, launchReview, reviewChecks, reviewDiffText, reviewView, reviewsOfRun, startFix, usableAgents } from '../review/gate.ts';
 import { MAX_DIFF_BYTES, SEED_CASES_DIR, caseFromFinding, caseSummary, incidentCasesDir, readBaseline, saveCase } from '../review/eval.ts';
@@ -50,7 +51,8 @@ export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, 
   graph?: { tool?: GraphTool | null };
   /** Tests: a fake GitHub for the starter kit. Without it the hub fetches only from the repositories named in registry/starter.json. */
   starter?: { fetch?: TextFetcher } }
-export interface Res { status: number; json?: unknown }
+/** `text` (with `type`) answers with a plain-text body instead of JSON, e.g. a download; `headers` are added to the safe defaults the server sets. */
+export interface Res { status: number; json?: unknown; text?: string; type?: string; headers?: Record<string, string> }
 type Body = Record<string, unknown>;
 type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
 
@@ -96,6 +98,13 @@ async function cascadeStart(c: Ctx, body: Body, req: StartReq, resuming: boolean
   return r.needsApproval ? { status: 400, json: { error: r.reason ?? 'the verify command is not approved', needsApproval: true, digest: r.needsApproval.digest, plan: r.needsApproval } } : bad(400, r.reason ?? 'the cascade did not start');
 }
 
+function traceOf(c: Ctx, id: string): { run: RunRow; trace: ReturnType<typeof buildTrace>; truncated: boolean } {
+  if (!RUN_ID.test(id)) throw new HttpError(400, 'bad run id');
+  const run = c.runs.get(id);
+  if (!run) throw new HttpError(404, 'run not found');
+  const { events, truncated } = readTraceEvents(c.db, id);
+  return { run, trace: buildTrace(events, { model: run.model ?? '', ...(run.effort ? { effort: run.effort } : {}) }), truncated };
+}
 const RUN_ID = /^r[0-9a-z]{2,40}$/, REVIEW_ID = /^rv[0-9a-z]{2,40}$/, FINDING_ID = /^fd[0-9a-z]{2,40}$/, SHA = /^[0-9a-f]{7,40}$/i;
 function reviewId(c: Ctx, raw: string | undefined): string {
   if (!raw || !REVIEW_ID.test(raw) || !getReview(c.db, raw)) throw new HttpError(404, 'review not found');
@@ -488,6 +497,16 @@ const ROUTES: [string, RegExp, Handler][] = [
     const card = c.runs.handoffCard(run.id);
     return ok({ run: { ...run, live: c.runs.isLive(run.id) }, events: c.runs.events(run.id).slice(-2000), card: card ?? null });
   }],
+  // Phase 7 (ADR-024): the trace is built from the hub's own stored rows (names, numbers, times; no tool input or output text), paged by turn number.
+  ['GET', /^\/api\/runs\/(\w+)\/trace$/, (c, { params, q }) => {
+    const { run, trace, truncated } = traceOf(c, params[0] as string);
+    const page = pageTurns(trace.turns, { ...(num(q.get('after')) != null ? { after: num(q.get('after')) as number } : {}), ...(num(q.get('limit')) != null ? { limit: num(q.get('limit')) as number } : {}) });
+    return ok({ run: { id: run.id, agent: run.agent, model: run.model ? clip(run.model, 100) : null, effort: run.effort, outcome: run.outcome, startedAt: run.startedAt, projectId: run.projectId }, ...page, totals: trace.totals, slowest: trace.slowest, truncated });
+  }],
+  ['GET', /^\/api\/runs\/(\w+)\/trace\.jsonl$/, (c, { params }) => {
+    const { run, trace } = traceOf(c, params[0] as string);
+    return { status: 200, text: traceJsonl(trace), type: 'application/x-ndjson; charset=utf-8', headers: { 'content-disposition': `attachment; filename="trace-${run.id}.jsonl"` } };
+  }],
   ['GET', /^\/api\/runs\/(\w+)\/cascade$/, (c, { params }) => (RUN_ID.test(params[0] as string) ? ok({ cascade: readCascadeFor(c.runs.home, params[0] as string) ?? null }) : bad(400, 'bad run id'))],
   // The cascade's verify command runs code of the task folder with the user's rights: same digest-pinned approval as review checks (ADR-017). Human HTTP path only.
   ['POST', /^\/api\/verify\/approve$/, (c, { body }) => {
@@ -598,12 +617,12 @@ const ROUTES: [string, RegExp, Handler][] = [
   ['GET', /^\/api\/logs$/, (c, { q }) => {
     const limit = Math.min(500, num(q.get('limit')) ?? 200);
     const pid = num(q.get('project'));
-    const ev = c.db.prepare(`SELECT e.ts, e.kind, e.data, e.run_id AS runId, r.agent, r.project_id AS projectId FROM run_event e JOIN run r ON r.id = e.run_id WHERE e.kind IN ('error','warn','limit','handoff','end') ${pid != null ? 'AND r.project_id = ?' : ''} ORDER BY e.ts DESC LIMIT ?`).all(...(pid != null ? [pid] : []), limit) as unknown as { ts: string; kind: string; data: string; runId: string; agent: string; projectId: number }[];
-    const rows: { ts: string; level: string; source: string; message: string; runId?: string; agent?: string; ok?: boolean }[] = ev.map((e) => {
+    const ev = c.db.prepare(`SELECT e.ts, e.kind, e.data, e.run_id AS runId, r.agent, r.model, r.project_id AS projectId FROM run_event e JOIN run r ON r.id = e.run_id WHERE e.kind IN ('error','warn','limit','handoff','end') ${pid != null ? 'AND r.project_id = ?' : ''} ORDER BY e.ts DESC LIMIT ?`).all(...(pid != null ? [pid] : []), limit) as unknown as { ts: string; kind: string; data: string; runId: string; agent: string; model: string | null; projectId: number }[];
+    const rows: { ts: string; level: string; source: string; message: string; runId?: string; agent?: string; model?: string; projectId?: number; ok?: boolean }[] = ev.map((e) => {
       const d = JSON.parse(e.data) as Record<string, unknown>;
       const level = e.kind === 'error' ? 'error' : e.kind === 'limit' || e.kind === 'warn' ? 'warn' : 'info';
       const message = e.kind === 'end' ? `run ${String(d['outcome'])}` : e.kind === 'handoff' ? `handoff card ready: ${String(d['id'])}` : String(d['message'] ?? e.kind);
-      return { ts: e.ts, level, source: e.kind, message: clip(message, 300), runId: e.runId, agent: e.agent };
+      return { ts: e.ts, level, source: e.kind, message: clip(message, 300), runId: e.runId, agent: e.agent, ...(e.model ? { model: clip(e.model, 100) } : {}), ...(e.projectId != null ? { projectId: e.projectId } : {}) };
     });
     const roots = (pid != null ? [rootOf(c, pid)] : listProjects(c.db).slice(0, 30).map((p) => p.root));
     for (const r of roots) { try { for (const l of readFileSync(join(r, '.hub', 'audit.jsonl'), 'utf8').trim().split('\n').slice(-50)) { const a = JSON.parse(l) as { ts: string; action: string; ok?: unknown }; rows.push({ ts: a.ts, level: 'audit', source: 'audit', ...(typeof a.ok === 'boolean' ? { ok: a.ok } : {}), message: `${a.action} ${clip(JSON.stringify({ ...a, ts: undefined, action: undefined }), 120)}` }); } } catch { /* no audit yet */ } }

@@ -1,0 +1,46 @@
+/* Run trace (Phase 7.1) and context gauge (7.2). Tokens only (--hub-*). Work surfaces are opaque; nothing here is glass. */
+.tr, .tr > *, .tr-card, .tr-row { min-width: 0; }
+.tr { overflow-wrap: anywhere; }
+.tr-gap { gap: var(--hub-space-2); }
+.tr-card { background: var(--hub-surface); border-radius: var(--hub-radius-card); padding: var(--hub-space-5); box-shadow: inset 0 0 0 1px var(--hub-line); }
+.tr-head { gap: var(--hub-space-2); }
+.tr-head .chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; border-radius: 12px; }
+
+.tr-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--hub-space-3); }
+.tr-stat { display: flex; flex-direction: column; gap: 2px; padding: var(--hub-space-3) var(--hub-space-4); border-radius: var(--hub-radius-control); background: var(--hub-surface-2); }
+.tr-val { font: var(--hub-type-title); color: var(--hub-ink); overflow-wrap: anywhere; }
+
+/* timeline: one segment per step, as wide as the step was long; inside, tool time and the rest */
+.tr-line { display: flex; gap: 2px; height: 44px; padding: 4px; border-radius: var(--hub-radius-control); background: var(--hub-surface-2); overflow: hidden; }
+.tr-seg { flex: 1 1 0; min-width: 3px; display: flex; gap: 1px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, var(--hub-ink) 12%, transparent); }
+.tr-part { flex: 1 1 0; min-width: 0; display: block; }
+.tr-part.tool, .tr-sw.tool { background: var(--hub-accent); box-shadow: inset 0 0 0 1px var(--hub-accent-edge); }
+.tr-part.tool-bad, .tr-sw.tool-bad { background: var(--hub-danger-ink); }
+.tr-part.rest, .tr-sw.rest { background: transparent; }
+.tr-legend { gap: var(--hub-space-4); }
+.tr-sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 2px; box-shadow: inset 0 0 0 1px var(--hub-line); }
+
+.tr-slow { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--hub-space-2); }
+.tr-slow li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--hub-space-3); align-items: baseline; padding: var(--hub-space-2) var(--hub-space-3); border-radius: var(--hub-radius-control); background: var(--hub-surface-2); }
+.tr-slow-n { overflow-wrap: anywhere; font: var(--hub-type-label); }
+
+.tr-row { display: flex; flex-direction: column; gap: var(--hub-space-2); padding: var(--hub-space-3) var(--hub-space-4); border-radius: var(--hub-radius-control); background: var(--hub-surface); box-shadow: inset 0 0 0 1px var(--hub-line); }
+.tr-cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--hub-space-2) var(--hub-space-3); }
+.tr-cell { display: flex; flex-direction: column; min-width: 0; }
+.tr-num { font-size: 14px; overflow-wrap: anywhere; }
+.tr-tools { display: flex; flex-wrap: wrap; gap: var(--hub-space-2); align-items: center; }
+.tr-tools .chip { max-width: 100%; white-space: normal; overflow-wrap: anywhere; border-radius: 12px; }
+
+@media (max-width: 720px) {
+  .tr-card { padding: var(--hub-space-4); }
+  .tr-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tr-cells { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .tr-slow li { grid-template-columns: minmax(0, 1fr) auto; }
+  .tr-slow li .t-meta { grid-column: 1 / -1; }
+}
+
+/* Journal: filters and the link to the trace */
+.log-filters { display: flex; flex-wrap: wrap; gap: var(--hub-space-2); align-items: center; }
+.log-filters .select { max-width: 100%; }
+.log-more { display: inline-flex; align-items: center; min-height: var(--hub-target-min); padding: 0 var(--hub-space-3); font: var(--hub-type-label); color: var(--hub-accent-text); text-decoration: underline; text-underline-offset: 3px; }
+.log-msg { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--hub-space-3); min-width: 0; }
