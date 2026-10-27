@@ -25,7 +25,8 @@ const env = (): void => { runs['opts'].env = { ...process.env, FAKE_SCENARIO: sc
 env();
 const stub = { picked: null as string | null, opened: [] as string[], loggedIn: false };
 const graphCtx = { tool: null as { cmd: string; prefix: string[] } | null };   // graph features off unless a test sets a (fake) graphify
-const srv = await startServer({ db, runs, graph: graphCtx, agents: () => ({ claude: { installed: true, version: 'fake', path: 'C:/fake/claude.exe' }, codex: { installed: true, version: 'fake', path: 'C:/fake/codex.exe' } }), auth: (id) => ({ loggedIn: id === 'codex' ? true : stub.loggedIn, how: id === 'codex' ? 'ChatGPT' : '' }), native: { pickFolder: () => ({ path: stub.picked }), openLogin: (id) => { stub.opened.push(id); } } });
+const starterCtx = { fetch: undefined as ((url: string) => Promise<string>) | undefined };   // starter kit: a fake GitHub, never the network
+const srv = await startServer({ db, runs, graph: graphCtx, starter: starterCtx, agents: () => ({ claude: { installed: true, version: 'fake', path: 'C:/fake/claude.exe' }, codex: { installed: true, version: 'fake', path: 'C:/fake/codex.exe' } }), auth: (id) => ({ loggedIn: id === 'codex' ? true : stub.loggedIn, how: id === 'codex' ? 'ChatGPT' : '' }), native: { pickFolder: () => ({ path: stub.picked }), openLogin: (id) => { stub.opened.push(id); } } });
 after(async () => { await srv.close(); });
 const base = `http://127.0.0.1:${srv.port}`;
 const cookie = `hub_token=${srv.token}`;
@@ -484,4 +485,54 @@ test('graph API: status says built/stale/missing; update needs approval and an a
     assert.ok(logs.json.some((r: any) => r.source === 'audit' && /graph-update/.test(r.message) && r.ok === true), 'the Journal row carries ok as a field (the panel does not parse text)');
     assert.equal((await api('/api/graph')).status, 404, 'status needs a project');
   } finally { graphCtx.tool = null; rmSync(scriptDir, { recursive: true, force: true }); }
+});
+
+test('starter API: list needs no network; plan shows files, license and commit; apply needs approval and the previewed digest; writes only into the hub library', async () => {
+  const SHA = 'c'.repeat(40);
+  const md = (extra = ''): string => `---\nname: test-driven-development\ndescription: tdd.\n---\nWrite the test first.${extra}`;
+  let body = md();
+  starterCtx.fetch = async (url: string): Promise<string> => {
+    if (/\/git\/ref\/heads\/main$/.test(url)) return JSON.stringify({ object: { sha: SHA } });
+    if (/\/git\/trees\//.test(url)) return JSON.stringify({ truncated: false, tree: [{ path: 'skills/test-driven-development/SKILL.md', mode: '100644', type: 'blob', size: body.length }] });
+    if (url.endsWith('/skills/test-driven-development/SKILL.md')) return body;
+    throw new Error('unexpected ' + url);
+  };
+  const lib = join(fake, '.agent-hub', 'skills', 'test-driven-development');
+  try {
+    const list = await api('/api/starter');
+    assert.equal(list.status, 200); assert.equal(list.json.items.length, 7);
+    const tdd = list.json.items.find((i: any) => i.id === 'test-driven-development');
+    assert.equal(tdd.checked, true); assert.equal(list.json.items.find((i: any) => i.id === 'grill-me').checked, false, 'unknown license: unchecked');
+    assert.ok(tdd.target.split('\\').join('/').endsWith('.agent-hub/skills/test-driven-development'));
+
+    assert.equal((await api('/api/starter/plan', { method: 'POST', body: { ids: [] } })).status, 400);
+    assert.equal((await api('/api/starter/plan', { method: 'POST', body: { ids: ['nope'] } })).status, 400);
+    assert.equal((await api('/api/starter/plan', { method: 'POST', body: { ids: ['graphify'] } })).status, 400, 'only manual sources: nothing to install, reason given');
+
+    const plan = await api('/api/starter/plan', { method: 'POST', body: { ids: ['test-driven-development', 'graphify'] } });
+    assert.equal(plan.status, 200); assert.match(plan.json.digest, /^[0-9a-f]{64}$/);
+    assert.equal(plan.json.skills[0].commit, SHA); assert.equal(plan.json.skills[0].license, 'MIT');
+    assert.match(plan.json.skipped[0].reason, /graphifyy/);
+    assert.ok(plan.json.changes.every((c: any) => c.path.startsWith('skills/')), 'relative to the hub library, nothing else');
+    assert.ok(!existsSync(lib), 'the plan wrote nothing');
+
+    const ids = ['test-driven-development'];
+    assert.equal((await api('/api/starter/apply', { method: 'POST', body: { ids, digest: plan.json.digest } })).status, 400, 'needs approved: true');
+    body = md(' EVIL');
+    assert.equal((await api('/api/starter/apply', { method: 'POST', body: { ids, digest: plan.json.digest, approved: true } })).status, 409, 'content changed after the preview');
+    assert.ok(!existsSync(lib));
+
+    body = md();
+    const p2 = await api('/api/starter/plan', { method: 'POST', body: { ids } });
+    const done = await api('/api/starter/apply', { method: 'POST', body: { ids, digest: p2.json.digest, approved: true } });
+    assert.equal(done.status, 200, JSON.stringify(done.json)); assert.deepEqual(done.json.installed, ids);
+    assert.equal(readFileSync(join(lib, 'SKILL.md'), 'utf8'), body);
+    assert.ok(!existsSync(join(fake, '.agents', 'skills', 'test-driven-development')) && !existsSync(join(fake, '.claude', 'skills', 'test-driven-development')), 'not in the agents\' own folders');
+    assert.equal((await api('/api/starter')).json.items.find((i: any) => i.id === 'test-driven-development').state, 'installed');
+
+    starterCtx.fetch = async () => { throw new Error('HTTP 403 for x/y'); };
+    rmSync(lib, { recursive: true, force: true });
+    const failed = await api('/api/starter/plan', { method: 'POST', body: { ids } });
+    assert.equal(failed.status, 400, 'a skill that cannot be fetched is skipped with its reason, not a crash'); assert.match(failed.json.error, /HTTP 403/);
+  } finally { starterCtx.fetch = undefined; rmSync(join(fake, '.agent-hub', 'skills'), { recursive: true, force: true }); }
 });

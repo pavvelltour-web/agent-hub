@@ -12,13 +12,14 @@ import type { McpSpec, Plan, RegistryEntry } from './types.ts';
  * security scan first, nothing runs, and the apply step only accepts what was previewed (digest).
  */
 const REPO = 'davila7/claude-code-templates';
-const MAX_FILE = 200_000, MAX_TOTAL = 1_000_000, MAX_FILES = 40;
+export const MAX_FILE = 200_000, MAX_TOTAL = 1_000_000, MAX_FILES = 40;
 export type TextFetcher = (url: string, maxChars?: number) => Promise<string>;
 
 const ALLOWED = (u: URL): boolean => u.protocol === 'https:' && ((u.hostname === 'www.aitmpl.com' || u.hostname === 'aitmpl.com') || (u.hostname === 'raw.githubusercontent.com' && u.pathname.startsWith(`/${REPO}/`)));
 
-export const defaultTextFetcher: TextFetcher = async (url, maxChars = MAX_FILE) => {
-  if (!ALLOWED(new URL(url))) throw new Error('host not allowed');
+/** A text fetcher limited to the hosts `allowed` accepts: https only, no redirects (a redirect to another host is an error), size caps, 20 s timeout. */
+export const makeTextFetcher = (allowed: (u: URL) => boolean): TextFetcher => async (url, maxChars = MAX_FILE) => {
+  if (!allowed(new URL(url))) throw new Error('host not allowed');
   const r = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: 'error' });
   if (!r.ok) throw new Error(`HTTP ${r.status} for ${url.split('/').slice(-2).join('/')}`);
   if (Number(r.headers.get('content-length') ?? 0) > maxChars * 2) throw new Error('file too large');
@@ -26,6 +27,7 @@ export const defaultTextFetcher: TextFetcher = async (url, maxChars = MAX_FILE) 
   if (t.length > maxChars) throw new Error('file too large');
   return t;
 };
+export const defaultTextFetcher: TextFetcher = makeTextFetcher(ALLOWED);
 
 interface RawItem { id: string; type: string; name: string; path: string; description?: string; license?: string | null; files?: string[] | null; urls?: { content?: string }; scan?: { severity?: string; score?: number; tool?: string } }
 export interface Preview {
@@ -36,7 +38,7 @@ export interface Preview {
 }
 
 const REL = /^[\w.-]+(\/[\w.-]+)*$/;
-const relOk = (p: string): boolean => REL.test(p) && !p.split('/').some((s) => s === '..' || s === '.' || s === '.git');
+export const relOk = (p: string): boolean => REL.test(p) && !p.split('/').some((s) => s === '..' || s === '.' || s === '.git');
 
 /** Catalog item → everything that would be written, without writing. Throws on malformed input; `blocked` marks a refusal with the reason. */
 export async function previewComponent(id: string, fetchText: TextFetcher = defaultTextFetcher): Promise<Preview> {

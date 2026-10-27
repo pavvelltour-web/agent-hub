@@ -11,7 +11,8 @@ import { graphStatus, locateGraphify, updateGraph, type GraphTool } from '../cor
 import { addSkillRoot, HUB_HOME, library, loadUserConfig, removeSkillRoot, REPO_ROOT, saveUserConfig, skillRoots } from '../core/registry.ts';
 import { scout } from '../core/scout.ts';
 import { fetchAitmpl, searchGithub } from '../core/scout-remote.ts';
-import { planLibraryInstall, previewComponent } from '../core/install-remote.ts';
+import { planLibraryInstall, previewComponent, type TextFetcher } from '../core/install-remote.ts';
+import { planStarter, previewStarter, starterItems } from '../core/starter.ts';
 import { planInstall } from '../core/install.ts';
 import { listPlugins } from '../core/profile.ts';
 import { auditLoading, compileProfile, skillInfoFrom, type Desired, type SkillState } from '../core/loading.ts';
@@ -45,7 +46,9 @@ import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } f
 
 export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; seedDir?: string; baselinePath?: string };
   /** Tests: which graphify to use (`tool: null` = none). Without it the hub looks for graphify on this PC. */
-  graph?: { tool?: GraphTool | null } }
+  graph?: { tool?: GraphTool | null };
+  /** Tests: a fake GitHub for the starter kit. Without it the hub fetches only from the repositories named in registry/starter.json. */
+  starter?: { fetch?: TextFetcher } }
 export interface Res { status: number; json?: unknown }
 type Body = Record<string, unknown>;
 type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
@@ -241,6 +244,21 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (body['digest'] !== pv.digest) return bad(409, 'the component changed since you previewed it; review it again');
     const r = applyPlan(plan, { approved: true });
     return ok({ backupId: r.backupId, written: r.written.length, fallbacks: r.fallbacks });
+  }],
+  // ---- starter kit (ADR-022): skills for the hub LIBRARY only (HUB_HOME/skills), listed without network, previewed in full, installed after approval of the exact digest.
+  ['GET', /^\/api\/starter$/, () => ok({ home: HUB_HOME, items: starterItems() })],
+  ['POST', /^\/api\/starter\/(plan|apply)$/, async (c, { params, body }) => {
+    const ids = Array.isArray(body['ids']) ? (body['ids'] as unknown[]).filter((x): x is string => typeof x === 'string').slice(0, 40) : [];
+    let pv; try { pv = await previewStarter(ids, c.starter?.fetch); } catch (e) { return bad(400, (e as Error).message); }
+    if (!pv.items.length) return bad(400, pv.skipped.length ? `nothing to install: ${pv.skipped.map((s) => `${s.id}: ${s.reason}`).join('; ')}` : 'nothing to install');
+    const plan = planStarter(pv);
+    if (params[0] === 'plan') return ok({ digest: pv.digest, notes: plan.notes, skipped: pv.skipped,
+      skills: pv.items.map((i) => ({ id: i.id, license: i.license, licenseKnown: i.licenseKnown, repo: i.repo, path: i.path, commit: i.commit, target: i.target, runsCode: i.runsCode, files: i.files, text: clip(i.text, 6000) })),
+      changes: plan.changes.map((ch) => ({ path: ch.path.slice(HUB_HOME.length + 1).replace(/\\/g, '/'), action: ch.action, note: ch.note ?? null, before: null, after: clip(ch.after, 3000) })) });
+    if (body['approved'] !== true) return bad(400, 'apply needs approved: true');
+    if (body['digest'] !== pv.digest) return bad(409, 'the skills changed since you previewed them; review them again');
+    const r = applyPlan(plan, { approved: true });
+    return ok({ backupId: r.backupId, written: r.written.length, installed: pv.items.map((i) => i.id), skipped: pv.skipped, fallbacks: r.fallbacks });
   }],
   ['GET', /^\/api\/config$/, () => { const cfg = loadUserConfig(); return ok({ home: HUB_HOME, extraSkillRoots: (cfg.extraSkillRoots ?? []).map((p) => ({ path: p, exists: existsSync(p) })) }); }],
   ['POST', /^\/api\/config\/skill-root$/, (_c, { body }) => {

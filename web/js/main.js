@@ -5,6 +5,7 @@ prefs.set({});   // re-apply saved theme/accent/material
 
 const ROUTES = [
   [/^\/$/, () => import('./views/today.js')],
+  [/^\/welcome$/, () => import('./views/welcome.js')],
   [/^\/projects$/, () => import('./views/projects.js')],
   [/^\/p\/(\d+)\/review\/(rv[0-9a-z]{2,40})$/, () => import('./views/review.js')],
   [/^\/p\/(\d+)(?:\/(chat|tasks|history|library|tools|logs))?(?:\/(\w+))?$/, () => import('./views/project.js')],
@@ -20,6 +21,7 @@ const NAV = [
   ['/', 'Сегодня', 'today'], ['/projects', 'Проекты', 'folder'], ['/chat', 'Чат', 'chat'], ['/history', 'История', 'history'],
   ['/models', 'Модели', 'models'], ['/library', 'Инструменты', 'library'], ['/logs', 'Журнал', 'logs'],
 ];
+const welcomeDone = () => { try { return localStorage.getItem('hub.welcomeDone') === '1'; } catch { return false; } };
 const section = (path) => (path === '/' ? '/' : '/' + path.split('/')[1]);
 const navKey = (path) => (path.startsWith('/p/') ? '/projects' : path.startsWith('/s/') ? '/history' : section(path));
 
@@ -67,6 +69,12 @@ async function route() {
   const raw = location.hash.slice(1) || '/';
   const [path, query = ''] = raw.split('?');
   const q = new URLSearchParams(query);
+  // First run: no project yet and the welcome steps were not finished or skipped → show them instead of an empty "Сегодня".
+  if (path === '/' && !welcomeDone()) {
+    const ps = await api.get('/projects', true).catch(() => null);
+    if (mine !== seq) return;
+    if (ps && !ps.length) { location.replace('#/welcome'); return; }
+  }
   let loader, params = [];
   for (const [re, ld] of ROUTES) { const m = re.exec(path); if (m) { loader = ld; params = m.slice(1).map((x) => (x == null ? x : decodeURIComponent(x))); break; } }
   const cur = navKey(path);
