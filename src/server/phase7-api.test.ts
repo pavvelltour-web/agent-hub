@@ -159,3 +159,66 @@ test('autouse: switching off needs a click too and cancels the waiting approvals
   assert.equal(r.enabled, false); assert.ok(r.items.every((i: { status: string }) => i.status !== 'approved'));
   assert.equal((await post('/api/autouse/approve', { projectId: pid, kind: 'missing-tests', agent: 'codex' })).status, 409);
 });
+
+// ---------- 7.5: guardrails routes ----------
+
+test('guardrails: GET shows the protection ON with the documented caps, the ranges, usage and the review window; a hub.json that says "off" changes nothing', async () => {
+  writeFileSync(join(root, 'hub.json'), JSON.stringify({ guardrails: { enabled: false, runWeighted: 250 } }));
+  const r = await get('/api/guardrails');
+  assert.equal(r.status, 200); assert.equal(r.json.enabled, true);
+  assert.deepEqual(r.json.caps, r.json.defaults); assert.equal(r.json.caps.runWeighted, 25);
+  assert.deepEqual(r.json.ranges.sameFailureN, { min: 2, max: 10 });
+  assert.equal(typeof r.json.usage.dayWeighted, 'number'); assert.deepEqual(Object.keys(r.json.review.window).sort(), ['accepted', 'findings', 'rejectedFindings', 'reopened']);
+  assert.equal(r.json.review.reviewEffort, 'standard'); assert.equal(r.json.review.tightened, false);
+  rmSync(join(root, 'hub.json'));
+  assert.equal((await raw('/api/guardrails', null)).status, 401);
+});
+
+test('guardrails: every change needs a click; caps outside their range or unknown are refused with the field named; switching OFF needs the typed word', async () => {
+  const ok1 = { caps: { runWeighted: 10, sameFailureN: 4 } };
+  assert.equal((await post('/api/guardrails', ok1, {})).status, 403);
+  assert.equal((await post('/api/guardrails', ok1, { origin })).status, 403);
+  assert.equal((await post('/api/guardrails', { caps: { runWeighted: 1e9 } })).status, 400);
+  assert.match((await post('/api/guardrails', { caps: { runWeighted: 1e9 } })).json.error, /runWeighted must be a number from 1 to 250/);
+  assert.equal((await post('/api/guardrails', { caps: { sameFailureN: 2.5 } })).status, 400);
+  assert.equal((await post('/api/guardrails', { caps: { nope: 1 } })).status, 400);
+  assert.equal((await post('/api/guardrails', { caps: 'x' })).status, 400);
+  assert.equal((await post('/api/guardrails', {})).status, 400, 'nothing to change');
+  assert.equal((await post('/api/guardrails', { enabled: 'no' })).status, 400);
+  assert.equal((await get('/api/guardrails')).json.caps.runWeighted, 25, 'every refusal left the caps alone');
+  assert.equal((await post('/api/guardrails', ok1)).status, 200);
+  const g = (await get('/api/guardrails')).json;
+  assert.equal(g.caps.runWeighted, 10); assert.equal(g.caps.sameFailureN, 4); assert.equal(g.caps.dayUsd, 150);
+  // off: click + the word
+  assert.equal((await post('/api/guardrails', { enabled: false }, {})).status, 403);
+  assert.equal((await post('/api/guardrails', { enabled: false })).status, 400, 'no word');
+  assert.equal((await post('/api/guardrails', { enabled: false, confirm: 'выключить' })).status, 400, 'the word is exact');
+  assert.equal((await get('/api/guardrails')).json.enabled, true);
+  assert.equal((await post('/api/guardrails', { enabled: false, confirm: 'ВЫКЛЮЧИТЬ' })).status, 200);
+  assert.equal((await get('/api/guardrails')).json.enabled, false);
+  assert.equal((await get('/api/guardrails')).json.caps.runWeighted, 10, 'the numbers are kept while it is off');
+  assert.equal((await post('/api/guardrails', { enabled: true }, {})).status, 403, 'switching ON also needs the click');
+  assert.equal((await post('/api/guardrails', { enabled: true })).status, 200);
+  assert.equal((await get('/api/guardrails')).json.enabled, true);
+  assert.equal((await post('/api/guardrails', { reset: true })).status, 200);
+  assert.deepEqual((await get('/api/guardrails')).json.caps, (await get('/api/guardrails')).json.defaults);
+  const audit = readFileSync(join(process.env['AGENT_HUB_HOME'] as string, 'guardrails-audit.jsonl'), 'utf8');
+  assert.match(audit, /guardrails-caps/); assert.match(audit, /guardrails-off/); assert.match(audit, /guardrails-on/);
+});
+
+test('guardrails: a trip is listed with the project name; only a repeated failure or repeated stops can be acknowledged, and only with a click', async () => {
+  const ins = db.prepare('INSERT INTO run (id, project_id, agent, started_at, ended_at, outcome, error) VALUES (?,?,?,?,?,?,?)');
+  const now = Date.now();
+  // the runs seeded by the earlier tests ended "now": move them an hour back so the three failures are the newest word on this project
+  db.prepare("UPDATE run SET ended_at = ? WHERE id LIKE 'rseed%'").run(new Date(now - 3600_000).toISOString());
+  for (let i = 0; i < 3; i++) ins.run(`rboom${i}`, pid, 'claude', new Date(now - (i + 2) * 60_000).toISOString(), new Date(now - (i + 1) * 60_000).toISOString(), 'failed', 'same boom 42');
+  const t = (await get('/api/guardrails')).json.trips.find((x: { kind: string }) => x.kind === 'same-failure');
+  assert.equal(t.key, `same-failure:${pid}`); assert.equal(t.blocksStart, true); assert.equal(t.ackable, true); assert.equal(t.projectId, pid); assert.equal(typeof t.slug, 'string');
+  const start = await post('/api/runs', { prompt: 'x', projectId: pid, agent: 'claude' });
+  assert.equal(start.status, 400); assert.match(start.json.error, /Защита от лишних запусков/, 'the real start route is refused by the guard');
+  for (const key of ['day-cap', 'run-cap:rx', '../x', `same-failure:${pid}; x`, 5 as never]) assert.equal((await post('/api/guardrails/ack', { key }, click)).status, 400, String(key));
+  assert.equal((await post('/api/guardrails/ack', { key: t.key }, {})).status, 403);
+  assert.equal((await get('/api/guardrails')).json.trips.length > 0, true, 'still tripped');
+  assert.equal((await post('/api/guardrails/ack', { key: t.key })).status, 200);
+  assert.ok((await get('/api/guardrails')).json.trips.every((x: { kind: string }) => x.kind !== 'same-failure'), 'the user looked: the trip is gone');
+});

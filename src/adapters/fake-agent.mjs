@@ -204,6 +204,11 @@ if (scenario.startsWith('fixture:')) {
     out({ type: 'assistant', message: { id: 'm3', content: [{ type: 'text', text: 'done' }], usage: u(5, 1100, 20) } });
   }
   out({ type: 'result', subtype: 'success', is_error: false, duration_ms: 900, result: 'done', usage: { input_tokens: 27, cache_creation_input_tokens: 15, cache_read_input_tokens: 3000, output_tokens: 90 }, total_cost_usd: 0.05 });
+} else if (scenario === 'claude-heavy') {
+  // A runaway run for the guardrail tests (src/run/breaker.test.ts): every model call writes 3 million output tokens (15 weighted Mtok), then the run waits as if it went on. The hub must stop it.
+  out({ type: 'system', subtype: 'init', session_id: 'heavy-1', model: 'claude-sonnet-5-5' });
+  for (let i = 0; i < 6; i++) { out({ type: 'assistant', message: { id: 'heavy' + i, content: [{ type: 'text', text: 'writing' }], usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 3_000_000 } } }); await sleep(120); }
+  await sleep(60000);
 } else if (scenario === 'slow') {
   out({ type: 'system', subtype: 'init', session_id: 'slow-1' });
   await sleep(60000);

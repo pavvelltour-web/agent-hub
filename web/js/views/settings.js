@@ -2,6 +2,7 @@ import { api, prefs } from '../api.js';
 import { btn, chip, empty, field, fmt, h, pills, sectionHead, toast } from '../ui.js';
 import { dialog, closeBtn } from '../ui.js';
 import { agentCard, pageHead } from './common.js';
+import { guardSettings } from './guard.js';
 
 export default async function view() {
   const [s, cfg, sh, pr, oc] = await Promise.all([api.get('/state'), api.get('/config'), api.get('/sharing'), api.get('/prices'), api.get('/outcomes').catch(() => null)]);
@@ -92,6 +93,7 @@ export default async function view() {
       h('section.plane.card.stack', sectionHead('Помочь улучшить прогнозы'),
         h('p.t-meta', `Hub и так учится на ваших задачах прямо на этом компьютере. Если хотите помочь сделать прогнозы точнее для всех, включите согласие: тогда можно сохранить файл со статистикой и отправить его сами. Сейчас записей: ${sh.caseCount}. Приложение ничего не отправляет само.`),
         h('p.t-meta', 'В файл не попадают: ' + sh.neverIncluded.join('; ') + '. Числа округляются. Согласие можно снять в любой момент.'), shareBox),
+      h('section.plane.card.stack', sectionHead('Защита от лишних запусков'), guardSettings()),
       h('section.plane.card', sectionHead('Безопасность'), h('ul.muted', { style: { margin: 0, paddingLeft: '20px', display: 'grid', gap: '6px' } },
         h('li', 'Панель доступна только на этом компьютере и только по вашей ссылке.'),
         h('li', 'Агентам нельзя делать git push.'),

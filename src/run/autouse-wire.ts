@@ -2,6 +2,7 @@ import type { AuthInfo } from '../adapters/auth.ts';
 import type { AgentId } from '../core/types.ts';
 import { limitSnapshots } from '../econ/limits.ts';
 import type { Db } from '../history/store.ts';
+import { blockingTrips } from './breaker.ts';
 import { AutoScheduler, loadAuto, type AutoDeps } from './autouse.ts';
 import type { RunManager } from './runner.ts';
 import { billingOk, startReqFor, type LimitAt } from './scheduler.ts';
@@ -17,7 +18,7 @@ export function realAutoDeps(o: { db: Db; runs: RunManager; auth: (agent: AgentI
       return out;
     },
     billing: (agent) => billingOk(agent, o.auth(agent), o.env ?? process.env),
-    breaker: o.breaker ?? (() => null),
+    breaker: o.breaker ?? ((root) => blockingTrips(db, runs.home, root)[0]?.ru ?? null),   // the circuit breaker of ADR-026 (the start itself is checked again by the RunManager)
     projectRoot: (id) => (db.prepare('SELECT root FROM project WHERE id = ?').get(id) as { root: string } | undefined)?.root,
     start: (job, root) => ({ runId: runs.start(startReqFor(job, root)).id }),
     stop: (id) => void runs.stop(id),

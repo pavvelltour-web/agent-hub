@@ -2,12 +2,14 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectAgents } from '../adapters/locate.ts';
 import { authStatus } from '../adapters/auth.ts';
-import { loadUserConfig } from '../core/registry.ts';
+import { loadUserConfig, saveUserConfig } from '../core/registry.ts';
 import type { AgentId } from '../core/types.ts';
 import { calibrate, estimate, profileFromHistory } from '../econ/econ.ts';
 import { projectForecast } from '../econ/forecast-data.ts';
 import { limitSnapshots } from '../econ/limits.ts';
 import { MODEL_ID } from '../econ/router.ts';
+import { guardrails, reviewWindow } from '../review/guardrails.ts';
+import { CAP_RANGE, DEFAULT_CAPS, NUM_KEYS, DAY_MS, ackTrip, auditGuard, capsProblem, effectiveCaps, evaluate, loadAcks, readFacts, sanitizeCaps, userCapsRaw } from '../run/breaker.ts';
 import { approveItem, cancelItem, confirmWordFor, isEnabled, loadAuto, newItemId, projectKeyOf, setEnabled, type AutoItem } from '../run/autouse.ts';
 import { APPROVAL_TTL_MS, KIND_RU, KIND_WRITES, MAX_HOURS_TO_RESET, MAX_STARTS_PER_DAY, MIN_LEFT_PCT, SAFETY_MARGIN_PCT, STARTABLE, billingOk, leftPct, suggestBeforeReset, type JobKind, type LimitAt, type QueuedJob } from '../run/scheduler.ts';
 import type { Ctx, Handler, Res } from './api.ts';
@@ -129,5 +131,48 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     const id = typeof body['id'] === 'string' && /^au[0-9a-f]{8}$/.test(body['id']) ? body['id'] : undefined;
     if (!id) return bad(400, 'bad id');
     return cancelItem(c.runs.home, id) ? ok({ cancelled: true }) : bad(404, 'nothing to cancel');
+  }],
+  // ---- 7.5 (ADR-026): guardrails, the circuit breaker. Reading is open to the panel; every change needs a user click, like 7.4. A project's hub.json is never consulted here.
+  ['GET', /^\/api\/guardrails$/, (c) => {
+    const now = Date.now(), { caps } = effectiveCaps(userCapsRaw());
+    const facts = readFacts(c.db, now), day = facts.filter((f) => now - f.startedMs < DAY_MS);
+    const slug = (id: number | undefined): string => (id == null ? '' : (c.db.prepare('SELECT slug FROM project WHERE id = ?').get(id) as { slug: string } | undefined)?.slug ?? '');
+    const win = reviewWindow(c.db, now), g = guardrails(win);
+    const nums = (x: Record<string, unknown>): Record<string, number> => Object.fromEntries(NUM_KEYS.map((k) => [k, x[k] as number]));
+    return ok({
+      enabled: caps.enabled, caps: nums(caps as unknown as Record<string, unknown>), defaults: nums(DEFAULT_CAPS as unknown as Record<string, unknown>), ranges: Object.fromEntries(NUM_KEYS.map((k) => [k, { min: CAP_RANGE[k][0], max: CAP_RANGE[k][1] }])),
+      usage: { dayWeighted: Math.round(day.reduce((a, f) => a + f.w, 0) * 100) / 100, dayUsd: Math.round(day.reduce((a, f) => a + (f.usd ?? 0), 0) * 100) / 100 },
+      trips: evaluate({ now, facts, caps, acks: loadAcks(c.runs.home) }).slice(0, 8).map((t) => ({ kind: t.kind, key: t.key, ru: t.ru, blocksStart: t.blocksStart, ackable: t.ackable, ...(t.projectId != null ? { projectId: t.projectId, slug: slug(t.projectId) } : {}) })),
+      review: { reviewEffort: g.reviewEffort, humanFromTier: g.humanFromTier, why: g.why, note: g.note, flagReviewer: g.flagReviewer, tightened: g.tightened, window: win },
+    });
+  }],
+  ['POST', /^\/api\/guardrails$/, (c, { body, meta }) => {
+    if (!meta?.userAction) return needClick;
+    const cfg = loadUserConfig(), cur = (cfg.guardrails ?? {}) as Record<string, unknown>;
+    const next: Record<string, unknown> = { ...sanitizeCaps(cur), ...(cur['enabled'] === false ? { enabled: false } : {}) };
+    let did = '';
+    if (body['reset'] === true) { for (const k of Object.keys(next)) delete next[k]; did = 'reset'; }
+    if (body['caps'] !== undefined) {
+      const problem = capsProblem(body['caps']);
+      if (problem) return bad(400, problem);
+      Object.assign(next, body['caps'] as Record<string, number>); did = did ? did + '+caps' : 'caps';
+    }
+    if (body['enabled'] === false) {
+      // the one dangerous change: it needs the typed word on top of the click
+      if (typeof body['confirm'] !== 'string' || body['confirm'].trim() !== 'ВЫКЛЮЧИТЬ') return bad(400, 'type ВЫКЛЮЧИТЬ to switch the protection off');
+      next['enabled'] = false; did = did ? did + '+off' : 'off';
+    } else if (body['enabled'] === true) { delete next['enabled']; did = did ? did + '+on' : 'on'; }
+    else if (body['enabled'] !== undefined) return bad(400, 'enabled: true or false');
+    if (!did) return bad(400, 'nothing to change: send caps, enabled or reset');
+    saveUserConfig({ ...cfg, guardrails: next });
+    auditGuard(c.runs.home, { action: `guardrails-${did}`, ...(body['caps'] !== undefined ? { caps: body['caps'] } : {}) });
+    return ok({ ok: true });
+  }],
+  ['POST', /^\/api\/guardrails\/ack$/, (c, { body, meta }) => {
+    if (!meta?.userAction) return needClick;
+    const key = typeof body['key'] === 'string' ? body['key'] : '';
+    if (!ackTrip(c.runs.home, key, Date.now())) return bad(400, 'only a repeated failure or repeated stops can be acknowledged');
+    auditGuard(c.runs.home, { action: 'guardrails-ack', key });
+    return ok({ ok: true });
   }],
 ];

@@ -2,10 +2,11 @@ import { api } from '../api.js';
 import { agentBadge, agentName, btn, chip, closeBtn, copy, dialog, empty, field, fmt, h, icon, pills, sectionHead, toast } from '../ui.js';
 import { autoModel } from '../autouse-model.js';
 import { autoToday } from './autouse.js';
+import { guardLine, loadGuard } from './guard.js';
 import { addProjectDialog, agentCard, EFFORT, go, limitLine, linkProject, modelName, openFolder, pageHead, pctText, runRow, sessionRow, shortModel, TASKS, workModePicker } from './common.js';
 
 export default async function view() {
-  const [runs, models, sessions, projects, state, auto] = await Promise.all([api.get('/runs?limit=60'), api.get('/models'), api.get('/sessions?limit=6'), api.get('/projects'), api.get('/state'), api.get('/autouse', true).then(autoModel, () => null)]);
+  const [runs, models, sessions, projects, state, auto, guard] = await Promise.all([api.get('/runs?limit=60'), api.get('/models'), api.get('/sessions?limit=6'), api.get('/projects'), api.get('/state'), api.get('/autouse', true).then(autoModel, () => null), loadGuard()]);
   const handedOff = new Set(runs.filter((r) => r.handoffOf).map((r) => r.handoffOf));
   const needs = runs.filter((r) => r.outcome === 'limit' && !handedOff.has(r.id));
   const failed = runs.filter((r) => r.outcome === 'failed' && !r.live && Date.now() - Date.parse(r.startedAt) < 86400000).slice(0, 3);
@@ -27,6 +28,7 @@ export default async function view() {
   const right = h('aside.stack', h('section.group', sectionHead('Агенты'), agentsBox), h('a.btn.btn-glass', { href: '#/models' }, icon('models', 'sm'), 'Какая модель для чего'));
 
   return { title: 'Сегодня', node: h('div', pageHead({ title: 'Сегодня', sub: needs.length ? 'Работа остановилась, нужно ваше решение.' : '' }),
+    guardLine(guard),
     needs.length ? await decision(needs[0], models, proj) : null,
     projects.length ? start(projects, models, state) : welcome(state),
     h('div.grid-2', { style: { marginTop: '24px' } }, left, right)) };

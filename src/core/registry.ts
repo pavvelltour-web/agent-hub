@@ -9,7 +9,7 @@ import type { AgentId, RegistryEntry } from './types.ts';
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const HUB_HOME = process.env['AGENT_HUB_HOME'] ?? join(homedir(), '.agent-hub');
 
-export interface UserConfig { extraSkillRoots?: string[]; projects?: string[]; routing?: { priceWeight?: number; explore?: number }; sharing?: { consent: boolean; at: string; version: number } }
+export interface UserConfig { extraSkillRoots?: string[]; projects?: string[]; routing?: { priceWeight?: number; explore?: number }; sharing?: { consent: boolean; at: string; version: number }; /** ADR-026: the user's own caps for the circuit breaker (read by src/run/breaker.ts, which validates every field); only POST /api/guardrails writes it */ guardrails?: Record<string, unknown> }
 export const loadUserConfig = (): UserConfig => {
   try { return JSON.parse(readFileSync(join(HUB_HOME, 'config.json'), 'utf8')) as UserConfig; } catch { return {}; }
 };

@@ -17,6 +17,8 @@ import { readRunnerHooks, runHooks } from './hooks-run.ts';
 import { modelSummary, type Summary } from './summarize.ts';
 import { sanitizeEvent } from '../adapters/event-utils.ts';
 import { HANDOFF_AT } from '../econ/context.ts';
+import { costUsd as priceUsd, weighted } from '../econ/econ.ts';
+import { makeGuard, type RunGuard } from './breaker.ts';
 
 export interface StartReq {
   agent: AgentId; prompt: string; projectRoot: string; task?: string; model?: string; effort?: string; permission?: Permission;
@@ -45,7 +47,9 @@ export interface RunManagerOpts { exe?: Partial<Record<AgentId, { cmd: string; p
   /** Tests: where work modes and MCP server definitions come from (defaults: the repo's `modes/` and the hub library). */
   lean?: { modesDir?: string; catalog?: RegistryEntry[]; profile?: string };
   /** Prompt-token size that counts as a large context (default `CONTEXT_LIMIT`; 0 switches the watch off). */
-  contextLimit?: number }
+  contextLimit?: number;
+  /** Runaway protection (ADR-026): ON by default (`makeGuard`, the user's own caps); `false` only in tests that must not be limited. */
+  guard?: RunGuard | false }
 
 /** The hub's session token / cookie / approval secrets must never reach an agent process: only the user's browser may approve a review. */
 const HUB_SECRET_ENV = /hub.*(?:token|cookie|session|secret)/i;
@@ -67,10 +71,12 @@ export class RunManager {
   private subs = new Map<string, Set<(e: StoredEvent) => void>>();
   private db: Db;
   private opts: RunManagerOpts;
+  private guard: RunGuard | undefined;
   /** The hub home this manager uses (push-guard hook, approvals). */
   readonly home: string;
   constructor(db: Db, opts: RunManagerOpts = {}) {
     this.db = db; this.opts = opts; this.home = opts.home ?? HUB_HOME;
+    this.guard = opts.guard === false ? undefined : opts.guard ?? makeGuard({ db, home: this.home });
     sweepStaleMcp(join(this.home, 'tmp'));   // temp MCP files a crash left behind (names only, but not ours to keep)
     // A crashed server leaves rows without an end: mark them so the UI never shows a ghost "running" run.
     db.prepare("UPDATE run SET outcome = 'interrupted', ended_at = ? WHERE outcome IS NULL").run(new Date().toISOString());
@@ -82,6 +88,10 @@ export class RunManager {
     if (!isAbsolute(req.projectRoot) || !existsSync(req.projectRoot) || !statSync(req.projectRoot).isDirectory()) throw new Error(`project folder not found: ${req.projectRoot}`);
     if (!req.prompt.trim()) throw new Error('empty prompt');
     if (this.live.size >= MAX_CONCURRENT) throw new Error(`too many concurrent runs (max ${MAX_CONCURRENT})`);
+    // ADR-026: the circuit breaker refuses before anything is created. A guard that cannot decide refuses too (the start is the safe side to fail on).
+    let blocked: string | null | undefined;
+    try { blocked = this.guard?.start?.(req); } catch (e) { blocked = `Защита от лишних запусков не смогла проверить запуск (${(e as Error).message.slice(0, 120)}): запуск не начат`; }
+    if (blocked) throw new Error(blocked);
     const adapter = this.adapters[req.agent];
     if (!adapter) throw new Error(`unknown agent: ${req.agent}`);
     const id = `r${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
@@ -125,19 +135,38 @@ export class RunManager {
     const ctxRestart = !ctxCapped && req.autoContinue !== false;
     // A continuation keeps the chain's ORIGINAL task text (not the previous handoff prompt, which would nest one card inside the next).
     const origPrompt = req.handoffOf ? this.rootPrompt(req.handoffOf) ?? req.prompt : req.prompt;
-    let ctxWarned = false, ctxStop = false, handleRef: RunHandle | undefined;
+    let ctxWarned = false, ctxStop = false, guardStopped = false, handleRef: RunHandle | undefined;
     const events: HubEvent[] = [];
     let seq = 0, limit: Extract<HubEvent, { kind: 'limit' }> | undefined, tokIn = 0, tokOut = 0, cost = 0, cached = 0;
+    let liveNew = 0, liveCached = 0, liveOut = 0;   // ADR-026: what the model calls of this run have used so far, for the per-run cap
     let turnRows = 0, turnCapWarned = false, lastTurn: { mid: string; seq: number; data: Extract<HubEvent, { kind: 'turn' }> } | undefined;
+    /** ADR-026: ask the guard whether this run has used too much; if so the hub stops it (outcome `stopped`: it says nothing about the model's quality) and says why. A guard that throws never kills the work. */
+    const guardCheck = (): void => {
+      const live = this.live.get(id);
+      if (guardStopped || !this.guard?.usage || !live || live.stopped) return;
+      const own = { uncachedIn: Math.max(0, tokIn - cached), cachedIn: cached, out: tokOut }, turns = { uncachedIn: liveNew, cachedIn: liveCached, out: liveOut };
+      const w = Math.max(weighted(own), weighted(turns));
+      const usd = cost > 0 ? cost : priceUsd(req.model ?? null, own.uncachedIn + own.out > turns.uncachedIn + turns.out ? own : turns);
+      let why: string | null = null;
+      try { why = this.guard.usage({ runId: id, projectRoot: req.projectRoot, weighted: w, costUsd: usd }); } catch { why = null; }
+      if (!why) return;
+      guardStopped = true; live.stopped = true;
+      emit({ kind: 'warn', message: `остановлено защитой от лишних расходов: ${why}` });
+      handleRef?.stop();
+    };
     /** Phase 7 (ADR-024): the `context` event of a model call is also stored as a `turn` row (tokens and prompt size, redacted by `sanitizeEvent` like every event). The CLI writes one line per content block, each with the message's
      *  usage: lines with the same message id are ONE turn (the later line may carry the final output count). The row is never sent to the panel and `events()` leaves it out; the trace and the gauge read it. */
     const recordTurn = (e: Extract<HubEvent, { kind: 'context' }>): void => {
       const data: Extract<HubEvent, { kind: 'turn' }> = { kind: 'turn', newIn: e.newIn ?? e.tokens, cachedIn: e.cachedIn ?? 0, out: e.out ?? 0, context: e.tokens, ...(e.mid ? { mid: e.mid } : {}) };
       if (e.mid && lastTurn?.mid === e.mid) {
+        liveOut += Math.max(0, data.out - lastTurn.data.out);
         lastTurn.data = { ...lastTurn.data, out: Math.max(lastTurn.data.out, data.out) };
         this.db.prepare('UPDATE run_event SET data = ? WHERE run_id = ? AND seq = ?').run(JSON.stringify(lastTurn.data), id, lastTurn.seq);
+        guardCheck();
         return;
       }
+      liveNew += data.newIn; liveCached += data.cachedIn; liveOut += data.out;
+      guardCheck();
       if (turnRows >= MAX_TURN_ROWS) { if (!turnCapWarned) { turnCapWarned = true; emit({ kind: 'warn', message: `шагов больше ${MAX_TURN_ROWS}: подробный разбор показывает первые ${MAX_TURN_ROWS}` }); } return; }
       const n = ++seq;
       this.db.prepare('INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES (?,?,?,?,?)').run(id, n, new Date().toISOString(), 'turn', JSON.stringify(data));
@@ -146,7 +175,7 @@ export class RunManager {
     const emit = (raw: HubEvent): void => {
       const e = sanitizeEvent(raw);
       if (e.kind === 'limit' && e.reached && limit) return;   // Codex reports the same limit as `error` and `turn.failed`: keep one
-      if (ctxStop && e.kind === 'warn' && e.message === 'stopped by user') return;   // the hub stopped it, the user did not
+      if ((ctxStop || guardStopped) && e.kind === 'warn' && e.message === 'stopped by user') return;   // the hub stopped it, the user did not
       if (e.kind === 'context') {
         // Per-call prompt size: watched, never shown (and not stored as such: `recordTurn` keeps a `turn` row). A run in a hub task folder is stopped and continued from a card; a chat in the user's own folder is only warned.
         if (this.live.get(id)?.stopped) return;   // the user already clicked Stop: stopped wins, whatever was still buffered
@@ -170,7 +199,7 @@ export class RunManager {
       const kept = e.kind === 'tool_result' ? { ...e, body: '' } : e.kind === 'tool' ? { ...e, input: {} } : e;   // handoff/summaries read summaries only: keep RAM small
       if (events.length < MAX_KEEP) events.push(kept); else { events.shift(); events.push(kept); }
       if (e.kind === 'session') { this.db.prepare('UPDATE run SET session_native_id = ?, model = COALESCE(model, ?) WHERE id = ?').run(e.nativeId, e.model ?? null, id); }
-      if (e.kind === 'usage') { tokIn += e.uncachedIn + e.cachedIn; cached += e.cachedIn; tokOut += e.out; cost += e.costUsd ?? 0; this.db.prepare('UPDATE run SET tokens_in = ?, tokens_cached = ?, tokens_out = ?, cost_usd = ? WHERE id = ?').run(tokIn, cached, tokOut, cost || null, id); }
+      if (e.kind === 'usage') { tokIn += e.uncachedIn + e.cachedIn; cached += e.cachedIn; tokOut += e.out; cost += e.costUsd ?? 0; this.db.prepare('UPDATE run SET tokens_in = ?, tokens_cached = ?, tokens_out = ?, cost_usd = ? WHERE id = ?').run(tokIn, cached, tokOut, cost || null, id); guardCheck(); }
       if (e.kind === 'limit') {
         if (e.reached) limit = e;
         if (e.usedPercent != null) addLimit(this.db, { agent: req.agent, ts: row.ts, windowMinutes: null, usedPercent: e.usedPercent, resetsAt: e.resetsAt ? Math.floor(Date.parse(e.resetsAt) / 1000) : null, planType: null, source: 'cli-event' });
