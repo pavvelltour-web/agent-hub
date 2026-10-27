@@ -1,0 +1,7 @@
+{
+  "verify": [
+    "node",
+    "-e",
+    "for (const f of ['brief.md','docs/architecture.md']) { let s = ''; try { s = require('fs').readFileSync(f, 'utf8'); } catch {} if (!s.trim()) { console.error('missing or empty: ' + f); process.exit(1); } }"
+  ]
+}

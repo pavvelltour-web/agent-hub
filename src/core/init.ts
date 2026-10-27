@@ -41,8 +41,8 @@ export function buildLock(selected: RegistryEntry[], now = new Date()): Lock {
  * `graphify` = how to start graphify (undefined: look for it on this PC; null: not available). When it is available the plan adds a `.graphifyignore`
  * (never replacing the user's own) and a note offering to build or refresh the project graph (the build itself is a separate, approved action).
  */
-export function planInit(root: string, opts: { type: string; extra?: string[]; remove?: string[]; withCodex?: boolean; graphify?: GraphTool | null }): Plan & { missing: string[]; selected: RegistryEntry[] } {
-  if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`not a directory: ${root}`);
+export function planInit(root: string, opts: { type: string; extra?: string[]; remove?: string[]; withCodex?: boolean; graphify?: GraphTool | null; /** `hub new`: the folder does not exist yet (the caller has checked it is fresh) */ allowMissing?: boolean }): Plan & { missing: string[]; selected: RegistryEntry[] } {
+  if (!(opts.allowMissing && !existsSync(root)) && (!existsSync(root) || !statSync(root).isDirectory())) throw new Error(`not a directory: ${root}`);
   const pack = loadPack(opts.type);
   const lib = library(root);
   const byId = new Map(lib.map((e) => [e.id, e]));

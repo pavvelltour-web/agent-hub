@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { detectAgents, type AgentInfo } from '../adapters/locate.ts';
 import { authStatus, forgetAuth, type AuthInfo } from '../adapters/auth.ts';
 import { openLogin, pickFolder } from '../adapters/native.ts';
@@ -13,6 +13,7 @@ import { scout } from '../core/scout.ts';
 import { fetchAitmpl, searchGithub } from '../core/scout-remote.ts';
 import { planLibraryInstall, previewComponent, type TextFetcher } from '../core/install-remote.ts';
 import { planStarter, previewStarter, starterItems } from '../core/starter.ts';
+import { applyNewProject, planNewProject } from '../core/templates.ts';
 import { planInstall } from '../core/install.ts';
 import { listPlugins } from '../core/profile.ts';
 import { auditLoading, compileProfile, skillInfoFrom, type Desired, type SkillState } from '../core/loading.ts';
@@ -259,6 +260,21 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (body['digest'] !== pv.digest) return bad(409, 'the skills changed since you previewed them; review them again');
     const r = applyPlan(plan, { approved: true });
     return ok({ backupId: r.backupId, written: r.written.length, installed: pv.items.map((i) => i.id), skipped: pv.skipped, fallbacks: r.fallbacks });
+  }],
+  // ---- new project from a template: pick a folder (returns the path only), plan, apply. The verify command it writes stays unapproved (ADR-017).
+  ['POST', /^\/api\/new\/pick$/, (c) => {
+    let r; try { r = (c.native?.pickFolder ?? pickFolder)(); } catch (e) { return bad(501, (e as Error).message); }
+    return r.path ? ok({ path: r.path }) : ok({ cancelled: true });
+  }],
+  ['POST', /^\/api\/new\/(plan|apply)$/, (c, { params, body }) => {
+    const path = str(body['path']);
+    if (!path || !isAbsolute(path)) return bad(400, 'an absolute folder path is required');
+    let plan; try { plan = planNewProject(String(body['type'] ?? ''), path); } catch (e) { return bad(400, (e as Error).message); }
+    if (params[0] === 'plan') return ok({ root: plan.root, verify: plan.verify, notes: plan.notes, steps: plan.steps.map((s) => ({ argv: s.argv, note: s.note })),
+      changes: plan.changes.map((ch) => ({ path: ch.path.slice(plan.root.length + 1).replace(/\\/g, '/'), action: ch.action, note: ch.note ?? null, before: null, after: clip(ch.after, 3000) })) });
+    if (body['approved'] !== true) return bad(400, 'apply needs approved: true');
+    let r; try { r = applyNewProject(plan, { approved: true }); } catch (e) { return bad(400, (e as Error).message); }
+    return ok({ id: projectId(c.db, plan.root), backupId: r.backupId, written: r.written.length, steps: r.steps, fallbacks: r.fallbacks });
   }],
   ['GET', /^\/api\/config$/, () => { const cfg = loadUserConfig(); return ok({ home: HUB_HOME, extraSkillRoots: (cfg.extraSkillRoots ?? []).map((p) => ({ path: p, exists: existsSync(p) })) }); }],
   ['POST', /^\/api\/config\/skill-root$/, (_c, { body }) => {

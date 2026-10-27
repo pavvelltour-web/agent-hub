@@ -536,3 +536,36 @@ test('starter API: list needs no network; plan shows files, license and commit; 
     assert.equal(failed.status, 400, 'a skill that cannot be fetched is skipped with its reason, not a crash'); assert.match(failed.json.error, /HTTP 403/);
   } finally { starterCtx.fetch = undefined; rmSync(join(fake, '.agent-hub', 'skills'), { recursive: true, force: true }); }
 });
+
+test('new project API: pick only returns a path; plan writes nothing; apply needs approval, refuses a non-empty or relative folder, registers the project and leaves the verify command unapproved', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-srvnew-'));
+  const folder = join(dir, 'мой новый проект');
+  try {
+    stub.picked = folder;
+    const picked = await api('/api/new/pick', { method: 'POST', body: {} });
+    assert.equal(picked.status, 200); assert.equal(picked.json.path, folder); assert.ok(!existsSync(folder), 'picking creates nothing and registers nothing');
+    stub.picked = null;
+    assert.equal((await api('/api/new/pick', { method: 'POST', body: {} })).json.cancelled, true);
+
+    const plan = await api('/api/new/plan', { method: 'POST', body: { type: 'web-saas', path: folder } });
+    assert.equal(plan.status, 200, JSON.stringify(plan.json));
+    assert.ok(plan.json.changes.some((c: any) => c.path === 'AGENTS.md') && plan.json.changes.some((c: any) => c.path === 'docs/architecture.md'));
+    assert.deepEqual(plan.json.steps.map((s: any) => s.argv), [['git', 'init', '-b', 'main']]);
+    assert.ok(plan.json.notes.some((n: string) => /verify/.test(n) && /не одобрен/.test(n)));
+    assert.ok(!existsSync(folder), 'plan wrote nothing');
+
+    assert.equal((await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder } })).status, 400, 'needs approved: true');
+    assert.equal((await api('/api/new/plan', { method: 'POST', body: { type: 'nope', path: folder } })).status, 400);
+    assert.equal((await api('/api/new/plan', { method: 'POST', body: { type: 'web-saas', path: 'relative/dir' } })).status, 400, 'absolute path only');
+    assert.equal((await api('/api/new/plan', { method: 'POST', body: { type: 'web-saas', path: join(dir, 'secrets') } })).status, 400);
+
+    const done = await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder, approved: true } });
+    assert.equal(done.status, 200, JSON.stringify(done.json)); assert.equal(done.json.steps[0].ok, true); assert.ok(Number.isInteger(done.json.id));
+    assert.ok(existsSync(join(folder, '.git')) && existsSync(join(folder, 'brief.md')));
+    assert.ok((await api('/api/projects')).json.some((p: any) => p.id === done.json.id && /новый проект$/.test(p.root)), 'the project is registered');
+    assert.ok(!existsSync(join(fake, '.agent-hub', 'review-checks-approved.json')), 'creating a project approved no verify command');
+
+    assert.equal((await api('/api/new/plan', { method: 'POST', body: { type: 'web-saas', path: folder } })).status, 400, 'now it is not empty');
+    assert.match((await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder, approved: true } })).json.error, /not empty/);
+  } finally { stub.picked = null; rmSync(dir, { recursive: true, force: true }); }
+});

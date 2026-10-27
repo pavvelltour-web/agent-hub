@@ -1,0 +1,17 @@
+# secrets and local state never go to git
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.hub/backups/
+.hub/runs/
+graphify-out/cache/
+*.log
+.DS_Store
+Thumbs.db
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+dist/

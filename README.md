@@ -35,6 +35,7 @@ Handy commands:
 
 ```bash
 hub init [path] --type web-saas   # dry run; add --yes to apply
+hub new web-saas ./my-site         # new project from a template (new or empty folder only); add --yes to apply
 hub chat [path] --agent auto      # terminal chat
 hub run "prompt" [path] --agent codex --task T016 --worktree
 hub install [path]                # after git clone: re-create links/MCP from hub.lock.json

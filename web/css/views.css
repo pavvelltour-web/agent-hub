@@ -224,3 +224,5 @@ details > summary { cursor: pointer; }
 .wz-skill code { overflow-wrap: anywhere; }
 @media (max-width: 720px) { .wz { padding: var(--hub-space-4); } .wz-foot .btn { flex: 1 1 auto; } }
 .wz .mono { font-size: 12px; }
+.alert > div { min-width: 0; }
+.alert .stack span { overflow-wrap: anywhere; }

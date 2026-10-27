@@ -1,6 +1,6 @@
 import { api } from '../api.js';
-import { btn, chip, empty, fmt, h, icon, toast } from '../ui.js';
-import { addProjectDialog, agentCard, go, pageHead, planDialog } from './common.js';
+import { btn, chip, closeBtn, dialog, empty, fmt, h, icon, toast } from '../ui.js';
+import { addProjectDialog, agentCard, go, pageHead, planDialog, TYPES } from './common.js';
 
 /** First run: Агенты → История → Первый проект → Набор скиллов. Every step can be skipped; nothing is written without the user's confirmation. */
 export const WELCOME_DONE = 'hub.welcomeDone';
@@ -47,8 +47,9 @@ export default async function view({ q }) {
     async project() {
       const projects = await api.get('/projects');
       const open = btn('Открыть папку…', { kind: 'primary', icon: 'folder', onclick: () => addProjectDialog(() => { toast('Проект добавлен', 'ok'); step++; draw(); }) });
-      return [h('p.muted', 'Проект — папка с вашей работой. Hub ничего в ней не меняет, пока вы сами не подтвердите список файлов.'),
-        h('div.row-flex', open),
+      const fresh = btn('Новый по шаблону…', { kind: 'glass', icon: 'plus', onclick: () => newProjectDialog(() => { toast('Проект создан. Команда проверки из шаблона ещё не одобрена: hub покажет её перед первым запуском.', 'ok'); step++; draw(); }) });
+      return [h('p.muted', 'Проект — папка с вашей работой. Hub ничего в ней не меняет, пока вы сами не подтвердите список файлов. Можно открыть готовую папку или создать новый проект по шаблону.'),
+        h('div.row-flex', open, fresh),
         projects.length ? h('p.t-meta', `Уже добавлено проектов: ${projects.length}.`) : null,
         foot(btn('Дальше', { kind: 'glass', onclick: next }))];
     },
@@ -78,6 +79,7 @@ export default async function view({ q }) {
   };
 
   async function draw() {
+    try { history.replaceState(null, '', `#/welcome?step=${STEPS[step][0]}`); } catch { /* the step is only remembered for a reload */ }
     drawNav();
     clearInterval(timer); timer = null;
     const [key, title] = STEPS[step];
@@ -90,4 +92,24 @@ export default async function view({ q }) {
   return { title: 'Первый запуск', cleanup: () => clearInterval(timer), node: h('div',
     pageHead({ title: 'Добро пожаловать', sub: 'Четыре коротких шага. Любой можно пропустить и вернуться позже.', actions: btn('Пропустить всё', { kind: 'glass', onclick: finish }) }),
     h('section.plane.wz', nav, body)) };
+}
+
+/** "Новый по шаблону": type + a NEW or empty folder → the plan (every file, the one `git init` command) → confirm. Nothing is written before the confirmation. */
+function newProjectDialog(onCreated) {
+  const sel = h('select.select', { 'aria-label': 'Тип проекта' }, TYPES.map(([v, t]) => h('option', { value: v }, t)));
+  const input = h('input.input', { placeholder: 'C:\\Users\\вы\\Desktop\\мой-проект', 'aria-label': 'Папка нового проекта' });
+  const pick = async () => { try { const r = await api.post('/new/pick'); if (r.path) input.value = r.path; } catch { /* api shows the toast */ } };
+  const show = async () => {
+    const path = input.value.trim();
+    if (!path) { toast('Укажите папку для нового проекта'); return; }
+    let r; try { r = await api.post('/new/plan', { type: sel.value, path }); } catch { return; }
+    document.getElementById('dlg').close();
+    planDialog({ title: 'Новый проект', r: { ...r, notes: [...r.notes] }, apply: async () => { const a = await api.post('/new/apply', { type: sel.value, path, approved: true }); onCreated(a.id); return a; } });
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') show(); });
+  dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Новый проект по шаблону'), closeBtn()),
+    h('p.muted', 'Hub создаст каркас: бриф, схему архитектуры, правила для агентов, git и скиллы для этого типа. Папка должна быть новой или пустой: к существующей работе ничего не добавляется.'),
+    h('div.field', h('label', 'Что за проект'), sel),
+    h('div.field', h('label', 'Папка'), h('div.row-flex', input, btn('Выбрать…', { kind: 'glass', icon: 'folder', onclick: pick }))),
+    h('div.foot', btn('Отмена', { kind: 'glass', onclick: () => document.getElementById('dlg').close() }), btn('Показать, что создастся', { kind: 'primary', onclick: show }))));
 }

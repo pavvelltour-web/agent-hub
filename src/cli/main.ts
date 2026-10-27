@@ -11,6 +11,7 @@ import { classifyHooks } from '../core/hooks.ts';
 import { adoptHooks } from '../core/hooks-adopt.ts';
 import { compileAll } from '../core/compilers.ts';
 import { planInit } from '../core/init.ts';
+import { applyNewProject, planNewProject, TEMPLATE_TYPES } from '../core/templates.ts';
 import { planInstall } from '../core/install.ts';
 import { auditLoading, compileProfile, skillInfoFrom, type SkillState } from '../core/loading.ts';
 import { addSkillRoot, HUB_HOME, library, loadUserConfig, removeSkillRoot, REPO_ROOT } from '../core/registry.ts';
@@ -53,6 +54,7 @@ const HELP = `agent-hub — one hub for coding agents (Claude Code, Codex, …)
 
 Project
   hub init [path] [--type web-saas|mobile-app|automation|design-study] [--add id,id] [--remove skill/x] [--yes]
+  hub new <web-saas|mobile-app|automation|design-study> <folder> [--yes]   new project from a template (a new or empty folder only; plan + approval; runs git init)
   hub undo [path] [backupId]            restore files from a backup made by init/add
   hub stage [path] [approve N]          lifecycle stages and gates
   hub scout [path] --brief "text" [--source local|aitmpl|github]   propose skills/MCP (never installs)
@@ -103,6 +105,20 @@ async function cmdInit(a: Args): Promise<void> {
   if (!plan.changes.length) return out('Nothing to change: already up to date.');
   if (await confirm('Apply these changes?', a.flags['yes'] === true)) { const r = applyPlan(plan, { approved: true }); out(`Done: ${r.written.length} files. Backup: ${r.backupId}  (undo: hub undo ${root} ${r.backupId})${r.fallbacks.length ? `\n  note: ${r.fallbacks.length} links were copied (junctions unavailable)` : ''}`); }
   else out('Not applied.');
+}
+
+/** `hub new <type> <folder>`: skeleton, rules, skills and `git init` as one plan. The template's verify command is written but NOT approved. */
+async function cmdNew(a: Args): Promise<void> {
+  const type = a._[1], folder = a._[2];
+  if (!type || !folder) return fail(`usage: hub new <${TEMPLATE_TYPES.join('|')}> <folder> [--yes]`);
+  let plan; try { plan = planNewProject(type, folder); } catch (e) { return fail((e as Error).message); }
+  out(`New ${type} project in ${plan.root} — nothing is written until you confirm:`);
+  describe(plan).forEach((l) => out('  ' + l));
+  plan.notes.forEach((n) => out('  ! ' + n));
+  if (!(await confirm('Create this project?', a.flags['yes'] === true))) return out('Not applied.');
+  const r = applyNewProject(plan, { approved: true });
+  out(`Done: ${r.written.length} files. Backup: ${r.backupId}  (undo: hub undo ${plan.root} ${r.backupId})`);
+  r.steps.forEach((s) => out(`  ${s.ok ? 'ok ' : 'FAILED'} ${s.argv.join(' ')}${s.message ? ' — ' + s.message : ''}`));
 }
 
 /** Show a plan, ask, apply with backup. Shared by install / profile / hooks --adopt. */
@@ -350,6 +366,7 @@ async function main(argv: string[]): Promise<void> {
   if (!cmd || a.flags['help'] || cmd === 'help') return out(HELP);
   switch (cmd) {
     case 'init': return cmdInit(a);
+    case 'new': return cmdNew(a);
     case 'undo': { const root = projectArg(a, 1); const id = a._[2] ?? listBackups(root).at(-1); if (!id) return fail('no backups found'); const r = undoBackup(root, id); return out(`Restored ${r.restored} files, removed ${r.removed} created ones (backup ${id}).`); }
     case 'mcp': return cmdMcp(a);
     case 'open': {

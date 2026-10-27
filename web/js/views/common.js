@@ -90,7 +90,7 @@ export function planDialog({ title, r, apply, missing }) {
     c.action === 'link' ? h('p.t-meta', { style: { marginTop: '8px' } }, 'Ссылка (junction) на ' + c.after) : h('pre', { style: { marginTop: '10px', maxHeight: '260px' } }, c.after)));
   const items = (r.items || []).map((i) => h('div.row-flex', chip(i.status === 'ok' ? 'ок' : i.status === 'hash-changed' ? 'изменён' : i.status === 'missing-source' ? 'нет источника' : 'нет в библиотеке', i.status === 'ok' ? 'ok' : 'warn'), h('span.mono', i.id), h('span.t-meta', i.detail)));
   dialog(h('div.stack', h('div.bar', h('div', h('h2.t-title', title), h('p.t-meta', 'Пока вы не подтвердите, ничего не записано. Перед записью делается резервная копия, откат — одной кнопкой.')), closeBtn()),
-    r.notes?.length ? h('div.alert.warn', icon('alert'), h('div', r.notes.join(' · '))) : null,
+    r.notes?.length ? h('div.alert.warn', icon('alert'), h('div.stack', r.notes.map((n) => h('span', n)))) : null,
     items.length ? h('div.stack', items) : null,
     r.changes.length ? h('div.stack', changes) : h('p', 'Изменений нет: всё уже в нужном состоянии.'),
     missing?.length ? h('p.t-meta', 'Нет в библиотеке (пропущено): ' + missing.join(', ')) : null,
@@ -140,7 +140,7 @@ export function limitLine(a) {
   return h('div.stack', { style: { gap: '6px' } }, h('div.t-meta', `Осталось ${left}% недельного лимита${l.resetsAt ? ' · сброс ' + fmt.until(l.resetsAt) : ''}`), meter(left, left <= 10));
 }
 
-const TYPES = [['web-saas', 'Сайт или веб-сервис'], ['mobile-app', 'Мобильное приложение'], ['automation', 'Бот, автоматизация, агенты'], ['design-study', 'Дизайн-исследование']];
+export const TYPES = [['web-saas', 'Сайт или веб-сервис'], ['mobile-app', 'Мобильное приложение'], ['automation', 'Бот, автоматизация, агенты'], ['design-study', 'Дизайн-исследование']];
 
 /**
  * "Link Claude and Codex to this project": creates ONE set of rules (AGENTS.md) and the same skills for both agents.
