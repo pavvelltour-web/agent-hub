@@ -57,12 +57,19 @@ const inline = web.filter((f) => /\son(?:click|load|error)=/.test(readFileSync(f
 add('web: no inline event handlers (CSP)', inline.length === 0, inline.join(', '));
 add('web: no external hosts', !web.some((f) => /https?:\/\/(?!127\.0\.0\.1|localhost|www\.w3\.org)[\w.-]+/.test(readFileSync(f, 'utf8').replace(/data:image[^"']*/g, ''))), 'fonts and scripts are local');
 
-// 4. Package contents
+// 4. Package contents (what `npm pack` would ship; nothing is published, `--dry-run` only lists)
 const pk = spawnSync('npm', ['pack', '--dry-run', '--json'], { cwd: root, encoding: 'utf8', shell: process.platform === 'win32' });
 try {
   const list = JSON.parse(pk.stdout)[0].files.map((f) => f.path);
-  const bad = list.filter((p) => /(^|\/)(\.env|auth\.json|\.credentials|refs-private|captures|\.hub)(\/|$)/.test(p));
-  add('npm package has no private files', bad.length === 0, bad.join(', ') || `${list.length} files`);
+  // private or generated: credentials, hub state (handoff cards, audit, security reports), graph output, review caches, local databases, test files
+  const PRIVATE = /(^|\/)(\.env[^/]*|auth\.json|\.credentials[^/]*|secrets|\.sandbox-secrets|refs-private|captures|\.hub|graphify-out|handoffs?|cache|\.cache|node_modules)(\/|$)|\.(sqlite|sqlite-wal|sqlite-shm|db|log|pem|key)$|\.test\.ts$/;
+  const bad = list.filter((p) => PRIVATE.test(p));
+  add('npm package has no private files', bad.length === 0, bad.slice(0, 8).join(', ') || `${list.length} files`);
+  // what a fresh install needs. `templates/*/.gitignore` ships as `gitignore` on purpose: npm drops a file named .gitignore from a package.
+  const NEED = ['rules/base.md', 'modes/chat.json', 'modes/review.json', 'templates/web-saas/hub.json', 'templates/web-saas/gitignore', 'registry/starter.json', 'registry/entries/catalog.json', 'bin/hub.js', 'scripts/install.ps1', 'src/cli/main.ts', 'package.json', 'README.md'];
+  const missing = NEED.filter((p) => !list.includes(p));
+  for (const d of ['rules/', 'modes/', 'templates/', 'registry/']) if (!list.some((p) => p.startsWith(d))) missing.push(d);
+  add('npm package lists rules/, modes/, templates/, registry/ and the install files', missing.length === 0, missing.join(', ') || 'all present');
 } catch { add('npm package contents', false, 'npm pack --dry-run failed'); }
 
 // 5. Optional heavy scanners via Docker (no local install needed)

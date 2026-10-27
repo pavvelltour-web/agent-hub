@@ -16,6 +16,22 @@ One local hub for coding agents. Shared skills, rules and MCP for **Claude Code*
 | **Lifecycle** | 8 stages with gates (context → clarify → toolkit → architecture → rules → plan → execute → retro). A stage closes only when its output files exist and you approve. |
 | **Panel** | Projects, chat, tasks, history, library, models, logs, settings. Dark/light × green/orange. Localhost only. |
 
+## Быстрый старт (Windows)
+
+Пакет **не опубликован** (`private: true`): запуск идёт из папки проекта. Сначала проверка, она только читает и ничего не меняет:
+
+```powershell
+powershell -NoProfile -File scripts\install.ps1   # Node 24+, Git, найденные claude/codex; печатает следующие команды
+npm install                                         # только TypeScript для разработки; зависимостей в рантайме нет
+node bin/hub.js ui                                  # панель на 127.0.0.1 (одноразовая ссылка); при первом запуске откроется мастер
+```
+
+- `scripts/install.ps1` ничего не скачивает и не ставит, не пишет файлов, не трогает политику выполнения, PATH и реестр. Если PowerShell блокирует скрипты, он не обязателен: достаточно `node bin/hub.js doctor`.
+- Мастер первого запуска предлагает короткий набор навыков (ADR-022) и шаблоны проектов (`hub new <тип> <папка>`, ADR-023). Всё показывается планом и ставится только после вашего подтверждения.
+- Режимы работы: «Интервью» подключает навык `grill-me`, если он подключён к Claude (иначе идёт без него и пишет об этом); «Автопилот» требует навык `autopilot` и без него отказывает с точной командой; «Ревью» читает только и по умолчанию ревьюит другой вендор (Codex, если вы вошли, иначе Opus).
+
+**Не проверено:** macOS и Linux; Safari; вход в реальные аккаунты Claude и Codex и реальный расход лимитов; установка из опубликованного пакета (его нет); `scripts/install.ps1` проверен в Windows PowerShell 5.1 на одном компьютере, PowerShell 7 и Windows 10 не проверялись; `dist/` собирается, но без `src/review/prompts` ревью-вердикт из собранной копии не запустится (см. docs/STATUS.md).
+
 ## Requirements
 
 - Node.js **24+** (uses built-in `node:sqlite` and TypeScript type stripping), Git.
@@ -78,8 +94,8 @@ docs/             PLAN, ARCHITECTURE, DATA-MODEL, SECURITY, STATUS, ADRs, genera
 ```bash
 npm test            # 95 tests (node:test), including real recorded CLI error shapes
 npm run typecheck   # tsc --noEmit, strict
-npm run security    # 14 checks; add --docker for gitleaks/semgrep when Docker is running
-npm run build       # compile to dist/ for publishing
+npm run security    # dependency, secret, code-pattern and package-content checks; add --docker for gitleaks/semgrep when Docker is running
+npm run build       # compile to dist/ (not used for the clone-and-run start above)
 npm run tokens      # regenerate design tokens from design/themes.json
 ```
 

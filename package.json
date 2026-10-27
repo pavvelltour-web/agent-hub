@@ -43,6 +43,7 @@
     "design/DESIGN-SYSTEM.md",
     "docs",
     "scripts/security.mjs",
+    "scripts/install.ps1",
     "README.md",
     "LICENSE",
     "AGENTS.md"
