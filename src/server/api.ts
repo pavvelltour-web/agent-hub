@@ -21,6 +21,7 @@ import { advise, MODEL_GUIDE, ROUTING, type LimitState, type TaskClass } from '.
 import { calibrate, costUsd, effortProfiles, estimate, modelStats, outcomes, PRICES_VERIFIED_AT, profileFromHistory } from '../econ/econ.ts';
 import { compareStrategies } from '../econ/strategies.ts';
 import { classify } from '../econ/classify.ts';
+import { priceTable, saveOverride, type PriceTable } from '../econ/prices.ts';
 import { agentOf, modelKey } from '../econ/router.ts';
 import { PRIORS, TAGS } from '../econ/priors.ts';
 import { buildCases, exportCases, NEVER_INCLUDED } from '../econ/cases.ts';
@@ -46,6 +47,7 @@ export interface Res { status: number; json?: unknown }
 type Body = Record<string, unknown>;
 type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
 
+const pricesJson = (t: PriceTable): Res => ok({ models: [...t.models.values()].map((e) => ({ ...e, overridden: t.overridden.has(e.id) })), rejected: t.rejected });
 const ok = (json: unknown): Res => ({ status: 200, json });
 const bad = (status: number, error: string): Res => ({ status, json: { error } });
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) + '…' : s);
@@ -297,6 +299,17 @@ const ROUTES: [string, RegExp, Handler][] = [
       agents: (['claude', 'codex'] as AgentId[]).map((id) => ({ id, ...agents[id], limit: limitState(c, id) ?? null, calibration: calibrate(c.db, id) })),
       usage, routing: ROUTING, guide: MODEL_GUIDE, priors: { rows: PRIORS.priors, surcharges: PRIORS.surcharges }, pricesVerifiedAt: PRICES_VERIFIED_AT, profile: profileFromHistory(c.db),
     });
+  }],
+  ['GET', /^\/api\/prices$/, () => pricesJson(priceTable())],
+  ['POST', /^\/api\/prices$/, (_c, { body }) => {
+    const id = str(body['model']);
+    if (!id) return bad(400, 'model required');
+    try {
+      if (body['reset'] === true) return pricesJson(saveOverride(HUB_HOME, id, null));
+      const [input, cacheRead, output] = [body['input'], body['cacheRead'], body['output']];
+      if (typeof input !== 'number' || typeof cacheRead !== 'number' || typeof output !== 'number') return bad(400, 'input, cacheRead and output must be numbers (USD per 1M tokens)');
+      return pricesJson(saveOverride(HUB_HOME, id, { input, cacheRead, output }));
+    } catch (e) { return bad(400, (e as Error).message); }
   }],
   ['POST', /^\/api\/classify$/, (_c, { body }) => { const p = str(body['prompt']); return p ? ok(classify(p)) : bad(400, 'prompt required'); }],
   ['GET', /^\/api\/overhead$/, (c, { q }) => ok(startOverhead(c.db, num(q.get('project')) != null ? { projectId: num(q.get('project')) as number } : {}))],

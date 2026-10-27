@@ -62,3 +62,15 @@ ADR-010 single package, zero runtime dependencies · ADR-011 JSON instead of YAM
 1. Aikido / CodeRabbit (they would receive code) — still off.
 2. Log in the Claude CLI (`claude` → `/login`) so real chats and the model-written handoff summary can be tested.
 3. Name and license for publishing; when to create the GitHub repository (agreed: together, after you review v0.1).
+
+## v0.2 Phase 3, tasks 3.5-3.7 (branch v0.2/p-pr-review)
+
+Statuses: **observed** = ran or saw it in this session; **inferred** = reasoned, not run.
+
+- **3.5 strategies** (observed): `compareStrategies` gives cost and weekly-limit share per solved task for always-max / manual / cheap-first / router; the Models page has "Сколько стоит решённая задача". `label` is `measured` only when every number comes from runs of that strategy; cheap-first is built from separate runs and is `estimated`. Checked in the rendered panel with a seeded temp home (dark/green desktop and 375 px, light/orange 375 px); the other two theme pairs are inferred (same components).
+- **3.6 classify** (observed): keyword rules in Russian and English, confidence below 0.6 asks the user. Today screen pre-fills an editable type. Rule weights are the author's choice, not measured against real prompts: the accuracy on the user's own prompts is **not measured**.
+- **3.7 prices** (observed): prices moved to `registry/prices.json` with an override in `<hub home>/prices.json` and an editor in Settings. GPT 6.1 Sol is priced $2 / $10, cached $0.10 from the v0.2 plan's Research basis (Artificial Analysis; the plan gives no URL and no date, so the row says "recorded 2026-10-26" and has no link). That figure has **not** been checked against its source.
+- **Price discrepancy resolved by reading the cited page** (observed 2026-10-27, WebFetch of platform.claude.com/docs/en/about-claude/pricing): Sonnet 5.5 cache hits are **$0.10** (footnote: 0.05x of input), Opus 5.5 $0.20, Fable 5.1 $0.25, Haiku 5.5 $0.01 / $0.05; Claude Sonnet 5 is the one at $0.20. The code values were right. The claude-api skill reference that lists Sonnet 5.5 cache reads at $0.20 is wrong for 5.5 (it repeats the Sonnet 5 figure); do not "fix" the code to match it. The Claude rows are dated 2026-10-27 (the day they were read), so `pricesVerifiedAt` is now 2026-10-27.
+- **Test hygiene found** (observed): `src/history/history.test.ts` never removes its `hub-hist-*` temp folder (~20 MB each, including a 50 MB+ file); about 90 of them filled the system drive to 7 MB free and broke 27 unrelated tests with ENOSPC. They were deleted by hand. The test should clean up after itself (not changed here).
+- **Flaky under suite load** (observed once): "work mode permissions over the API" in `src/server/server.test.ts` failed in one full run and passed in two isolated runs and in the next full run.
+

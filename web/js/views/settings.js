@@ -1,10 +1,10 @@
 import { api, prefs } from '../api.js';
-import { btn, chip, fmt, h, pills, sectionHead, toast } from '../ui.js';
+import { btn, chip, empty, field, fmt, h, pills, sectionHead, toast } from '../ui.js';
 import { dialog, closeBtn } from '../ui.js';
 import { agentCard, pageHead } from './common.js';
 
 export default async function view() {
-  const [s, cfg, sh] = await Promise.all([api.get('/state'), api.get('/config'), api.get('/sharing')]);
+  const [s, cfg, sh, pr, oc] = await Promise.all([api.get('/state'), api.get('/config'), api.get('/sharing'), api.get('/prices'), api.get('/outcomes').catch(() => null)]);
 
   // ---- look
   const themeBox = h('div'), accentBox = h('div'), matBox = h('div');
@@ -35,6 +35,32 @@ export default async function view() {
   drawRoots(cfg.extraSkillRoots);
   const addRoot = async () => { if (!rootInput.value.trim()) return; try { const x = await api.post('/config/skill-root', { path: rootInput.value.trim() }); drawRoots(x.extraSkillRoots); rootInput.value = ''; toast('Папка добавлена: её скиллы появятся в «Инструментах»', 'ok'); } catch { /* api shows the toast */ } };
 
+  // ---- subscription: the share of the weekly limit one SOLVED task costs is the main number; dollars are only for comparing
+  const SUB = { manual: 'Как вы выбирали сами', router: 'Выбор hub' };
+  const subRows = (oc?.strategies || []).filter((r) => SUB[r.strategy]);
+  const pctBig = (v) => (typeof v === 'number' ? '≈ ' + (v < 0.1 ? '<0,1' : (Math.round(v * 10) / 10).toLocaleString('ru-RU')) + '%' : '—');
+  const subBox = subRows.some((r) => r.n > 0) ? h('div.grid-2', { style: { gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' } }, subRows.map((r) => h('div.plate.card.tight.stack',
+    h('span.t-meta', SUB[r.strategy]), h('b.t-title', pctBig(r.limitPctPerSolved)),
+    h('span.t-meta', typeof r.limitPctPerSolved === 'number' ? 'недельного лимита на одну решённую задачу' : 'доля лимита пока не известна: нужны замеры остатка (впишите его на экране «Модели»)'),
+    h('span.t-meta', (typeof r.costPerSolved === 'number' ? `по цене API ≈ $${r.costPerSolved < 0.01 ? '<0.01' : r.costPerSolved.toFixed(2)}` : 'цена по API не известна') + ` · попыток: ${r.n}`), r.n ? h('div.row-flex', chip(r.label === 'measured' ? 'замерено' : 'прикидка', r.label === 'measured' ? 'ok' : 'warn')) : null)))
+    : empty('Пока нечего считать', 'Когда вы запустите несколько задач и они закончатся, здесь появится, сколько недельного лимита уходит на одну решённую задачу.');
+
+  // ---- prices (editable): every row says where it came from; your own numbers win over the bundled ones
+  const pricesBox = h('div.stack');
+  const num = (v) => (Number.isFinite(Number(v)) && String(v).trim() !== '' ? Number(v) : NaN);
+  const drawPrices = (list) => pricesBox.replaceChildren(...list.map((m) => {
+    const t = m.tiers[0], single = m.tiers.length === 1;
+    const ins = single ? ['input', 'cacheRead', 'output'].map((k) => h('input.input', { type: 'number', min: 0, max: 10000, step: 'any', value: String(t[k]), 'aria-label': m.id + ': ' + ({ input: 'вход', cacheRead: 'из кэша', output: 'выход' })[k] + ', доллары за миллион токенов', style: { width: '110px' } })) : [];
+    const lbl = ['Вход', 'Из кэша', 'Выход'];
+    const save = async () => { const v = ins.map((i) => num(i.value)); if (v.some((x) => Number.isNaN(x) || x < 0)) return toast('Цена — число не меньше нуля', 'err'); try { const x = await api.post('/prices', { model: m.id, input: v[0], cacheRead: v[1], output: v[2] }); drawPrices(x.models); toast('Цена сохранена', 'ok'); } catch { /* toast */ } };
+    const reset = async () => { try { const x = await api.post('/prices', { model: m.id, reset: true }); drawPrices(x.models); toast('Вернули цену из каталога', 'ok'); } catch { /* toast */ } };
+    return h('div.plate.card.tight.stack', h('div.row-flex', h('b', m.label || m.id), m.overridden ? chip('ваша цена', 'info') : null),
+      single ? h('div.row-flex', ins.map((i, n) => field(lbl[n] + ', $ за 1 млн', i))) : h('p.t-meta', 'Цена зависит от длины запроса: ' + m.tiers.map((x) => `${x.promptTokensUpTo ? 'до ' + x.promptTokensUpTo.toLocaleString('ru-RU') + ' токенов' : 'дальше'}: $${x.input} / $${x.cacheRead} / $${x.output}`).join('; ') + '. Менять можно в файле prices.json в папке данных.'),
+      h('p.t-meta', `${m.source} · ${m.dateKind === 'recorded' ? 'записано в плане ' : m.dateKind === 'user' ? 'вписано ' : 'проверено '}${m.date.split('-').reverse().join('.')}`),
+      h('div.row-flex', single ? btn('Сохранить', { kind: 'glass', onclick: save }) : null, m.overridden ? btn('Вернуть из каталога', { kind: 'glass', onclick: reset }) : null));
+  }));
+  drawPrices(pr.models);
+
   // ---- help improve forecasts (opt-in; nothing is ever sent by the app)
   const shareBox = h('div.stack');
   const state = { consent: sh.consent };
@@ -56,6 +82,8 @@ export default async function view() {
       h('section.plane.card', sectionHead('Внешний вид'), h('div.set-row', h('span.t-label', 'Тема'), themeBox), h('div.set-row', h('span.t-label', 'Цвет акцентов'), accentBox), h('div.set-row', h('div', h('span.t-label', 'Фон панелей'), h('p.t-meta', 'Сплошной подойдёт для слабых компьютеров и если плохо видно текст.')), matBox)),
       h('section.plane.card', sectionHead('История'), h('div.set-row', h('div', h('span.t-label', 'Разговоры из Claude и Codex'), h('p.t-meta', 'Hub читает их файлы и ничего в них не меняет. Обновляйте, когда хотите увидеть свежие разговоры.')), h('div.stack', { style: { alignItems: 'flex-end', gap: '6px' } }, syncBtn, syncOut))),
       h('section.plane.card', sectionHead('Свои папки со скиллами'), h('p.t-meta', 'Если у вас есть собственные скиллы (например, ваш пайплайн дизайна), добавьте папку: они появятся в «Инструментах» и будут стоить 0, пока не подключены к проекту. Hub их только читает.'), rootsBox, h('div.row-flex', { style: { marginTop: '10px' } }, rootInput, btn('Добавить', { kind: 'glass', icon: 'plus', onclick: addRoot }))),
+      h('section.plane.card.stack', sectionHead('Подписка'), h('p.t-meta', 'Подписка не списывает деньги за токены, у неё недельный лимит. Поэтому главное число — какая доля лимита уходит на одну решённую задачу. Доллары по цене API нужны только чтобы сравнивать варианты.'), subBox, h('a.btn.btn-text.btn-sm', { href: '#/models' }, 'Сравнение способов выбора модели')),
+      h('section.plane.card.stack', sectionHead('Цены моделей'), h('p.t-meta', 'Цены по API за миллион токенов: нужны, чтобы сравнивать модели между собой. Если цена изменилась, впишите свою: она важнее цены из каталога. Модель без цены считается «не известна», а не бесплатной.'), pricesBox),
       h('section.plane.card.stack', sectionHead('Помочь улучшить прогнозы'),
         h('p.t-meta', `Hub и так учится на ваших задачах прямо на этом компьютере. Если хотите помочь сделать прогнозы точнее для всех, включите согласие: тогда можно сохранить файл со статистикой и отправить его сами. Сейчас записей: ${sh.caseCount}. Приложение ничего не отправляет само.`),
         h('p.t-meta', 'В файл не попадают: ' + sh.neverIncluded.join('; ') + '. Числа округляются. Согласие можно снять в любой момент.'), shareBox),

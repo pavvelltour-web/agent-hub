@@ -107,7 +107,7 @@ Each requirement has an ID and an acceptance check. "User approval" means an exp
 
 | ID | Requirement | Acceptance |
 |---|---|---|
-| FR-E1 | Price table with source URL and verification date; unknown price ≠ 0 | missing GPT price shows "unknown", not $0 |
+| FR-E1 | Price table with source URL and verification date; unknown price ≠ 0 | a model with no price row shows "unknown", not $0 (prices live in `registry/prices.json`, overridable in the hub home) |
 | FR-E2 | Per-task estimate as a range (tokens, $, % weekly limit) with confidence | every estimate shows low/high and confidence |
 | FR-E3 | Calibration from actual runs (weighted tokens per 1% limit, rolling) | after 10 runs the range narrows and is shown |
 | FR-E4 | Advice: model + effort + reason; escalation ladder; subagents off unless justified | advice cites the rule that produced it |

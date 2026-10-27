@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "note": "API-equivalent prices in USD per 1M tokens. Subscriptions are not billed per token: these numbers exist to compare options with each other. Override any row in <hub home>/prices.json (same shape, 'models' only) or from Settings. `dateKind: checked` = the day the page text named in `source` was read; `recorded` = the day a figure was written into the v0.2 plan, because its own source gives no date. A model with no row is priced 'unknown', never 0.",
+  "models": {
+    "claude-fable-5-1": {
+      "label": "Claude Fable 5.1", "tiers": [{ "input": 10, "cacheRead": 0.25, "output": 50 }],
+      "source": "Anthropic pricing page, Claude Fable 5.1 row", "url": "https://platform.claude.com/docs/en/about-claude/pricing", "date": "2026-10-27", "dateKind": "checked"
+    },
+    "claude-opus-5-5": {
+      "label": "Claude Opus 5.5", "tiers": [{ "input": 4, "cacheRead": 0.2, "output": 20 }],
+      "source": "Anthropic pricing page, Claude Opus 5.5 row (cache hits 0.05x input)", "url": "https://platform.claude.com/docs/en/about-claude/pricing", "date": "2026-10-27", "dateKind": "checked"
+    },
+    "claude-sonnet-5-5": {
+      "label": "Claude Sonnet 5.5", "tiers": [{ "input": 2, "cacheRead": 0.1, "output": 10 }],
+      "source": "Anthropic pricing page, Claude Sonnet 5.5 row (cache hits 0.05x input; Sonnet 5 is 0.1x = $0.20)", "url": "https://platform.claude.com/docs/en/about-claude/pricing", "date": "2026-10-27", "dateKind": "checked"
+    },
+    "claude-haiku-5-5": {
+      "label": "Claude Haiku 5.5", "tiers": [
+        { "promptTokensUpTo": 100000, "input": 0.1, "cacheRead": 0.01, "output": 0.5 },
+        { "input": 0.5, "cacheRead": 0.05, "output": 2.5 }
+      ],
+      "source": "Anthropic pricing page, Claude Haiku 5.5 rows (prompts up to 100,000 tokens / over 100,000)", "url": "https://platform.claude.com/docs/en/about-claude/pricing", "date": "2026-10-27", "dateKind": "checked"
+    },
+    "gpt-6.1-sol": {
+      "label": "GPT 6.1 Sol", "tiers": [{ "input": 2, "cacheRead": 0.1, "output": 10 }],
+      "source": "Artificial Analysis comparison, as recorded in the v0.2 plan (Research basis); the plan gives no URL and no date of its own", "date": "2026-10-26", "dateKind": "recorded"
+    }
+  }
+}

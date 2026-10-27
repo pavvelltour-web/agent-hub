@@ -129,7 +129,7 @@ test('models: limits (manual + stale), usage, routing; advise cites its rule and
   await api('/api/limits', { method: 'POST', body: { agent: 'codex', usedPercent: 20 } });
   const adv = await api('/api/advise', { method: 'POST', body: { cls: 'implement' } });
   assert.equal(adv.json.choice.agent, 'codex'); assert.equal(adv.json.choice.rule, 'limit:claude→codex');
-  assert.ok(adv.json.estimate.tokens.low.cachedIn > 0 && adv.json.estimate.usd === null, 'GPT price unknown → dollars null, not zero');
+  assert.ok(adv.json.estimate.tokens.low.cachedIn > 0 && adv.json.estimate.usd && adv.json.estimate.usd.low > 0 && adv.json.estimate.usd.high >= adv.json.estimate.usd.low, '3.7: GPT 6.1 Sol is priced, so the estimate has dollars');
   assert.equal((await api('/api/advise', { method: 'POST', body: { cls: 'nonsense' } })).status, 400);
   const tagged = await api('/api/advise', { method: 'POST', body: { cls: 'implement', tags: ['routine-build', 'bogus', 7] } });
   assert.deepEqual(tagged.json.choice.basis.map((b: any) => b.tag), ['routine-build'], 'unknown tags are dropped; the recommendation carries the prior behind it');
@@ -140,7 +140,7 @@ test('models: limits (manual + stale), usage, routing; advise cites its rule and
   assert.equal(m.json.agents.find((a: any) => a.id === 'codex').limit.stale, true, 'a limit whose window already reset is stale');
   assert.equal(m.json.agents.find((a: any) => a.id === 'claude').limit.usedPercent, 97);
   assert.ok(m.json.priors.rows.length >= 8 && m.json.priors.rows.every((r: any) => r.source && r.date), 'the panel gets every prior with its source and date');
-  assert.equal(m.json.routing.implement.model, 'claude-sonnet-5-5'); assert.equal(m.json.pricesVerifiedAt, '2026-10-22');
+  assert.equal(m.json.routing.implement.model, 'claude-sonnet-5-5'); assert.equal(m.json.pricesVerifiedAt, '2026-10-27');   // 3.7: the bundled Claude rows were re-read off the pricing page that day
 });
 
 test('library lists local skills with token cost; scout proposes; diagrams render', async () => {
@@ -159,6 +159,22 @@ test('classify: the task text gives a type with a confidence; an empty prompt is
   assert.equal(r.status, 200); assert.equal(r.json.cls, 'debug'); assert.ok(r.json.confidence >= 0.6 && r.json.why);
   assert.ok((await api('/api/classify', { method: 'POST', body: { prompt: 'посмотри на модуль' } })).json.confidence < 0.6);
   assert.equal((await api('/api/classify', { method: 'POST', body: { prompt: '  ' } })).status, 400);
+});
+
+test('prices: the table with its sources, an override that changes the cost shown, a reset, and refused input', async () => {
+  const g = await api('/api/prices');
+  const sonnet = g.json.models.find((x: any) => x.id === 'claude-sonnet-5-5'), sol = g.json.models.find((x: any) => x.id === 'gpt-6.1-sol');
+  assert.ok(sonnet && sol && sol.source && sol.date && sonnet.overridden === false, JSON.stringify(g.json).slice(0, 300));
+  assert.deepEqual(sonnet.tiers, [{ input: 2, cacheRead: 0.1, output: 10 }]);
+  const set = await api('/api/prices', { method: 'POST', body: { model: 'claude-sonnet-5-5', input: 3, cacheRead: 0.3, output: 15 } });
+  assert.equal(set.status, 200); assert.equal(set.json.models.find((x: any) => x.id === 'claude-sonnet-5-5').overridden, true);
+  const u = await api('/api/models');
+  assert.ok(Array.isArray(u.json.usage));
+  assert.equal((await api('/api/prices', { method: 'POST', body: { model: 'bad name', input: 1, cacheRead: 1, output: 1 } })).status, 400);
+  assert.equal((await api('/api/prices', { method: 'POST', body: { model: 'x1', input: -1, cacheRead: 1, output: 1 } })).status, 400);
+  assert.equal((await api('/api/prices', { method: 'POST', body: { model: 'x1', input: 'free', cacheRead: 1, output: 1 } })).status, 400);
+  const reset = await api('/api/prices', { method: 'POST', body: { model: 'claude-sonnet-5-5', reset: true } });
+  assert.equal(reset.json.models.find((x: any) => x.id === 'claude-sonnet-5-5').overridden, false);
 });
 
 test('estimate vs actual: a classified run stores its estimate and /api/outcomes compares it with what was used', async () => {

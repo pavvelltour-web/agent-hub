@@ -8,7 +8,8 @@ test('costUsd: verified Claude prices; unknown model is null, never 0; Haiku has
   const t = { uncachedIn: 150_000, cachedIn: 4_780_000, out: 20_000 };
   assert.equal(Math.round(costUsd('claude-sonnet-5-5-20261001', t)! * 100) / 100, 0.98);
   assert.equal(Math.round(costUsd('claude-opus-5-5', t)! * 100) / 100, 1.96);
-  assert.equal(costUsd('gpt-6.1-sol', t), null);
+  assert.equal(Math.round(costUsd('gpt-6.1-sol', t)! * 100) / 100, 0.98, '3.7: GPT 6.1 Sol is priced ($2/$10, cached $0.10)');
+  assert.equal(costUsd('gpt-6-astra', t), null, 'a model with no price row stays unknown');
   assert.equal(costUsd(null, t), null);
   const small = costUsd('haiku-5.5', { uncachedIn: 50_000, cachedIn: 0, out: 1000 })!, big = costUsd('claude-haiku-5-5', { uncachedIn: 150_000, cachedIn: 0, out: 1000 })!;
   assert.ok(big / 150_000 > small / 50_000, 'over-100k prompt is billed at the higher tier');
@@ -20,7 +21,7 @@ test('estimate is a range with confidence and honest notes', () => {
   assert.ok(e.usd!.low < e.usd!.high && e.percent!.low < e.percent!.high);
   assert.equal(e.confidence, 'low');
   assert.ok(e.notes.some((n) => /грубая прикидка/.test(n)) && e.notes.some((n) => /средних значений/.test(n)));
-  const unk = estimate(DEFAULT_PROFILE, 'gpt-6.1-sol', { lowMwPerPct: 0, highMwPerPct: 0, n: 0, source: 'none' });
+  const unk = estimate(DEFAULT_PROFILE, 'gpt-6-astra', { lowMwPerPct: 0, highMwPerPct: 0, n: 0, source: 'none' });
   assert.equal(unk.usd, null); assert.equal(unk.percent, null);
   assert.ok(unk.notes.some((n) => /доллары не считаются/.test(n)));
   assert.ok(Math.abs(weighted({ uncachedIn: 1e6, cachedIn: 10e6, out: 0.2e6 }) - 3) < 1e-9, 'u + 0.1c + 5o');
@@ -88,7 +89,7 @@ test('router: with no data the optimizer reproduces the author table; real resul
   const { rank, priceTier, modelKey } = await import('./router.ts');
   const { ROUTING } = await import('./advisor.ts');
   for (const [cls, row] of Object.entries(ROUTING)) { const c = advise({ cls: cls as never }); assert.equal(c.model, row.model, `default for ${cls}`); assert.equal(c.agent, 'claude'); }
-  assert.equal(priceTier('gpt').known, false); assert.equal(priceTier('opus').known, true);
+  assert.equal(priceTier('gpt').known, true, '3.7: GPT 6.1 Sol has a price row'); assert.equal(priceTier('opus').known, true);
   assert.ok(priceTier('haiku').tier < priceTier('sonnet').tier && priceTier('sonnet').tier < priceTier('opus').tier && priceTier('opus').tier < priceTier('fable').tier);
   // 20 runs where GPT solved implementation tasks and Sonnet mostly failed: the choice moves to GPT and says it is measured
   const stats = { 'implement|gpt': { n: 20, score: 19 }, 'implement|sonnet': { n: 20, score: 8 } };

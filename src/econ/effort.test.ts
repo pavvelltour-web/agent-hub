@@ -46,7 +46,7 @@ test('router: the price of a pair follows the prior multiplier, or that effort\'
   assert.ok(Math.abs(price(r3, 'opus:high') - tier(MODEL_ID.opus, 90_000)) < 0.001, 'the measurement is per agent and effort, so it prices every Claude model at that effort');
   const r2 = rank({ cls: 'implement', effortProfiles: { 'claude:high': prof(2, 90_000) } });
   assert.ok(Math.abs(price(r2, 'sonnet:high') - tier(MODEL_ID.sonnet, p50.out * 1.6)) < 0.001, 'two runs are an anecdote: the prior multiplier stays');
-  assert.equal(priceTier('sonnet', 'high').known, true); assert.equal(priceTier('gpt', 'low').known, false);
+  assert.equal(priceTier('sonnet', 'high').known, true); assert.equal(priceTier('gpt', 'low').known, true, '3.7: GPT 6.1 Sol has a price row');
 });
 
 test('router: measured results for a pair move that pair, not the others; guard rails and limits still hold on pairs', () => {

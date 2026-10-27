@@ -104,7 +104,7 @@ async function overview() {
         h('li', 'Если у Claude лимит почти кончился, а у Codex запас есть, работа уходит в Codex. Если кончились оба, hub предложит подождать сброса.')))),
     h('section.group', sectionHead('Сколько стоит решённая задача'), h('div.plane.card.tight.stack', h('p.t-meta', { style: { padding: '0 6px' } }, 'Главное число — доля недельного лимита подписки на одну решённую задачу; доллары по цене API нужны для сравнения. «Замерено» — числа взяты из настоящих запусков; «прикидка» — часть числа посчитана (цена по токенам, доля лимита по калибровке или цепочка из раздельных запусков).'), h('div', { style: { overflowX: 'auto' } }, strategyTable(oc.strategies)))),
     reviewQuality(rq),
-    h('section.group', sectionHead('Расход за 30 дней', h('span.t-meta', `цены Claude проверены ${m.pricesVerifiedAt}; цены GPT не известны`)), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, usage)),
+    h('section.group', sectionHead('Расход за 30 дней', h('span.t-meta', `цены Claude проверены ${dateRu(m.pricesVerifiedAt)}; остальные и ваши правки — в настройках`)), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, usage)),
     h('details.group', h('summary', h('span.t-heading', 'Точность прогнозов')), h('p.t-meta', 'Прогноз и факт в миллионах токенов с учётом кэша. Чем больше запусков, тем точнее советы.'), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, outcomes))) };
 }
 

@@ -20,6 +20,8 @@ export type ModelStats = Record<string, Stat>;                    // key: `${cls
 
 export const modelKey = (m: string): ModelKey => (/opus/i.test(m) ? 'opus' : /sonnet/i.test(m) ? 'sonnet' : /haiku/i.test(m) ? 'haiku' : /fable/i.test(m) ? 'fable' : 'gpt');
 export const MODEL_ID: Record<Exclude<ModelKey, 'gpt'>, string> = { opus: 'claude-opus-5-5', sonnet: 'claude-sonnet-5-5', haiku: 'claude-haiku-5-5', fable: 'claude-fable-5-1' };
+/** The GPT model the router prices (the one Codex runs by default). */
+const GPT_PRICED = 'gpt-6.1-sol';
 export const agentOf = (k: ModelKey): AgentId => (k === 'gpt' ? 'codex' : 'claude');
 
 /** Author's starting beliefs, NOT measurements: how often this model gets this kind of task right. Real runs take over as they accumulate. */
@@ -69,14 +71,15 @@ const SCARCITY_PENALTY = 0.06;      // quality-equivalent cost of draining an ag
 
 /**
  * Price tier 0..1 for a typical task (mostly cached reads, some output) at an effort. Output tokens come from the measured profile of that agent and effort
- * when it has >= MIN_RUNS runs, else from the default scaled by the prior multiplier. GPT has no verified price: assumed equal to Sonnet and flagged.
+ * when it has >= MIN_RUNS runs, else from the default scaled by the prior multiplier. GPT is priced as GPT-6.1 Sol (registry/prices.json); with no price row a model is assumed equal to Sonnet and flagged.
  */
 export function priceTier(k: ModelKey, effort: EffortLevel = 'medium', profile?: Profile): { tier: number; known: boolean; measured: boolean } {
   const measured = !!profile && profile.source === 'history' && profile.n >= MIN_RUNS;
   const out = measured ? (profile as Profile).p50.out : DEFAULT_PROFILE.p50.out * EFFORT_PRICE_MULT[effort];
-  const usd = (m: string): number => costUsd(m, { ...DEFAULT_PROFILE.p50, out }) ?? 0;
+  const usd = (m: string): number | null => costUsd(m, { ...DEFAULT_PROFILE.p50, out });
   const ref = costUsd(MODEL_ID.fable, DEFAULT_PROFILE.p50) ?? 1;
-  return { tier: usd(k === 'gpt' ? MODEL_ID.sonnet : MODEL_ID[k]) / ref, known: k !== 'gpt', measured };
+  const own = usd(k === 'gpt' ? GPT_PRICED : MODEL_ID[k]);        // a model without a price row is treated as Sonnet and flagged
+  return { tier: (own ?? usd(MODEL_ID.sonnet) ?? 0) / ref, known: own != null, measured };
 }
 
 /** One (model, effort) pair. `family` is the model, `key` the pair. `priceMeasured`: the price uses this effort's measured output tokens, not the prior multiplier. `basis`: the sourced priors (registry/model-priors.json) that moved this option for the task's tags. */

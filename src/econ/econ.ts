@@ -1,17 +1,12 @@
 import type { Db } from '../history/store.ts';
+import { bundledCheckedAt, priceTable, tierFor } from './prices.ts';
 
-// ---------- prices (USD per 1M tokens) ----------
-export interface Price { input: number; cacheRead: number; output: number }
-/** Claude prices verified 2026-10-22 at platform.claude.com/docs/en/about-claude/pricing. GPT prices are NOT verified: unknown stays unknown, never 0. */
-export const PRICES_VERIFIED_AT = '2026-10-22';
-const PRICES: Record<string, Price | ((promptTokens: number) => Price)> = {
-  'claude-fable-5-1': { input: 10, cacheRead: 0.25, output: 50 },
-  'claude-opus-5-5': { input: 4, cacheRead: 0.2, output: 20 },
-  'claude-sonnet-5-5': { input: 2, cacheRead: 0.1, output: 10 },
-  'claude-haiku-5-5': (p) => (p <= 100_000 ? { input: 0.1, cacheRead: 0.01, output: 0.5 } : { input: 0.5, cacheRead: 0.05, output: 2.5 }),
-};
+// ---------- prices (USD per 1M tokens): registry/prices.json + the user's overrides, see prices.ts ----------
+export type { Price } from './prices.ts';
+/** Day the bundled Claude prices were last read off Anthropic's pricing page (the newest `checked` row). GPT is a recorded figure with its own date in the table. */
+export const PRICES_VERIFIED_AT: string = bundledCheckedAt();
 // Bare aliases (what the CLI accepts: `--model sonnet`) mean the current version of that family.
-const ALIAS: [RegExp, string][] = [[/^fable$|fable.?5.?1/i, 'claude-fable-5-1'], [/^opus$|opus.?5.?5/i, 'claude-opus-5-5'], [/^sonnet$|sonnet.?5.?5/i, 'claude-sonnet-5-5'], [/^haiku$|haiku.?5.?5/i, 'claude-haiku-5-5']];
+const ALIAS: [RegExp, string][] = [[/^fable$|fable.?5.?1/i, 'claude-fable-5-1'], [/^opus$|opus.?5.?5/i, 'claude-opus-5-5'], [/^sonnet$|sonnet.?5.?5/i, 'claude-sonnet-5-5'], [/^haiku$|haiku.?5.?5/i, 'claude-haiku-5-5'], [/gpt.?6.?1.?sol/i, 'gpt-6.1-sol']];
 
 export const canonicalModel = (name: string | null | undefined): string | null => (name ? ALIAS.find(([re]) => re.test(name))?.[1] ?? name : null);
 export interface Tokens { uncachedIn: number; cachedIn: number; out: number }
@@ -19,9 +14,9 @@ export interface Tokens { uncachedIn: number; cachedIn: number; out: number }
 /** API-equivalent dollars, or null when the model's price is not known. Cache writes are counted as input (an approximation noted in docs). */
 export function costUsd(model: string | null | undefined, t: Tokens): number | null {
   const m = canonicalModel(model);
-  const p = m ? PRICES[m] : undefined;
-  if (!p) return null;
-  const price = typeof p === 'function' ? p(t.uncachedIn + t.cachedIn) : p;
+  const entry = m ? priceTable().models.get(m) : undefined;
+  if (!entry) return null;
+  const price = tierFor(entry, t.uncachedIn + t.cachedIn);
   return (t.uncachedIn * price.input + t.cachedIn * price.cacheRead + t.out * price.output) / 1e6;
 }
 
