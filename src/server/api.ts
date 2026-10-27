@@ -30,12 +30,12 @@ import { isSecretPath } from '../lib/paths.ts';
 import { checkSparse } from '../run/git.ts';
 import { RunManager, type StartReq } from '../run/runner.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
-import { GateError, answer as answerFindingGate, approve as approveReview, canAcceptNow, launchReview, reviewDiffText, reviewView, reviewsOfRun, startFix } from '../review/gate.ts';
-import { MAX_DIFF_BYTES, caseFromFinding, caseSummary, readBaseline, saveCase } from '../review/eval.ts';
+import { GateError, answer as answerFindingGate, approve as approveReview, approveReviewChecks, canAcceptNow, launchReview, reviewChecks, reviewDiffText, reviewView, reviewsOfRun, startFix } from '../review/gate.ts';
+import { MAX_DIFF_BYTES, SEED_CASES_DIR, caseFromFinding, caseSummary, incidentCasesDir, readBaseline, saveCase } from '../review/eval.ts';
 import { getReview } from '../review/store.ts';
 import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
 
-export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; baselinePath?: string } }
+export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; seedDir?: string; baselinePath?: string } }
 export interface Res { status: number; json?: unknown }
 type Body = Record<string, unknown>;
 type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
@@ -59,8 +59,11 @@ function reviewId(c: Ctx, raw: string | undefined): string {
   return raw;
 }
 
-/** Where reviewer-quality cases and the baseline live (the repo's eval/review and the hub home); tests point them elsewhere. */
-const evalPaths = (c: Ctx): { casesDir: string; baselinePath: string } => ({ casesDir: c.reviewEval?.casesDir ?? join(REPO_ROOT, 'eval', 'review'), baselinePath: c.reviewEval?.baselinePath ?? join(HUB_HOME, 'review-eval-baseline.json') });
+/**
+ * Where reviewer-quality cases and the baseline live. Incidents are written under the hub home (`<home>/review-eval/cases`), never into the hub's
+ * own tree; the shipped seed cases (`eval/review`) are read-only. Tests point all three elsewhere.
+ */
+const evalPaths = (c: Ctx): { casesDir: string; seedDir: string; baselinePath: string } => ({ casesDir: c.reviewEval?.casesDir ?? incidentCasesDir(HUB_HOME), seedDir: c.reviewEval?.seedDir ?? SEED_CASES_DIR, baselinePath: c.reviewEval?.baselinePath ?? join(HUB_HOME, 'review-eval-baseline.json') });
 
 let syncState: { running: boolean; last?: { at: string; claude: SyncStats; codex: SyncStats; ms: number }; error?: string } = { running: false };
 
@@ -359,7 +362,17 @@ const ROUTES: [string, RegExp, Handler][] = [
     const { review } = launchReview({ runId, ...(effort === 'quick' || effort === 'standard' || effort === 'deep' ? { effort } : {}), runs: c.runs, db: c.db, ...(c.review?.available ? { available: c.review.available } : {}) });   // runs in the background
     return ok(review);
   }],
-  ['GET', /^\/api\/reviews\/(\w+)$/, (c, { params }) => { const id = reviewId(c, params[0]); return ok(reviewView(c.db, id)); }],
+  ['GET', /^\/api\/reviews\/(\w+)$/, (c, { params }) => { const id = reviewId(c, params[0]); return ok(reviewView(c.db, id, c.runs.home)); }],
+  // Checks run the branch's code with the user's rights: the list (argv, the package.json scripts it maps to, file hashes) is shown here and runs
+  // only after the user approves exactly that digest. Same guard as every approval: session cookie + same-origin (the hub's agent runs never get the token; ADR-019 "Trust model" says what this does not stop).
+  ['GET', /^\/api\/reviews\/(\w+)\/checks$/, (c, { params }) => ok(reviewChecks(c.db, reviewId(c, params[0]), c.runs.home))],
+  ['POST', /^\/api\/reviews\/(\w+)\/checks\/approve$/, (c, { params, body }) => {
+    const id = reviewId(c, params[0]);
+    if (body['approved'] !== true) return bad(400, 'approve needs approved: true');
+    const digest = str(body['digest']);
+    if (!digest || !/^[0-9a-f]{64}$/.test(digest)) return bad(400, 'digest: the 64-hex digest shown with the checks');
+    return ok(approveReviewChecks(c.db, id, digest, c.runs.home));
+  }],
   ['GET', /^\/api\/runs\/(\w+)\/reviews$/, (c, { params }) => (RUN_ID.test(params[0] as string) ? ok(reviewsOfRun(c.db, params[0] as string)) : bad(400, 'bad run id'))],
   ['POST', /^\/api\/findings\/(\w+)\/answer$/, (c, { params, body }) => {
     const id = params[0] as string;
@@ -393,7 +406,7 @@ const ROUTES: [string, RegExp, Handler][] = [
   }],
 
   // ---- reviewer quality: the last saved baseline and the case counts (never a diff); an incident becomes a case. The diff of a review comes from the review's own commits, never from a path in the request.
-  ['GET', /^\/api\/review-eval$/, (c) => ok({ baseline: readBaseline(evalPaths(c).baselinePath), cases: caseSummary(evalPaths(c).casesDir) })],
+  ['GET', /^\/api\/review-eval$/, (c) => ok({ baseline: readBaseline(evalPaths(c).baselinePath), cases: caseSummary([evalPaths(c).seedDir, evalPaths(c).casesDir]) })],
   ['POST', /^\/api\/review-eval\/cases$/, (c, { body }) => {
     const title = typeof body['title'] === 'string' ? body['title'].trim() : '';
     if (!title || title.length > 200) return bad(400, 'title: 1-200 characters');

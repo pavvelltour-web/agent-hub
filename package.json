@@ -29,6 +29,7 @@
     "src",
     "!src/**/*.test.ts",
     "web",
+    "eval/review",
     "packs",
     "templates",
     "modes",

@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { HubConfig } from '../core/types.ts';
-import { defaultChecks, dependencyFindings, gateChecks, readReviewConfig, runChecks, scanDiffForSecrets } from './checks.ts';
+import { spawnSync } from 'node:child_process';
+import { NO_CHECKS_WARNING, approveChecks, defaultChecks, dependencyFindings, gateChecks, planChecks, readReviewConfig, runCheck, runChecks, scanDiffForSecrets } from './checks.ts';
 import type { CheckResult } from './checks.ts';
 
 const NODE = 'node';
@@ -288,5 +289,118 @@ test('readReviewConfig: tolerates unknown keys, drops malformed values', async (
     assert.deepEqual(readReviewConfig(dir), { effort: 'deep', checks: [['npm', 'test']], humanPaths: ['a/**'] });
     writeFileSync(join(dir, 'hub.json'), JSON.stringify({ review: 'nope' }));
     assert.deepEqual(readReviewConfig(dir), {});
+  });
+});
+
+// ---- trust model: approval of exactly what runs, env, licences, launchers (fixer B) ----------------------------------------------------
+
+function g(cwd: string, ...args: string[]): string {
+  const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8', windowsHide: true });
+  assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout.trim();
+}
+/** A project root, a task worktree on hub/t/claude and a temp hub home, all under one temp dir. */
+function project(dir: string, base: Record<string, string>): { root: string; wt: string; home: string; commit: (files: Record<string, string>) => string } {
+  const root = join(dir, 'repo'); mkdirSync(root, { recursive: true });
+  g(root, 'init', '-q', '-b', 'main');
+  for (const [f, t] of Object.entries({ 'a.txt': 'a\n', ...base })) { mkdirSync(join(root, f, '..'), { recursive: true }); writeFileSync(join(root, f), t); }
+  g(root, 'add', '-A'); g(root, 'commit', '-q', '-m', 'base');
+  const wt = join(dir, 'repo-worktrees', 't-claude');
+  g(root, 'worktree', 'add', '-q', '-b', 'hub/t/claude', wt);
+  const commit = (files: Record<string, string>): string => { for (const [f, t] of Object.entries(files)) { mkdirSync(join(wt, f, '..'), { recursive: true }); writeFileSync(join(wt, f), t); } g(wt, 'add', '-A'); g(wt, 'commit', '-q', '-m', 'w'); return g(wt, 'rev-parse', 'HEAD'); };
+  return { root, wt, home: join(dir, 'home'), commit };
+}
+
+test('planChecks: default npm checks come from the BRANCH HEAD package.json, with their scripts (and npm pre/post) in the digest; nothing is approved by default', async () => {
+  await withTmp((dir) => {
+    const p = project(dir, { 'package.json': JSON.stringify({ scripts: { test: 'node --test', pretest: 'node prep.js', typecheck: 'tsc', build: 'x' } }) });
+    const h1 = p.commit({ 'src/x.ts': 'export {};\n' });
+    const plan = planChecks(p.root, p.wt, h1, p.home);
+    assert.deepEqual(plan.checks, [['npm', 'test'], ['npm', 'run', 'typecheck']]);
+    assert.equal(plan.source, 'package.json');
+    assert.deepEqual(plan.scripts, { pretest: 'node prep.js', test: 'node --test', typecheck: 'tsc' }, 'the scripts the checks map to, npm pre hook included');
+    assert.equal(plan.approved, false, 'nothing runs before the user approves');
+    assert.match(plan.digest, /^[0-9a-f]{64}$/);
+    assert.match(plan.note, /с вашими правами/);
+    assert.throws(() => approveChecks(p.root, p.wt, h1, 'f'.repeat(64), p.home), /changed/);
+    assert.equal(planChecks(p.root, p.wt, h1, p.home).approved, false, 'a wrong digest approves nothing');
+    assert.equal(approveChecks(p.root, p.wt, h1, plan.digest, p.home).approved, true);
+    assert.equal(planChecks(p.root, p.wt, h1, p.home).approved, true);
+    const h2 = p.commit({ 'src/y.ts': 'export {};\n' });
+    assert.equal(planChecks(p.root, p.wt, h2, p.home).approved, true, 'an unrelated change keeps the approval');
+    writeFileSync(join(p.wt, 'package.json'), JSON.stringify({ scripts: { test: 'node evil.js', typecheck: 'tsc' } }));
+    assert.equal(planChecks(p.root, p.wt, h2, p.home).approved, true, 'read from the commit, not from the folder');
+    const h3 = p.commit({ 'package.json': JSON.stringify({ scripts: { test: 'node evil.js', pretest: 'node prep.js', typecheck: 'tsc', build: 'x' } }) });
+    const changed = planChecks(p.root, p.wt, h3, p.home);
+    assert.equal(changed.approved, false, 'a changed test script in the branch needs a new approval');
+    assert.notEqual(changed.digest, plan.digest);
+    assert.equal(changed.scripts['test'], 'node evil.js');
+  });
+});
+
+test('planChecks: the security script and node <file> checks are hashed from the branch (a changed script needs re-approval); hub.json of the ROOT sets the list', async () => {
+  await withTmp((dir) => {
+    const p = project(dir, { 'hub.json': JSON.stringify({ review: { checks: [['node', 'verify.mjs'], ['node', '-e', '0']] } }), 'verify.mjs': 'console.log(1)\n' });
+    const h1 = p.commit({ 'scripts/security.mjs': 'console.log("sec")\n' });
+    const a = planChecks(p.root, p.wt, h1, p.home);
+    assert.deepEqual(a.checks, [['node', 'verify.mjs'], ['node', '-e', '0'], ['node', 'scripts/security.mjs']], 'the branch adds scripts/security.mjs: it runs, and is part of the approval');
+    assert.equal(a.source, 'hub.json');
+    assert.deepEqual(Object.keys(a.files).sort(), ['scripts/security.mjs', 'verify.mjs']);
+    approveChecks(p.root, p.wt, h1, a.digest, p.home);
+    const h2 = p.commit({ 'scripts/security.mjs': 'console.log("sec, but weaker")\n' });
+    assert.equal(planChecks(p.root, p.wt, h2, p.home).approved, false, 'a changed security script needs a new approval');
+    const h3 = p.commit({ 'hub.json': JSON.stringify({ review: { checks: [] } }) });
+    assert.deepEqual(planChecks(p.root, p.wt, h3, p.home).checks.map((c) => c.join(' ')), ['node verify.mjs', 'node -e 0', 'node scripts/security.mjs'], 'the branch hub.json does not change the list: the root one does');
+  });
+});
+
+test('planChecks: no checks at all is "approved" (nothing runs) and flagged noTests; only the security script is noTests too', async () => {
+  await withTmp((dir) => {
+    const p = project(dir, {});
+    const h = p.commit({ 'b.txt': 'b\n' });
+    const none = planChecks(p.root, p.wt, h, p.home);
+    assert.deepEqual(none.checks, []); assert.equal(none.approved, true); assert.equal(none.noTests, true); assert.equal(none.source, 'none');
+    const h2 = p.commit({ 'scripts/security.mjs': '\n' });
+    assert.equal(planChecks(p.root, p.wt, h2, p.home).noTests, true);
+    assert.match(NO_CHECKS_WARNING, /Нет проверок/);
+  });
+});
+
+test('runCheck: the env given is what the check sees (the gate passes one without hub secrets); PATH still works', async () => {
+  await withTmp(async (dir) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, MARK_X: 'given' };
+    delete env['HUB_SESSION_TOKEN'];
+    const [r] = await runChecks(dir, [js('console.log("tok=" + (process.env.HUB_SESSION_TOKEN || "none") + " mark=" + process.env.MARK_X + " path=" + !!(process.env.PATH || process.env.Path))')], { env });
+    assert.equal(r?.ok, true); assert.match(r!.tail, /tok=none mark=given path=true/);
+  });
+});
+
+test('runCheck on Windows: a .cmd launcher is refused with a plain hint (no shell); a missing one says to give the full path', { skip: process.platform !== 'win32' }, async () => {
+  await withTmp(async (dir) => {
+    writeFileSync(join(dir, 'fakepm.cmd'), '@echo pwned\r\n');
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const k of Object.keys(env)) if (k.toUpperCase() === 'PATH') delete env[k];
+    env['PATH'] = dir;
+    const r = await runCheck(dir, ['fakepm', 'test'], 10_000, env);
+    assert.equal(r.ok, false); assert.match(r.tail, /could not start/); assert.match(r.tail, /\.cmd/); assert.match(r.tail, /полный путь/); assert.doesNotMatch(r.tail, /pwned/);
+    const direct = await runCheck(dir, [join(dir, 'fakepm.cmd')], 10_000, env);
+    assert.equal(direct.ok, false); assert.match(direct.tail, /\.cmd/);
+    const missing = await runCheck(dir, ['no-such-runner-xyz'], 10_000, env);
+    assert.match(missing.tail, /не найден запускатель no-such-runner-xyz; укажите полный путь в hub\.json review\.checks/);
+  });
+});
+
+test('dependencyFindings: a licence planted in the task folder node_modules is not trusted; only the project root copy (with a registry spec) or the tiny built-in list clear it', async () => {
+  await withTmp((dir) => {
+    const root = join(dir, 'root'), wt = join(dir, 'wt');
+    const lic = (base: string, name: string, license: string): void => { mkdirSync(join(base, 'node_modules', name), { recursive: true }); writeFileSync(join(base, 'node_modules', name, 'package.json'), JSON.stringify({ name, license })); };
+    lic(wt, 'evil-pkg', 'MIT');          // agent-planted, git-ignored, never reviewed
+    lic(root, 'good-pkg', 'MIT'); lic(root, 'aliased', 'MIT');
+    const diff = addDiff([' {', '   "dependencies": {', '+    "evil-pkg": "^1.0.0",', '+    "good-pkg": "^1.0.0",', '+    "typescript": "^5.9.0",', '+    "aliased": "npm:good-pkg@1"']);
+    const f = dependencyFindings(diff, root);
+    assert.deepEqual(f.map((x) => /"([^"]+)"/.exec(x.title)?.[1]).sort(), ['aliased', 'evil-pkg'], 'the planted MIT licence does not clear evil-pkg; a non-registry spec is never cleared');
+    assert.ok(f.every((x) => x.lens === 'security'));
+    assert.match(f.find((x) => x.title.includes('evil-pkg'))!.evidence, /task folder's node_modules is never trusted/);
+    assert.match(f.find((x) => x.title.includes('aliased'))!.title, /non-registry/);
   });
 });

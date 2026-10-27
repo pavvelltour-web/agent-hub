@@ -29,7 +29,7 @@ import { listProjects, listSessions, openDb, search } from '../history/store.ts'
 import { RunManager } from '../run/runner.ts';
 import { approveRunnerHooks, readRunnerHooks } from '../run/hooks-run.ts';
 import { startServer } from '../server/server.ts';
-import { caseSummary, compareEval, evalReviewer, loadCases, readBaseline, writeBaseline } from '../review/eval.ts';
+import { SEED_CASES_DIR, caseSummary, compareEval, evalReviewer, incidentCasesDir, loadCases, readBaseline, writeBaseline } from '../review/eval.ts';
 import { usableAgents } from '../review/gate.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 
@@ -297,11 +297,11 @@ async function cmdReviewEval(a: Args): Promise<void> {
   const e = a.flags['effort'];
   if (e !== undefined && e !== 'quick' && e !== 'standard' && e !== 'deep') return fail('--effort must be quick, standard or deep');
   const effort = e ?? 'standard';
-  const dir = join(REPO_ROOT, 'eval', 'review');
+  const dir = [SEED_CASES_DIR, incidentCasesDir(HUB_HOME)];   // shipped seeds (read-only) + incidents saved under the hub home
   const skipped: string[] = [];
   const cases = loadCases(dir, skipped);
   skipped.forEach((s) => out(`skipped case ${s}`));
-  if (!cases.length) return fail(`no review cases in ${dir}`);
+  if (!cases.length) return fail(`no review cases in ${dir.join(' or ')}`);
   if (a.flags['dry']) {
     cases.forEach((c) => out(`${c.id.padEnd(26)} ${c.kind.padEnd(6)} ${(c.source ?? '-').padEnd(9)} ${c.bugs.map((b) => `${b.file}:${b.line}`).join(', ') || '-'}`));
     const n = caseSummary(dir);

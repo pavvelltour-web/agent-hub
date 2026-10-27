@@ -96,3 +96,18 @@ test('screen files: no innerHTML, no inline colours, route and links are wired, 
   assert.match(read('js', 'views', 'project.js'), /reviewLinks/);
   for (const t of ['Три круга ревью не сошлись — пересмотрите подход', 'Подтверждаю этот коммит', 'Исправить агентом', 'Не баг — причина…', 'Так задумано', 'Нечего исправлять', 'Повторяется — вынести в правило', 'Запустить ревью', 'ИИ-ревью не запускалось']) assert.ok((read('js', 'views', 'review.js') + read('js', 'review-model.js')).includes(t), t);
 });
+
+test('model: the check plan is typed (argv lists, scripts, file hashes, digest); hostile or missing data gives null; the screen offers the approval', () => {
+  const plan = { checks: [['npm', 'test'], ['node', 'scripts/security.mjs'], [{ x: 1 }]], source: 'package.json', scripts: { test: 'node --test', bad: { a: 1 } }, files: { 'scripts/security.mjs': 'ab'.repeat(32), '.npmrc': null }, digest: 'c'.repeat(64), approved: false, noTests: false, note: 'branch code' };
+  const m = model(raw([], { checkPlan: plan })) as unknown as { checkPlan: { checks: string[][]; scripts: [string, string][]; files: [string, string | null][]; digest: string; approved: boolean } };
+  assert.deepEqual(m.checkPlan.checks, [['npm', 'test'], ['node', 'scripts/security.mjs'], ['?']], 'a non-string argument is shown as ?, never dropped');
+  assert.deepEqual(m.checkPlan.scripts, [['test', 'node --test'], ['bad', '?']]);
+  assert.deepEqual(m.checkPlan.files, [['scripts/security.mjs', 'ab'.repeat(32)], ['.npmrc', null]]);
+  assert.equal(m.checkPlan.approved, false); assert.equal(m.checkPlan.digest, 'c'.repeat(64));
+  for (const bad of [null, 'x', [], { digest: 'nope' }, { ...plan, digest: { toString: 1 } }]) assert.equal((model(raw([], { checkPlan: bad })) as unknown as { checkPlan: unknown }).checkPlan, null);
+  const card = M['cardText'] as (m: unknown) => string;
+  assert.match(card(model(raw([], { reasons: ['Проверки из hub.json не одобрены'] }))), /одобрения/);
+  const src = readFileSync(join(here, '..', '..', 'web', 'js', 'views', 'review.js'), 'utf8');
+  for (const t of ['Одобрить проверки', 'checks/approve', 'Проверки ждут вашего одобрения', 'Скрипты package.json']) assert.ok(src.includes(t), t);
+  assert.match(readFileSync(join(here, '..', '..', 'src', 'review', 'checks.ts'), 'utf8'), /с вашими правами, вне песочницы агента/);
+});

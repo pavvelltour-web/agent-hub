@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, projectId, type Db } from '../history/store.ts';
-import { runScore } from '../econ/econ.ts';
+import { runScore, settledOutcome } from '../econ/econ.ts';
 import { RunManager } from '../run/runner.ts';
 import { waitForRun } from '../run/wait.ts';
 import { handle, type Ctx } from '../server/api.ts';
@@ -14,6 +14,7 @@ import { startServer } from '../server/server.ts';
 import { answerFinding } from './store.ts';
 import { RECONSIDER_MESSAGE, answer, approve, blockingLines, canAccept, launchReview, pickReviewers, reviewView, startFix, startReview } from './gate.ts';
 import { addFindings, getReview, listFindings, listReviewsForRun } from './store.ts';
+import { approveChecks, planChecks } from './checks.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fakeExe = { cmd: process.execPath, prefix: [join(here, '..', 'adapters', 'fake-agent.mjs')] };
@@ -31,7 +32,7 @@ const fnd = (file: string, line: number, title: string, classOfBug = ''): F => (
 interface Script { hunt: Record<string, F[] | 'prose'>; verify: 'real' | 'notreal' }
 
 let n = 0;
-interface World { db: Db; runs: RunManager; root: string; wt: string; runId: string; head: () => string; commit: (files: Record<string, string>, msg?: string) => string; script: (s: Partial<Script>) => void; spawned: () => { prompt: string; hubEnv: string[] }[]; go: (o?: { effort?: 'quick' | 'standard' | 'deep'; available?: ('claude' | 'codex')[] }) => ReturnType<typeof startReview> }
+interface World { db: Db; runs: RunManager; root: string; wt: string; runId: string; home: string; approveChecks: () => void; head: () => string; commit: (files: Record<string, string>, msg?: string) => string; script: (s: Partial<Script>) => void; spawned: () => { prompt: string; hubEnv: string[] }[]; go: (o?: { effort?: 'quick' | 'standard' | 'deep'; available?: ('claude' | 'codex')[] }) => ReturnType<typeof startReview> }
 
 function world(o: { base?: Record<string, string>; env?: NodeJS.ProcessEnv } = {}): World {
   const dir = join(tmp, `w${++n}`); const root = join(dir, 'repo'); mkdirSync(root, { recursive: true });
@@ -49,14 +50,16 @@ function world(o: { base?: Record<string, string>; env?: NodeJS.ProcessEnv } = {
   db.prepare("INSERT INTO run (id, project_id, agent, prompt, cwd, branch, started_at, ended_at, outcome, base_sha, permission, work_mode) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
     .run(runId, pid, 'claude', 'Implement the loop as described in the brief.', wt, 'hub/t/claude', '2026-10-26T10:00:00Z', '2026-10-26T10:05:00Z', 'review', baseSha, 'edit', null);
   const env: NodeJS.ProcessEnv = { ...process.env, FAKE_SCENARIO: 'review-script', FAKE_REVIEW_SCRIPT: scriptFile, FAKE_CAPTURE_FILE: capFile, ...(o.env ?? {}) };
-  const runs = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, env, summarize: false, home: join(dir, 'home') });
+  const home = join(dir, 'home');
+  const runs = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, env, summarize: false, home });
   const commit = (files: Record<string, string>, msg = 'work'): string => {
     for (const [f, text] of Object.entries(files)) { mkdirSync(dirname(join(wt, f)), { recursive: true }); writeFileSync(join(wt, f), text); }
     git(wt, ['add', '-A']); git(wt, ['commit', '-q', '-m', msg]);
     return git(wt, ['rev-parse', 'HEAD']);
   };
   return {
-    db, runs, root, wt, runId, head: () => git(wt, ['rev-parse', 'HEAD']), commit, script,
+    db, runs, root, wt, runId, home, head: () => git(wt, ['rev-parse', 'HEAD']), commit, script,
+    approveChecks: () => { const h = git(wt, ['rev-parse', 'HEAD']); approveChecks(root, wt, h, planChecks(root, wt, h, home).digest, home); },
     spawned: () => (existsSync(capFile) ? readFileSync(capFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { prompt: string; hubEnv: string[] }) : []),
     go: (x = {}) => startReview({ runId, effort: x.effort ?? 'quick', runs, db, available: x.available ?? ['claude'] }),
   };
@@ -88,7 +91,7 @@ test('pickReviewers: one vendor is used with a warning; none is null', () => {
 
 test('red checks: state open, results recorded, NO hunter started, gate closed', async () => {
   const w = world({ base: { 'hub.json': JSON.stringify({ review: { checks: [['node', '-e', 'process.exit(1)']] } }) } });
-  w.commit({ 'src/a.ts': A1 });
+  w.commit({ 'src/a.ts': A1 }); w.approveChecks();
   const r = await w.go();
   assert.equal(r.state, 'open');
   const v = reviewView(w.db, r.id);
@@ -122,8 +125,8 @@ test('no usable agent: open with a clear reason; one usable vendor: runs and rec
 // ---- tiers and answers ---------------------------------------------------------------------------------------------------------------
 
 test('low tier: an unanswered Important blocks; answered (reason needed for rejected) and checks green: ok without a human', async () => {
-  const w = world(); w.script({ hunt: { correctness: [fnd('docs/x.md', 1, 'Wrong claim')] } });
-  const head = w.commit({ 'docs/x.md': 'a claim\nb\n' });
+  const w = world({ base: { 'hub.json': JSON.stringify({ review: { checks: [['node', '-e', '0']] } }) } }); w.script({ hunt: { correctness: [fnd('docs/x.md', 1, 'Wrong claim')] } });
+  const head = w.commit({ 'docs/x.md': 'a claim\nb\n' }); w.approveChecks();   // a green, approved test check: a project with no checks is never low
   const r = await w.go();
   assert.equal(r.risk, 'low'); assert.equal(r.state, 'open');
   const fs = listFindings(w.db, r.id); assert.equal(fs.length, 1); assert.equal(fs[0]!.severity, 'important');
@@ -441,8 +444,13 @@ test('web: the outcome chips know "review" (На ревью)', () => {
   for (const f of ['views/common.js', 'transcript.js']) assert.match(readFileSync(join(here, '..', '..', 'web', 'js', f), 'utf8'), /review['"]?:[^\n]*На ревью/, f);
 });
 
-test('econ: a run that ended "review" counts as a finished, successful run', () => {
-  assert.equal(runScore('review', null), runScore('done', null));
+// Stricter than before (fixer B, item 10): "review" used to score like "done" whatever the gate decided. Now it is pending until the review ends.
+test('econ: a run that ended "review" is pending until its review ends: passed counts as done, reconsider as failed', () => {
+  assert.equal(runScore('review', null), null, 'pending: not part of success stats');
+  assert.equal(runScore(settledOutcome('review', 'passed'), null), runScore('done', null));
+  assert.equal(runScore(settledOutcome('review', 'reconsider'), null), runScore('failed', null));
+  for (const st of [null, 'open', 'needs-human', 'checks']) assert.equal(runScore(settledOutcome('review', st), null), null, String(st));
+  assert.equal(runScore('review', 2), 1, 'a rating from the user still wins');
 });
 
 // ---- gate integrity (review of the gate) -------------------------------------------------------------------------------------------
@@ -629,7 +637,7 @@ test('integrity (b): approve is refused while a round runs and for a head whose 
   assert.equal(canAccept(w.db, r.id, h2).ok, true);
   // a round that stopped early (red checks) leaves the new head unreviewed: no approval for it, nor for the old head
   const wr = world({ base: { 'hub.json': JSON.stringify({ review: { checks: [['node', '-e', 'process.exit(require("fs").existsSync("red") ? 1 : 0)']] } }) } });
-  const g1 = wr.commit({ '.github/workflows/x.yml': 'name: x\n' }); const rr = await wr.go(); assert.equal(rr.state, 'needs-human');
+  const g1 = wr.commit({ '.github/workflows/x.yml': 'name: x\n' }); wr.approveChecks(); const rr = await wr.go(); assert.equal(rr.state, 'needs-human');
   const g2 = wr.commit({ red: 'x\n' }); assert.equal((await wr.go()).state, 'open');
   assert.throws(() => approve(wr.db, rr.id, g2, 'human'), /not the commit that was reviewed/);
   assert.throws(() => approve(wr.db, rr.id, g1, 'human'), /not the commit that was reviewed/);
@@ -674,6 +682,96 @@ test('integrity (h): a hub restart opens a review left mid-round with a reason; 
   assert.equal(canAccept(w.db, r.id, h2).ok, false);
   const again = await w.go();
   assert.equal(again.id, r.id); assert.equal(again.round, 2); assert.equal(again.state, 'passed');
+});
+
+// ---- trust model (fixer B) ---------------------------------------------------------------------------------------------------------
+
+const CHECK_JS = 'console.log("CHECK-RAN " + JSON.stringify({ tok: Object.keys(process.env).filter((k) => /hub.*(token|cookie|secret)/i.test(k)), hooks: process.env.GIT_CONFIG_KEY_0 || "", path: !!(process.env.PATH || process.env.Path) }))\n';
+
+test('checks approval: unapproved hub.json checks never run (open, reason, no AI); only the exact digest approves (human route); a changed check file needs a new approval', async () => {
+  const w = world({ base: { 'hub.json': JSON.stringify({ review: { checks: [['node', 'check.js']] } }), 'check.js': CHECK_JS } });
+  const api = apiOf(w);
+  w.commit({ 'src/a.ts': A1 });
+  const r = await w.go();
+  assert.equal(r.state, 'open');
+  const v = reviewView(w.db, r.id, w.home);
+  assert.deepEqual(v.reasons, ['Проверки из hub.json не одобрены']);
+  assert.deepEqual(v.checks, [], 'nothing ran');
+  assert.equal(w.spawned().length, 0, 'no AI spend');
+  assert.equal(v.checkPlan?.approved, false); assert.deepEqual(v.checkPlan?.checks, [['node', 'check.js']]);
+  assert.equal(canAccept(w.db, r.id, w.head()).ok, false);
+
+  const shown = await api('GET', `/api/reviews/${r.id}/checks`);
+  assert.equal(shown.status, 200);
+  const digest = (shown.json as { digest: string }).digest;
+  assert.equal((await api('POST', `/api/reviews/${r.id}/checks/approve`, {}, { digest })).status, 400, 'explicit approved: true is required');
+  assert.equal((await api('POST', `/api/reviews/${r.id}/checks/approve`, {}, { digest: 'a'.repeat(64), approved: true })).status, 409, 'a digest the server did not compute is refused');
+  assert.equal((await api('POST', `/api/reviews/${r.id}/checks/approve`, {}, { digest: 'nope', approved: true })).status, 400);
+  const ok = await api('POST', `/api/reviews/${r.id}/checks/approve`, {}, { digest, approved: true });
+  assert.equal(ok.status, 200); assert.equal((ok.json as { approved: boolean }).approved, true);
+
+  const ran = await w.go();
+  const rv = reviewView(w.db, ran.id, w.home);
+  assert.equal(rv.reasons.length, 0, rv.reasons.join(' '));
+  const tail = rv.checks.find((c) => c.name.includes('check.js'))?.tail ?? '';
+  assert.match(tail, /CHECK-RAN/, 'the approved check ran');
+  assert.match(tail, /"tok":\[\]/, 'no hub token variable reaches the check');
+  assert.match(tail, /"hooks":"core\.hooksPath"/, 'git push is guarded for the check');
+  assert.match(tail, /"path":true/, 'PATH is kept');
+
+  w.commit({ 'check.js': 'console.log("weaker")\n' });
+  const again = await w.go();
+  assert.equal(again.state, 'open');
+  assert.deepEqual(reviewView(w.db, again.id).reasons, ['Проверки из hub.json не одобрены'], 'a changed check file needs a new approval');
+});
+
+test('checks run without hub secrets even when the hub process has them', async () => {
+  const w = world({ base: { 'hub.json': JSON.stringify({ review: { checks: [['node', 'check.js']] } }), 'check.js': CHECK_JS } });
+  w.commit({ 'src/a.ts': A1 }); w.approveChecks();
+  process.env['HUB_SESSION_TOKEN'] = 'secret-for-test';
+  try {
+    const r = await w.go();
+    const tail = reviewView(w.db, r.id).checks.find((c) => c.name.includes('check.js'))?.tail ?? '';
+    assert.match(tail, /"tok":\[\]/); assert.doesNotMatch(tail, /secret-for-test/);
+  } finally { delete process.env['HUB_SESSION_TOKEN']; }
+});
+
+test('no checks: the review records "Нет проверок" and is never low risk; it does not block', async () => {
+  const w = world(); w.commit({ 'docs/x.md': 'a\n' });
+  const r = await w.go();
+  assert.equal(r.state, 'passed', 'a warning, not a block');
+  assert.equal(r.risk, 'medium');
+  const v = reviewView(w.db, r.id);
+  assert.ok(v.warnings.includes('Нет проверок: тесты/типизация не запускались'), v.warnings.join(' | '));
+  assert.match(v.riskWhy.join(' '), /no tests or type check/);
+});
+
+test('an agent branch that edits REVIEW.md ("Не проверять" added) is high risk and needs a human', async () => {
+  const md = '# REVIEW\n\n## Что здесь считается поломкой\n- x\n\n## Пути, где нужен человек\n- src/pay/**\n';
+  const w = world({ base: { 'REVIEW.md': md } });
+  const head = w.commit({ 'REVIEW.md': md + '\n## Не проверять\n- src/**\n' });
+  const r = await w.go();
+  assert.equal(r.risk, 'high'); assert.equal(r.state, 'needs-human');
+  assert.match(reviewView(w.db, r.id).riskWhy.join(' '), /REVIEW\.md/);
+  assert.equal(canAccept(w.db, r.id, head).ok, false);
+});
+
+test('humanPaths of a FOLDER REVIEW.md (in the project root) make a change under that folder high', async () => {
+  const w = world({ base: { 'src/core/REVIEW.md': '## Пути, где нужен человек\n- `*.ts`\n' } });
+  w.commit({ 'src/core/thing.ts': 'export const t = 1;\n' });
+  const r = await w.go();
+  assert.equal(r.risk, 'high');
+  assert.match(reviewView(w.db, r.id).riskWhy.join(' '), /owner-listed/);
+});
+
+test('reviewer runs: marked, left out of the run list, and the task folder gets no .hub from them', async () => {
+  const w = world(); w.commit({ 'src/a.ts': A1 });
+  await w.go();
+  const rows = w.db.prepare("SELECT id, work_mode AS m FROM run WHERE id != ?").all(w.runId) as { id: string; m: string | null }[];
+  assert.ok(rows.length >= 2, 'reviewers ran');
+  assert.ok(rows.every((x) => x.m === 'gate-reviewer'));
+  assert.deepEqual(w.runs.list({ limit: 200 }).map((x) => x.id), [w.runId], 'only the task run is listed');
+  assert.equal(existsSync(join(w.wt, '.hub')), false);
 });
 
 test('web: the review screen offers a restart for an interrupted review and the human approval for a too-large diff', () => {

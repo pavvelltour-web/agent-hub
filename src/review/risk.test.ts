@@ -98,6 +98,23 @@ test('risk: why lists each reason once and stays short for many files', () => {
   assert.ok(r.why.length <= 50);
 });
 
+test('risk: REVIEW.md at the root or in any folder is high (an agent must not edit its own review rules unseen)', () => {
+  for (const p of ['REVIEW.md', 'src/REVIEW.md', 'docs/deep/review.md']) {
+    const r = tier([p]);
+    assert.equal(r.tier, 'high', p);
+    assert.match(r.why.join(' '), /REVIEW\.md/);
+  }
+  assert.equal(tier(['README.md', 'docs/preview.md']).tier, 'low', 'lookalikes stay docs');
+});
+
+test('risk: files that weaken checks or start code are high', () => {
+  for (const p of ['.gitattributes', 'sub/.gitattributes', '.npmrc', '.yarnrc', '.yarnrc.yml', '.mcp.json', '.vscode/settings.json', '.devcontainer/devcontainer.json', '.agents/skills/x.md', 'pkg/.claude/settings.json',
+    'scripts/security.mjs', 'hub.json', 'pkg/hub.json', 'tsconfig.json', 'tsconfig.build.json', 'eslint.config.js', '.eslintrc.cjs', 'vitest.config.ts', 'jest.config.js', '.mocharc.json', 'playwright.config.ts', 'biome.json']) {
+    assert.equal(tier([p]).tier, 'high', p);
+  }
+  for (const p of ['src/tsconfig-helper.ts', 'scripts/other.mjs', 'docs/eslint.md']) assert.notEqual(tier([p]).tier, 'high', p);
+});
+
 test('globMatch: * stays inside a segment, ** crosses, ? is one char, trailing / means the directory', () => {
   assert.equal(globMatch('src/*.ts', 'src/a.ts'), true);
   assert.equal(globMatch('src/*.ts', 'src/d/a.ts'), false);

@@ -1,6 +1,6 @@
 # ADR-019: mandatory review gate with verifier votes; only a human approval counts
 
-Status: decided for the data model (PR.1). The pipeline stages that use it (PR.2 onward) are not built yet, and **no live reviewer run has been done** (see "Unverified").
+Status: built through PR.8 (data model, gate pipeline with checks and convergence, REVIEW.md rules, review screen, reviewer evals, gate integrity, trust model for checks). **No live reviewer run has been done** (see "Unverified").
 
 ## Decision
 
@@ -8,7 +8,7 @@ No task branch is accepted ("Accept result" / merge into the project) while its 
 
 The gate covers everything the agent created, not only code: source, tests, configs, migrations, docs, `AGENTS.md` and rules files, dependency changes, generated files, and UI (rendered screenshots).
 
-A review runs in rounds: checks (tests, typecheck, lint, build, secrets scan, dependency audit; red closes the gate and no AI review is spent) → parallel hunters, one lens each → verifiers → filter → separate security pass → risk tier → answers → converge.
+A review runs in rounds: checks (approved list only, see "Trust model": tests, typecheck, security script, secrets scan, dependency licenses; red or unapproved closes the gate and no AI review is spent; a project with no tests or type check gets the warning "Нет проверок" and is never low risk) → parallel hunters, one lens each → verifiers → filter → separate security pass → risk tier → answers → converge.
 
 ## Why verifier votes
 
@@ -18,7 +18,17 @@ The design follows the vendor blog "Solving code review at Anthropic" (claude.de
 
 ## Why an agent approval never counts
 
-A human approval is bound to one commit sha (`humanApproval = { sha, at }`). Any new commit makes it stale and it is dropped (`clearHumanApproval`). An approval that comes from an agent run, including the reviewer's own, is ignored: only the user can approve, and high-risk changes need it. Agents may argue, verify and fix; they do not sign off.
+A human approval is bound to one commit sha (`humanApproval = { sha, at }`). Any new commit makes it stale and it is dropped (`clearHumanApproval`). Approvals come only from the panel's approve endpoint, and the only thing that separates the user's browser from other callers is the session cookie/token (see "Trust model"): the hub's agent runs never get it, so they cannot approve through the hub. There is no separate check that recognises and drops an "agent-made" approval. High-risk changes need the approval. Agents may argue, verify and fix; they do not sign off.
+
+## Trust model
+
+Plainly, what is and is not protected:
+
+- **Where approvals live.** Review approvals, finding answers and reviews are rows in `~/.agent-hub/hub.db`; check approvals are `~/.agent-hub/review-checks-approved.json` and runner-hook approvals `~/.agent-hub/hooks-approved.json`. Any process running as the same OS user can write these files and forge an approval or an answer. That includes the code the checks run (branch scripts, `node_modules`) and a Claude/Codex run in `edit`/auto mode that decides to edit them.
+- **What the structural guard does.** The hub's own agent processes are started without the session token or cookie variables (`agentEnv`) and with `git push` blocked (`pushGuardEnv`). So they cannot call the approve endpoints through the hub's HTTP API, which checks the cookie, the Host and the Origin. That is all it does: it is not a sandbox and does not stop direct file writes.
+- **Checks run branch code with the user's rights.** `npm test`, `npm run typecheck`, `scripts/security.mjs` and any `review.checks` from `hub.json` execute code the agent may have written, outside the agent's sandbox. Therefore they run only after the user approved exactly that list on this machine: a sha256 digest over the argv lists, the whole branch-head `package.json` `scripts` object (when an npm-like check runs, so a changed `test` or `pretest` needs a new approval), `.npmrc`, and the content of every `node <file>` the checks start (e.g. `scripts/security.mjs`), read from the branch head commit. Unapproved or changed: nothing runs, the review is `open` with "Проверки из hub.json не одобрены" (or `package.json` / `scripts/security.mjs`), and the screen shows the list with «Одобрить проверки». The approval route needs `approved: true` and the digest the server computes at that moment. Checks get a minimal env (no hub secrets, push guard). Not covered by the digest: `node_modules` and other ignored files in the task folder, and programs a script calls; the screen says so.
+- **What the branch cannot change.** `hub.json` `review.checks` and `humanPaths`, and every `REVIEW.md` (root and folder files) are read from the project root, never from the branch. A branch that edits `REVIEW.md`, `hub.json`, check/lint/test-runner configs, `.gitattributes`, `.npmrc`, `.vscode/`, `.devcontainer/`, `.agents/`, `.claude/` or `scripts/security.mjs` is high risk and needs a human. A dependency license is read only from the project root's installed copy (never the task folder's `node_modules`), and only for a plain registry version.
+- **Reviewer runs** are plumbing: marked `gate-reviewer`, left out of run lists, econ, model stats and routing, they never write a handoff card, and a checkpoint never commits `.hub/`.
 
 ## Findings are answered, not ignored
 

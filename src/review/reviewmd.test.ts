@@ -8,7 +8,8 @@ import { buildHuntPrompt } from './agents.ts';
 import { addFindings, createReview } from './store.ts';
 import { fingerprint } from './types.ts';
 import type { RawFinding, Review } from './types.ts';
-import { REVIEW_HEADINGS, appendRuleChange, humanPathsFromReviewMd, loadReviewMd, repeatedFindings, reviewTemplate, suggestRuleLine } from './reviewmd.ts';
+import { riskTier } from './risk.ts';
+import { REVIEW_HEADINGS, appendRuleChange, humanPathsForChanges, humanPathsFromReviewMd, loadReviewMd, repeatedFindings, reviewTemplate, suggestRuleLine } from './reviewmd.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'hub-reviewmd-'));
 after(() => { rmSync(tmp, { recursive: true, force: true }); });
@@ -137,6 +138,16 @@ test('the headings are the five required ones, in order, in every template', () 
   assert.equal(reviewTemplate('nope'), null);
   assert.equal(reviewTemplate('../web-saas'), null);
   assert.notEqual(reviewTemplate('web-saas'), reviewTemplate('mobile-app'));
+});
+
+test('humanPathsForChanges: the root list plus the nearest folder REVIEW.md lists, scoped to their folder', () => {
+  const H = '## Пути, где нужен человек\n';
+  const root = proj({ 'REVIEW.md': H + '- src/auth/**\n', 'src/pay/REVIEW.md': H + '- `*.ts`\n- api/**\n', 'src/pay/far/REVIEW.md': H + '- deep.ts\n', 'lib/REVIEW.md': H + '- x.ts\n' });
+  const got = humanPathsForChanges(root, ['src/pay/charge.ts']);
+  assert.deepEqual(got, ['src/auth/**', 'src/pay/**/*.ts', 'src/pay/api/**']);
+  assert.ok(riskTier(['src/pay/sub/x.ts'], { humanPaths: got }).tier === 'high' && riskTier(['src/other/x.ts'], { humanPaths: got }).tier === 'medium');
+  assert.deepEqual(humanPathsForChanges(root, ['src/pay/far/a.ts']), ['src/auth/**', 'src/pay/far/**/deep.ts'], 'the nearest folder file only');
+  assert.deepEqual(humanPathsForChanges(root, ['../x.ts', 'C:/abs.ts']), ['src/auth/**'], 'hostile paths read no folder file');
 });
 
 test('humanPathsFromReviewMd: bullets under the heading become globs; junk is ignored', () => {

@@ -67,18 +67,21 @@ function segments(p: unknown): string[] | null {
  * Nothing outside `root` is ever read (traversal, absolute paths, links and junctions are ignored). Redacted and capped at ~40 KB.
  */
 export function loadReviewMd(root: string, changedPaths: string[]): string {
+  const out = reviewMdFiles(root, changedPaths).map((f) => (f.rel === null ? f.text : `--- REVIEW.md: ${f.rel} ---\n${f.text}`)).join('\n\n');
+  return out.length > MAX_TOTAL ? out.slice(0, MAX_TOTAL) + TRUNCATED : out;
+}
+
+/** The root REVIEW.md (`rel` null) and the nearest folder REVIEW.md of each changed path (`rel` = its folder), each file once, root first. */
+function reviewMdFiles(root: string, changedPaths: string[]): { rel: string | null; text: string }[] {
   let realRoot: string;
-  try { realRoot = realpathSync(root); } catch { return ''; }
-  const sections: string[] = [];
+  try { realRoot = realpathSync(root); } catch { return []; }
+  const files: { rel: string | null; text: string }[] = [];
   const seen = new Set<string>();
-  const take = (file: string, label: string | null): boolean => {
+  const take = (file: string, rel: string | null): void => {
     const r = readInside(realRoot, file);
-    if (!r) return false;
-    const key = r.real.toLowerCase();
-    if (seen.has(key)) return true;
-    seen.add(key);
-    sections.push(label === null ? r.text : `--- REVIEW.md: ${label} ---\n${r.text}`);
-    return true;
+    if (!r || seen.has(r.real.toLowerCase())) return;
+    seen.add(r.real.toLowerCase());
+    files.push({ rel, text: r.text });
   };
   take(join(realRoot, 'REVIEW.md'), null);
   const nearest = new Map<string, string>();       // folder label -> file
@@ -94,8 +97,22 @@ export function loadReviewMd(root: string, changedPaths: string[]): string {
     }
   }
   for (const rel of [...nearest.keys()].sort()) take(nearest.get(rel) as string, rel);
-  const out = sections.join('\n\n');
-  return out.length > MAX_TOTAL ? out.slice(0, MAX_TOTAL) + TRUNCATED : out;
+  return files;
+}
+
+/**
+ * "Пути, где нужен человек" of the root REVIEW.md plus those of the nearest folder REVIEW.md of every changed path. A folder file's globs are
+ * relative to its folder (`x.ts` there means any `x.ts` under that folder). Read from `root` (the project, never the branch).
+ */
+export function humanPathsForChanges(root: string, changedPaths: string[]): string[] {
+  const out: string[] = [];
+  for (const f of reviewMdFiles(root, changedPaths)) {
+    for (const g of humanPathsFromReviewMd(f.text)) {
+      const scoped = f.rel === null ? g : g.includes('/') ? `${f.rel}/${g.replace(/^\.\//, '')}` : `${f.rel}/**/${g}`;
+      if (!out.includes(scoped)) out.push(scoped);
+    }
+  }
+  return out;
 }
 
 // ---- paths where a human is needed ---------------------------------------------------------------------------------------------------

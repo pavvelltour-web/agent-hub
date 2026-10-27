@@ -56,8 +56,23 @@ export function model(raw) {
   });
   const checks = arr(r.checks, 30).filter((c0) => c0 && typeof c0 === 'object' && !Array.isArray(c0)).map((c0) => { const c = obj(c0); return { name: str(c.name, 160) || '(проверка без имени)', ok: c.ok === true, tail: str(c.tail, 4000) }; });
   const lines = (v) => arr(v, 30).map((x) => str(x, 400).trim()).filter(Boolean);
-  return { review, findings, checks, warnings: lines(r.warnings), reasons: lines(r.reasons), riskWhy: lines(r.riskWhy), humanWhy: lines(r.humanWhy) };
+  return { review, findings, checks, warnings: lines(r.warnings), reasons: lines(r.reasons), riskWhy: lines(r.riskWhy), humanWhy: lines(r.humanWhy), checkPlan: checkPlanOf(r.checkPlan) };
 }
+
+/** What the checks run (argv lists, the package.json scripts they map to, file hashes) and whether the user approved it; null when absent. */
+export function checkPlanOf(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const p = obj(raw);
+  const digest = typeof p.digest === 'string' && /^[0-9a-f]{64}$/.test(p.digest) ? p.digest : '';
+  if (!digest) return null;
+  const pairs = (v, max) => Object.entries(obj(v)).slice(0, 40).map(([k, x]) => [str(k, 200), x === null ? null : typeof x === 'string' ? str(x, max) : '?']).filter(([k]) => k);
+  return {
+    checks: arr(p.checks, 30).map((c) => arr(c, 40).map((a) => (typeof a === 'string' ? str(a, 300) : '?'))).filter((c) => c.length),   // never hide a part of what runs: a non-string shows as ?
+    source: str(p.source, 40), scripts: pairs(p.scripts, 600).filter(([, x]) => x !== null), files: pairs(p.files, 80),
+    digest, approved: p.approved === true, noTests: p.noTests === true, note: str(p.note, 400),
+  };
+}
+export const NOT_APPROVED_RE = /^Проверки из .+ не одобрены$/;
 
 // ---- counts ----------------------------------------------------------------------------------------------------------------------------
 
@@ -83,6 +98,7 @@ export function cardText(m) {
   if (IN_PROGRESS.has(st)) return 'Ревью идёт…';
   if (m.checks.some((c) => !c.ok)) return 'Ревью: проверки не прошли, ИИ-ревью не запускалось';
   if (st === 'reconsider') return 'Ревью: три круга не сошлись, пересмотрите подход';
+  if (m.reasons.some((x) => /^Проверки из .+ не одобрены$/.test(x))) return 'Ревью: проверки ждут вашего одобрения';
   if (m.reasons.length && !m.findings.length) return 'Ревью не завершилось';
   const imp = blockers(m).length, nit = count(m, 'nit');
   return `Ревью: ${imp} ${imp === 1 ? 'важная' : 'важных'}, ${nit} ${plural(nit, ['мелочь', 'мелочи', 'мелочей'])}`;

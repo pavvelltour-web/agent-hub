@@ -89,17 +89,36 @@ const round = (x: number): number => Math.round(x * 100) / 100;
 const round1 = (x: number): number => Math.round(x * 10) / 10;
 
 // ---------- observed quality: what finished runs say about each model ----------
-/** 0..1 per finished run: a rating from the user wins; without one, "done" is a weak yes and "failed" a no. Limit stops and manual stops say nothing about quality. */
+/**
+ * What a task-branch run (`outcome = 'review'`) really ended as, from the latest review of its branch:
+ * - `passed` -> 'done' (the gate let it through);
+ * - `reconsider` (three rounds did not converge, never approved) -> 'failed';
+ * - anything else (no review yet, open, waiting for a human, running) -> 'review' = pending: it says nothing yet and is left out of success stats.
+ * Conservative on purpose: a branch is not a success until the gate passes it, and only a dead end counts against the model.
+ */
+export function settledOutcome(outcome: string | null, reviewState: string | null | undefined): string | null {
+  if (outcome !== 'review') return outcome;
+  return reviewState === 'passed' ? 'done' : reviewState === 'reconsider' ? 'failed' : 'review';
+}
+/** SQL for `run r`: the state of the latest review of the run's branch (same folder + branch), or NULL. */
+const REVIEW_STATE_SQL = "(SELECT v.state FROM review v JOIN run u ON u.id = v.run_id WHERE u.cwd = r.cwd AND u.branch = r.branch ORDER BY v.rowid DESC LIMIT 1)";
+/** Review-gate reviewer runs are plumbing, not the user's work: never part of stats, routing or shared cases. */
+export const NOT_REVIEWER_SQL = "(r.work_mode IS NULL OR r.work_mode != 'gate-reviewer')";
+
+/**
+ * 0..1 per finished run: a rating from the user wins; without one, "done" is a weak yes and "failed" a no. Limit stops and manual stops say
+ * nothing about quality, and neither does a branch still in review (`review` = pending, see settledOutcome): pass the settled outcome.
+ */
 export function runScore(outcome: string | null, rating: number | null): number | null {
   if (rating === 2) return 1; if (rating === 1) return 0.5; if (rating === 0) return 0;
-  if (outcome === 'done' || outcome === 'review') return 0.7; if (outcome === 'failed') return 0;
+  if (outcome === 'done') return 0.7; if (outcome === 'failed') return 0;
   return null;
 }
 export function modelStats(db: Db): Record<string, { n: number; score: number }> {
-  const rows = db.prepare("SELECT cls, model, outcome, rating FROM run WHERE cls IS NOT NULL AND model IS NOT NULL AND outcome IS NOT NULL").all() as unknown as { cls: string; model: string; outcome: string; rating: number | null }[];
+  const rows = db.prepare(`SELECT r.cls, r.model, r.outcome, r.rating, ${REVIEW_STATE_SQL} AS rstate FROM run r WHERE r.cls IS NOT NULL AND r.model IS NOT NULL AND r.outcome IS NOT NULL AND ${NOT_REVIEWER_SQL}`).all() as unknown as { cls: string; model: string; outcome: string; rating: number | null; rstate: string | null }[];
   const out: Record<string, { n: number; score: number }> = {};
   for (const r of rows) {
-    const sc = runScore(r.outcome, r.rating); if (sc == null) continue;
+    const sc = runScore(settledOutcome(r.outcome, r.rstate), r.rating); if (sc == null) continue;
     const m = canonicalModel(r.model) ?? r.model;
     const key = `${r.cls}|${/opus/i.test(m) ? 'opus' : /sonnet/i.test(m) ? 'sonnet' : /haiku/i.test(m) ? 'haiku' : /fable/i.test(m) ? 'fable' : 'gpt'}`;
     const x = out[key] ?? { n: 0, score: 0 }; x.n++; x.score += sc; out[key] = x;
@@ -108,16 +127,17 @@ export function modelStats(db: Db): Record<string, { n: number; score: number }>
 }
 
 // ---------- estimate vs actual ----------
-export interface OutcomeRow { cls: string; model: string; effort: string; runs: number; done: number; limit: number; failed: number; actualMw: number; estLowMw: number | null; estHighMw: number | null; withinRange: number; withEstimate: number }
+export interface OutcomeRow { cls: string; model: string; effort: string; runs: number; done: number; limit: number; failed: number; pending: number; actualMw: number; estLowMw: number | null; estHighMw: number | null; withinRange: number; withEstimate: number }
 
-/** Finished runs grouped by task class, model and effort: how often they succeed and whether the shown estimate held (weighted Mtok). */
+/** Finished runs grouped by task class, model and effort: how often they succeed and whether the shown estimate held (weighted Mtok). A branch still in review is `pending`, not done. */
 export function outcomes(db: Db): OutcomeRow[] {
-  const rows = db.prepare("SELECT cls, model, effort, outcome, tokens_in AS tin, tokens_cached AS tc, tokens_out AS tout, est_json AS est FROM run WHERE outcome IS NOT NULL AND outcome != 'interrupted'").all() as unknown as { cls: string | null; model: string | null; effort: string | null; outcome: string; tin: number | null; tc: number | null; tout: number | null; est: string | null }[];
+  const rows = db.prepare(`SELECT r.cls, r.model, r.effort, r.outcome, ${REVIEW_STATE_SQL} AS rstate, r.tokens_in AS tin, r.tokens_cached AS tc, r.tokens_out AS tout, r.est_json AS est FROM run r WHERE r.outcome IS NOT NULL AND r.outcome != 'interrupted' AND ${NOT_REVIEWER_SQL}`).all() as unknown as { cls: string | null; model: string | null; effort: string | null; outcome: string; rstate: string | null; tin: number | null; tc: number | null; tout: number | null; est: string | null }[];
   const g = new Map<string, OutcomeRow & { lowSum: number; highSum: number; actualSum: number }>();
   for (const r of rows) {
     const key = [r.cls ?? 'unclassified', canonicalModel(r.model) ?? r.model ?? 'unknown', r.effort ?? '-'].join('|');
-    const o = g.get(key) ?? { cls: r.cls ?? 'unclassified', model: canonicalModel(r.model) ?? r.model ?? 'unknown', effort: r.effort ?? '-', runs: 0, done: 0, limit: 0, failed: 0, actualMw: 0, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, lowSum: 0, highSum: 0, actualSum: 0 };
-    o.runs++; if (r.outcome === 'done' || r.outcome === 'review') o.done++; else if (r.outcome === 'limit') o.limit++; else if (r.outcome === 'failed') o.failed++;
+    const o = g.get(key) ?? { cls: r.cls ?? 'unclassified', model: canonicalModel(r.model) ?? r.model ?? 'unknown', effort: r.effort ?? '-', runs: 0, done: 0, limit: 0, failed: 0, pending: 0, actualMw: 0, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, lowSum: 0, highSum: 0, actualSum: 0 };
+    const out = settledOutcome(r.outcome, r.rstate);
+    o.runs++; if (out === 'done') o.done++; else if (out === 'review') o.pending++; else if (out === 'limit') o.limit++; else if (out === 'failed') o.failed++;
     const cached = r.tc ?? 0;
     const actual = weighted({ uncachedIn: Math.max(0, (r.tin ?? 0) - cached), cachedIn: cached, out: r.tout ?? 0 });
     o.actualSum += actual;

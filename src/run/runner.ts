@@ -38,6 +38,12 @@ export interface RunManagerOpts { exe?: Partial<Record<AgentId, { cmd: string; p
 const HUB_SECRET_ENV = /hub.*(?:token|cookie|session|secret)/i;
 export const agentEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([k]) => !HUB_SECRET_ENV.test(k)));
 
+/**
+ * `work_mode` of a review-gate reviewer run (started with `isolatedCwd`). Such runs are plumbing, not the user's work: they are left out of the
+ * run lists (chats, tasks), of econ / model stats / routing, never write a handoff card and never run project hooks.
+ */
+export const REVIEWER_MODE = 'gate-reviewer';
+
 const projectTypeOf = (root: string): string | null => { try { return (JSON.parse(readFileSync(join(root, 'hub.json'), 'utf8')) as { project?: { type?: string } }).project?.type ?? null; } catch { return null; } };
 
 export class RunManager {
@@ -46,8 +52,10 @@ export class RunManager {
   private subs = new Map<string, Set<(e: StoredEvent) => void>>();
   private db: Db;
   private opts: RunManagerOpts;
+  /** The hub home this manager uses (push-guard hook, approvals). */
+  readonly home: string;
   constructor(db: Db, opts: RunManagerOpts = {}) {
-    this.db = db; this.opts = opts;
+    this.db = db; this.opts = opts; this.home = opts.home ?? HUB_HOME;
     // A crashed server leaves rows without an end: mark them so the UI never shows a ghost "running" run.
     db.prepare("UPDATE run SET outcome = 'interrupted', ended_at = ? WHERE outcome IS NULL").run(new Date().toISOString());
     markInterruptedReviews(db);   // review rounds live in this process too: one cut off by the crash is open again, with a restart
@@ -86,7 +94,8 @@ export class RunManager {
     }
     // A resumed thread keeps the permission it had unless the user chose another one; a review thread never leaves plan.
     const permission: Permission = prevMode === 'review' || req.workMode === 'review' ? 'plan' : req.permission ?? (prevPerm === 'plan' || prevPerm === 'full' || prevPerm === 'edit' ? prevPerm : 'edit');
-    const workMode = prevMode === 'review' ? 'review' : req.workMode ?? prevMode;
+    const reviewer = !!req.isolatedCwd;
+    const workMode = reviewer ? REVIEWER_MODE : prevMode === 'review' ? 'review' : req.workMode ?? prevMode;
     tx(this.db, () => {
       this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type, permission, work_mode, base_sha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(id, projectId(this.db, req.projectRoot), req.agent, req.model ?? null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode, baseSha ?? null);
@@ -129,7 +138,9 @@ export class RunManager {
       this.live.delete(id);
       const outcome = limit ? 'limit' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
       this.db.prepare('UPDATE run SET outcome = ?, ended_at = ? WHERE id = ?').run(outcome, new Date().toISOString(), id);
-      if (outcome === 'limit' && limit) {
+      // A reviewer has no work to hand over, and its projectRoot is the task folder: a card there would be committed into the branch.
+      if (outcome === 'limit' && limit && reviewer) emit({ kind: 'warn', message: 'reviewer stopped on a usage limit: no handoff card (the review round fails and can be run again)' });
+      else if (outcome === 'limit' && limit) {
         try {
           const inp: HandoffInput = { runId: id, task: req.task ?? 'chat', prompt: req.prompt, from: { agent: req.agent, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}) }, reason: 'limit_reached', cwd, events, ...(baseSha ? { baseSha } : {}), ...(limit.resetsAt ? { resetsAt: limit.resetsAt } : {}) };
           const sum = await this.summarize(inp);
@@ -159,8 +170,9 @@ export class RunManager {
   isLive = (id: string): boolean => this.live.has(id);
 
   get(id: string): RunRow | undefined { return this.db.prepare(`SELECT ${COLS} FROM run WHERE id = ?`).get(id) as unknown as RunRow | undefined; }
+  /** The user's runs (chats, tasks); review-gate reviewer runs are not listed. */
   list(f: { projectId?: number; limit?: number } = {}): RunRow[] {
-    return this.db.prepare(`SELECT ${COLS} FROM run ${f.projectId != null ? 'WHERE project_id = ?' : ''} ORDER BY started_at DESC LIMIT ?`).all(...(f.projectId != null ? [f.projectId] : []), f.limit ?? 50) as unknown as RunRow[];
+    return this.db.prepare(`SELECT ${COLS} FROM run WHERE (work_mode IS NULL OR work_mode != '${REVIEWER_MODE}') ${f.projectId != null ? 'AND project_id = ?' : ''} ORDER BY started_at DESC LIMIT ?`).all(...(f.projectId != null ? [f.projectId] : []), f.limit ?? 50) as unknown as RunRow[];
   }
   events(id: string, afterSeq = 0): StoredEvent[] {
     return (this.db.prepare('SELECT seq, ts, kind, data FROM run_event WHERE run_id = ? AND seq > ? ORDER BY seq').all(id, afterSeq) as unknown as { seq: number; ts: string; kind: string; data: string }[]).map((r) => ({ ...r, data: JSON.parse(r.data) as unknown }));

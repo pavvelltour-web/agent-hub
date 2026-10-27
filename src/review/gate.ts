@@ -7,11 +7,11 @@ import type { AgentId } from '../core/types.ts';
 import { MODEL_ID } from '../econ/router.ts';
 import type { Db } from '../history/store.ts';
 import { redact } from '../lib/redact.ts';
-import { checkpoint, git } from '../run/git.ts';
-import type { RunManager, RunRow } from '../run/runner.ts';
+import { NOT_HUB_DIR, checkpoint, git, pushGuardEnv } from '../run/git.ts';
+import { agentEnv, type RunManager, type RunRow } from '../run/runner.ts';
 import { ReviewError, diffTooLarge, hunt, verifyMany } from './agents.ts';
-import { defaultChecks, dependencyFindings, gateChecks, readReviewConfig, type CheckResult } from './checks.ts';
-import { humanPathsFromReviewMd, loadReviewMd } from './reviewmd.ts';
+import { NO_CHECKS_WARNING, approveChecks, dependencyFindings, gateChecks, notApprovedReason, planChecks, readReviewConfig, type CheckPlan, type CheckResult } from './checks.ts';
+import { humanPathsForChanges, loadReviewMd } from './reviewmd.ts';
 import { riskTier } from './risk.ts';
 import { addFindings, answerFinding, clearHumanApproval, createReview, getReview, listFindings, listReviewsForBranch, listReviewsForRun, markCleared, repeatFingerprints, setHumanApproval, updateReview } from './store.ts';
 import { diffLinesFromUnified, triage } from './triage.ts';
@@ -223,7 +223,7 @@ export function canAcceptNow(db: Db, reviewId: string): { ok: boolean; why: stri
   const head = gitText(cwd, ['rev-parse', '--verify', 'HEAD']).out.trim().toLowerCase();
   if (!HEX40.test(head)) return { ok: false, why: ['cannot read the branch head'], head: null };
   const v = canAccept(db, reviewId, head);
-  const st = gitText(cwd, ['status', '--porcelain', '--untracked-files=all']);
+  const st = gitText(cwd, ['status', '--porcelain', '--untracked-files=all', ...NOT_HUB_DIR]);   // the hub's own .hub/ is never committed (checkpoint), so never "uncommitted work"
   if (!st.ok) v.why.unshift('cannot read the state of the task folder');
   else if (st.out.trim()) v.why.unshift('the task folder has uncommitted changes: they are not reviewed');
   return { ok: v.why.length === 0, why: v.why, head };
@@ -254,9 +254,33 @@ function hunkOf(cwd: string, sha: string, file: string, line: number, cache: Map
   return { from, at: line - from, lines: all.slice(from - 1, to).map((l) => redact(l.slice(0, HUNK_LINE_CAP))) };
 }
 
+/** Project root and task folder of a review, or a GateError. */
+function placesOf(db: Db, r: Review): { root: string; cwd: string } {
+  const cwd = runCwd(db, r.runId);
+  const root = (db.prepare('SELECT root FROM project WHERE id = ?').get(r.projectId) as { root: string } | undefined)?.root;
+  if (!cwd || !existsSync(cwd) || !root) throw new GateError(409, 'the task folder is gone');
+  return { root, cwd };
+}
+
+/** What the review's checks run for its head commit, and whether the user approved that list on this machine. `null` when the folder is gone. */
+export function reviewChecks(db: Db, reviewId: string, home: string): CheckPlan | null {
+  const r = getReview(db, reviewId);
+  if (!r) throw new GateError(404, 'review not found');
+  try { const p = placesOf(db, r); return planChecks(p.root, p.cwd, r.headSha, home); } catch { return null; }
+}
+
+/** The user approves exactly the list `reviewChecks` shows now (same digest). Only the human HTTP path calls this; it starts nothing. */
+export function approveReviewChecks(db: Db, reviewId: string, digest: string, home: string): CheckPlan {
+  const r = getReview(db, reviewId);
+  if (!r) throw new GateError(404, 'review not found');
+  if (IN_PROGRESS.has(r.state)) throw new GateError(409, 'the review is still running');
+  const p = placesOf(db, r);
+  try { return approveChecks(p.root, p.cwd, r.headSha, digest, home); } catch (e) { throw new GateError(409, e instanceof Error ? e.message : 'the checks changed'); }
+}
+
 export type FindingView = Finding & { hunk: Hunk | null };
-/** `humanWhy`: why a human approval of the head is needed besides the risk tier (a diff too large to review fully). */
-export function reviewView(db: Db, id: string): { review: Review; findings: FindingView[]; checks: CheckResult[]; warnings: string[]; reasons: string[]; riskWhy: string[]; humanWhy: string[] } {
+/** `humanWhy`: why a human approval of the head is needed besides the risk tier (a diff too large to review fully). `checkPlan` needs `home`. */
+export function reviewView(db: Db, id: string, home?: string): { review: Review; findings: FindingView[]; checks: CheckResult[]; warnings: string[]; reasons: string[]; riskWhy: string[]; humanWhy: string[]; checkPlan?: CheckPlan | null } {
   const review = getReview(db, id);
   if (!review) throw new GateError(404, 'review not found');
   const info = getInfo(db, id);
@@ -264,7 +288,7 @@ export function reviewView(db: Db, id: string): { review: Review; findings: Find
   const cache = new Map<string, string[] | null>();
   const findings = listFindings(db, id).sort((a, b) => SEV[a.severity] - SEV[b.severity] || a.round - b.round)
     .map((f) => ({ ...f, hunk: cwd && existsSync(cwd) ? hunkOf(cwd, review.headSha, f.file, f.line, cache) : null }));
-  return { review, findings, checks: info.checks, warnings: info.warnings, reasons: info.reasons, riskWhy: info.riskWhy, humanWhy: info.tooLarge ? [TOO_LARGE] : [] };
+  return { review, findings, checks: info.checks, warnings: info.warnings, reasons: info.reasons, riskWhy: info.riskWhy, humanWhy: info.tooLarge ? [TOO_LARGE] : [], ...(home ? { checkPlan: reviewChecks(db, id, home) } : {}) };
 }
 /** The unified diff a review covers (base..head in the task's folder), read with the gate's own git helper and flags. `null` when it cannot be read. */
 export function reviewDiffText(db: Db, reviewId: string): string | null {
@@ -315,6 +339,8 @@ export interface GateOpts {
   /** Replaces `pickReviewers` (tests). */
   picks?: Picks;
   timeoutMs?: number;
+  /** Hub home for check approvals and the push guard. Default: the RunManager's. */
+  home?: string;
 }
 interface RunInfo { id: string; project_id: number | null; cwd: string | null; branch: string | null; base_sha: string | null; prompt: string | null; outcome: string | null }
 
@@ -407,15 +433,19 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     const names = gitText(cwd, ['diff', '--name-only', '--no-renames', '-z', `${review.baseSha}..${head}`]);
     const changed = names.ok ? names.out.split('\0').filter(Boolean) : [];
 
-    // 0 Checks: red means no AI is started.
-    const gate = await gateChecks(cwd, defaultChecks(root), { diffText: diff.out });
+    // 0 Checks: they run the branch's code with the user's rights, so only a list the user approved on this machine runs (digest over argv,
+    // branch scripts and files), in a minimal env (no hub secrets, push guard). Unapproved or changed: nothing runs, no AI is started.
+    const home = o.home ?? o.runs.home;
+    const plan = planChecks(root, cwd, head, home);
+    if (!plan.approved) return finish(close(notApprovedReason(plan)));
+    const gate = await gateChecks(cwd, plan.checks, { diffText: diff.out, env: pushGuardEnv(home, agentEnv(process.env)) });
     putInfo(db, review.id, { ...info, checks: gate.results }); info.checks = gate.results;
     if (!gate.ok) return finish(close(`checks failed: ${gate.results.find((r) => !r.ok)?.name ?? 'unknown'}`));
 
     const usable = o.available ? { available: o.available, warnings: [] as string[] } : usableAgents();
     const picks = o.picks ?? pickReviewers(review.effort, usable.available);
     if (!picks) return finish(close(`no usable reviewer: sign in to claude or codex (${usable.warnings.join('; ') || 'none available'})`));
-    info.warnings = [...picks.warnings, ...usable.warnings];
+    info.warnings = [...(plan.noTests ? [NO_CHECKS_WARNING] : []), ...picks.warnings, ...usable.warnings];
     putInfo(db, review.id, info);
 
     // 1 Hunt
@@ -440,7 +470,7 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     const k = Math.max(1, picks.verifiers.length);
     const dropped = Math.max(0, todo.length - MAX_VERIFIED);   // never silent: the round cannot pass while findings are unchecked
     const verified = (await pool(todo.slice(0, MAX_VERIFIED).map((f) => () => verifyMany(f, { picks: picks.verifiers, diffCmd: common.diffCmd, runs: o.runs, cwd, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) })), Math.max(1, Math.floor(RUN_SLOTS / k)))).filter((v): v is VerifiedFinding => v !== null);
-    for (const d of dependencyFindings(diff.out, cwd)) verified.push({ ...d, votes: { real: 1, notReal: 0 } });
+    for (const d of dependencyFindings(diff.out, root)) verified.push({ ...d, votes: { real: 1, notReal: 0 } });   // licenses from the project root, never the agent-writable task folder
 
     // 3 Filter and 4 Security tagging (triage), then store.
     const kept = triage(verified, { diffLines: diffLinesFromUnified(whole.out), maxNits: MAX_NITS, posted, reviewId: review.id, round, lineText, root: cwd });
@@ -448,8 +478,11 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     stored.forEach((s, i) => { const f = kept[i] as Finding; db.prepare('UPDATE finding SET line_text = ? WHERE id = ?').run(squash(lineText(f.file, f.line)).slice(0, 2000) || null, s.id); });
 
     // 5 Risk from every path the branch changed (not only this round), config from the project root.
-    const humanPaths = [...(readReviewConfig(root).humanPaths ?? []), ...humanPathsFromReviewMd(loadReviewMd(root, []))];   // hub.json + the project's REVIEW.md, both from the project root
-    const tier = names.ok ? riskTier(changed, { humanPaths }) : { tier: 'high' as const, why: ['changed paths unreadable'] };
+    // hub.json + the project's REVIEW.md files (root and the nearest folder file of each changed path), all from the project root, never the branch
+    const humanPaths = [...(readReviewConfig(root).humanPaths ?? []), ...humanPathsForChanges(root, changed)];
+    const tier0 = names.ok ? riskTier(changed, { humanPaths }) : { tier: 'high' as const, why: ['changed paths unreadable'] };
+    // No tests and no type check ran: the change is never treated as low risk.
+    const tier = plan.noTests && tier0.tier === 'low' ? { tier: 'medium' as const, why: [...tier0.why, 'no tests or type check configured'] } : tier0;
     updateReview(db, review.id, { risk: tier.tier });
 
     // Unchecked findings keep the gate open and the next round starts from the same commit, so nothing is skipped. A diff that was too

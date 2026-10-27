@@ -1,10 +1,11 @@
 // Reviewer quality: known-buggy and known-clean diffs run through the gate's hunt / verify / triage pipeline, scored for recall and noise.
-// Cases live in eval/review/<id>/{case.json,case.diff}. Incidents (a finding that was rejected and came back, a failed task, a reverted commit)
-// become cases through saveCase. Nothing here needs a git repository: the pipeline works on the diff text.
+// Seed cases ship in eval/review/<id>/{case.json,case.diff} (read-only). Incidents (a finding that was rejected and came back, a failed task, a
+// reverted commit) become cases through saveCase under <hub home>/review-eval/cases. Nothing here needs a git repository: the pipeline works on the diff text.
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { REPO_ROOT } from '../core/registry.ts';
 import type { AgentId } from '../core/types.ts';
 import type { Db } from '../history/store.ts';
 import { redact } from '../lib/redact.ts';
@@ -75,8 +76,21 @@ function checkMeta(raw: unknown, folder?: string): { ok: true; value: Omit<Revie
 
 const plainFileSize = (p: string): number | null => { try { const s = lstatSync(p); return s.isFile() && !s.isSymbolicLink() ? s.size : null; } catch { return null; } };
 
-/** Valid cases of a folder, sorted by id. A bad case is skipped (and described in `skipped`): junk must never stop the others. */
-export function loadCases(dir: string, skipped: string[] = []): ReviewCase[] {
+/** The shipped seed cases (read-only, part of the package). */
+export const SEED_CASES_DIR = join(REPO_ROOT, 'eval', 'review');
+/** Where incident cases are written: under the hub home, never into the hub's own tree. */
+export const incidentCasesDir = (home: string): string => join(home, 'review-eval', 'cases');
+
+/**
+ * Valid cases of a folder (or of several: seeds first, then incidents; an id seen in an earlier folder wins), sorted by id within a folder.
+ * A bad case is skipped (and described in `skipped`): junk must never stop the others.
+ */
+export function loadCases(dir: string | string[], skipped: string[] = []): ReviewCase[] {
+  if (Array.isArray(dir)) {
+    const out: ReviewCase[] = []; const ids = new Set<string>();
+    for (const d of dir) for (const c of loadCases(d, skipped)) { if (ids.has(c.id)) { skipped.push(`${c.id}: duplicate id (kept the first)`); continue; } ids.add(c.id); out.push(c); }
+    return out;
+  }
   let names: string[];
   try { names = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(); } catch { return []; }
   const out: ReviewCase[] = [];
@@ -99,7 +113,7 @@ export function loadCases(dir: string, skipped: string[] = []): ReviewCase[] {
 }
 
 export interface CaseSummary { total: number; seed: number; incident: number; buggy: number; clean: number }
-export function caseSummary(dir: string): CaseSummary {
+export function caseSummary(dir: string | string[]): CaseSummary {
   const cases = loadCases(dir);
   return { total: cases.length, seed: cases.filter((c) => c.source === 'seed').length, incident: cases.filter((c) => c.source === 'incident').length, buggy: cases.filter((c) => c.kind === 'buggy').length, clean: cases.filter((c) => c.kind === 'clean').length };
 }
@@ -268,7 +282,7 @@ export function caseFromFinding(o: { title: string; diff: string; file: string; 
 }
 
 /**
- * Writes eval/review/<id>/{case.json,case.diff}. The id is reduced to [a-z0-9-]; an existing case is never overwritten; the diff and the brief
+ * Writes <dir>/<id>/{case.json,case.diff} (the server passes <hub home>/review-eval/cases). The id is reduced to [a-z0-9-]; an existing case is never overwritten; the diff and the brief
  * are redacted first; the diff is capped at 200 KB; a known bug must sit within 3 lines of a line the diff adds (else it could never be found).
  */
 export function saveCase(dir: string, c: ReviewCase): ReviewCase {

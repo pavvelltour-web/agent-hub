@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { git, createWorktree, pushGuardEnv, branchName, isGitRepo, facts } from './git.ts';
+import { git, checkpoint, createWorktree, pushGuardEnv, branchName, isGitRepo, facts } from './git.ts';
 import { RunManager } from './runner.ts';
 import { approveRunnerHooks } from './hooks-run.ts';
 import { openDb } from '../history/store.ts';
@@ -90,6 +90,38 @@ test('LIMIT → handoff card with git facts and checkpoint commit → second age
   assert.match(b.prompt ?? '', /Handoff card/); assert.ok(!/FAIL hooks[\s\S]*FAIL hooks[\s\S]*FAIL hooks/.test(b.prompt ?? ''), 'no transcript replay');
   assert.ok(existsSync(join(root, '.hub', 'handoffs')) && readFileSync(join(root, '.hub', 'handoffs', readdirName(join(root, '.hub', 'handoffs'))), 'utf8').includes('from: {"agent":"codex"'));
 });
+test('a review-gate reviewer that hits a usage limit writes no handoff card (its projectRoot is the task folder) and is not listed', async () => {
+  const root = repo(); const neutral = mkdtempSync(join(tmpdir(), 'hub-neutral-')); const home = mkdtempSync(join(tmpdir(), 'hub-home-'));
+  try {
+    const db = openDb(':memory:');
+    const rm = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'codex-limit' }, summarize: false, home });
+    const r = rm.start({ agent: 'codex', prompt: 'review this diff', projectRoot: root, isolatedCwd: neutral, permission: 'plan' });
+    await waitEnd(rm, r.id);
+    const done = rm.get(r.id)!;
+    assert.equal(done.outcome, 'limit'); assert.equal(done.workMode, 'gate-reviewer');
+    assert.equal(rm.handoffCard(r.id), undefined);
+    assert.equal(existsSync(join(root, '.hub')), false, 'nothing written into the task folder');
+    assert.deepEqual(rm.list().map((x) => x.id), [], 'reviewer runs are not in the run list (chats, tasks)');
+  } finally { for (const d of [root, neutral, home]) rmSync(d, { recursive: true, force: true, maxRetries: 3 }); }
+});
+
+test('checkpoint never commits the hub folder .hub/, even when the agent staged it; only .hub changes = nothing to commit', () => {
+  const r = repo();
+  try {
+    mkdirSync(join(r, '.hub', 'handoffs'), { recursive: true });
+    writeFileSync(join(r, '.hub', 'handoffs', 'card.md'), 'card\n'); writeFileSync(join(r, '.hub', 'staged.md'), 'x\n');
+    git(r, ['add', '.hub/staged.md']);
+    const only = checkpoint(r, 'cp');
+    assert.equal(only.committed, false); assert.equal(only.note, undefined, 'no "nothing to commit" refusal');
+    writeFileSync(join(r, 'work.txt'), 'real work\n');
+    const cp = checkpoint(r, 'cp');
+    assert.equal(cp.committed, true);
+    const files = git(r, ['show', '--name-only', '--format=', 'HEAD']).out.split('\n').filter(Boolean);
+    assert.deepEqual(files, ['work.txt']);
+    assert.ok(existsSync(join(r, '.hub', 'handoffs', 'card.md')), 'the card stays on disk, uncommitted');
+  } finally { rmSync(r, { recursive: true, force: true, maxRetries: 3 }); }
+});
+
 const readdirName = (d: string): string => (readdirSyncSafe(d)[0] as string);
 import { readdirSync } from 'node:fs';
 const readdirSyncSafe = (d: string): string[] => readdirSync(d);

@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../history/store.ts';
 import { bucket, buildCases, bundle, exportCases, installId } from './cases.ts';
-import { modelStats, runScore } from './econ.ts';
+import { modelStats, outcomes, runScore } from './econ.ts';
+import { createReview } from '../review/store.ts';
+import type { Review } from '../review/types.ts';
 import { startOverhead } from './overhead.ts';
 
 const SECRET = ['SECRET-PROMPT-XYZ', 'C:/secret/place/proj', 'hub/secret-task/claude', 'boom-secret-error', 'Acme-Client-Project'];
@@ -48,6 +50,23 @@ test('quality score: a rating wins, "done" without a rating is a weak yes, limit
   assert.equal(runScore('done', null), 0.7); assert.equal(runScore('failed', null), 0); assert.equal(runScore('limit', null), null); assert.equal(runScore('stopped', null), null);
   const s = modelStats(db);
   assert.deepEqual(s['implement|sonnet'], { n: 2, score: 1 }); assert.equal(s['implement|gpt'], undefined, 'the limit-stopped Codex run is not counted');
+});
+
+test('econ: a branch run counts only once its review ends (passed = done, reconsider = failed, else pending); reviewer runs are never counted', () => {
+  const d = openDb(':memory:');
+  const run = (id: string, outcome: string, cwd: string, mode: string | null = null): void => {
+    d.prepare("INSERT INTO run (id, agent, model, prompt, cwd, branch, started_at, ended_at, outcome, cls, work_mode) VALUES (?, 'claude', 'claude-sonnet-5-5', 'p', ?, ?, '2026-10-14T10:00:00Z', '2026-10-14T10:05:00Z', ?, 'implement', ?)").run(id, cwd, mode ? null : 'hub/t/claude', outcome, mode);
+  };
+  const rv = (runId: string, state: Review['state']): void => { createReview(d, { runId, projectId: 1, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), effort: 'quick', risk: 'low', round: 1, state }); };
+  run('t1', 'review', 'C:/p-worktrees/1'); rv('t1', 'passed');
+  run('t2', 'review', 'C:/p-worktrees/2'); rv('t2', 'reconsider');
+  run('t3', 'review', 'C:/p-worktrees/3'); rv('t3', 'open');
+  run('t4', 'review', 'C:/p-worktrees/4');
+  run('g1', 'done', 'C:/tmp/hub-reviewer-x', 'gate-reviewer');
+  assert.deepEqual(modelStats(d)['implement|sonnet'], { n: 2, score: 0.7 }, 'passed counts as done, reconsider as failed; pending and reviewer runs are left out');
+  const row = outcomes(d).find((o) => o.cls === 'implement')!;
+  assert.deepEqual([row.runs, row.done, row.failed, row.pending], [4, 1, 1, 2]);
+  assert.equal(buildCases(d).length, 4, 'reviewer runs are not shared cases');
 });
 
 test('overhead: the first model call of each finished session is what the agent carries at the start', () => {

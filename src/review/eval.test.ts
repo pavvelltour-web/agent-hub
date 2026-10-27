@@ -9,7 +9,7 @@ import { openDb, projectId } from '../history/store.ts';
 import { RunManager } from '../run/runner.ts';
 import { handle, type Ctx } from '../server/api.ts';
 import {
-  caseFromFinding, compareEval, evalReviewer, loadCases, matchedBugs, readBaseline, saveCase, scoreFindings, writeBaseline, answerCounts, caseSummary,
+  SEED_CASES_DIR, caseFromFinding, compareEval, incidentCasesDir, evalReviewer, loadCases, matchedBugs, readBaseline, saveCase, scoreFindings, writeBaseline, answerCounts, caseSummary,
   type ReviewCase,
 } from './eval.ts';
 import { pickReviewers } from './gate.ts';
@@ -242,11 +242,11 @@ test('answerCounts: counts the answers over stored findings (zeros without a db)
 
 // ---- the API --------------------------------------------------------------------------------------------------------------------------
 
-function apiWorld(): { ctx: Ctx; casesDir: string; baselinePath: string; call: (m: string, p: string, body?: Record<string, unknown>) => ReturnType<typeof handle> } {
-  const dir = sub(); const casesDir = join(dir, 'cases'); const baselinePath = join(dir, 'home', 'review-eval-baseline.json');
+function apiWorld(): { ctx: Ctx; casesDir: string; seedDir: string; baselinePath: string; call: (m: string, p: string, body?: Record<string, unknown>) => ReturnType<typeof handle> } {
+  const dir = sub(); const casesDir = join(dir, 'cases'); const seedDir = join(dir, 'seeds'); const baselinePath = join(dir, 'home', 'review-eval-baseline.json');
   const db = openDb(':memory:');
-  const ctx: Ctx = { db, runs: new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, summarize: false, home: join(dir, 'home') }), reviewEval: { casesDir, baselinePath } };
-  return { ctx, casesDir, baselinePath, call: (m, p, body = {}) => handle(ctx, m, p, new URLSearchParams(), body) };
+  const ctx: Ctx = { db, runs: new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, summarize: false, home: join(dir, 'home') }), reviewEval: { casesDir, seedDir, baselinePath } };
+  return { ctx, casesDir, seedDir, baselinePath, call: (m, p, body = {}) => handle(ctx, m, p, new URLSearchParams(), body) };
 }
 
 test('GET /api/review-eval: counts and the baseline, never a diff; "no baseline" is null', async () => {
@@ -347,6 +347,24 @@ test('hub review-eval without a signed-in reviewer prints "sign in first" and ex
   assert.notEqual(r.status, 0); assert.match(r.stderr, /sign in first/i);
   const bad = hub(['--effort', 'turbo', '--dry']);
   assert.notEqual(bad.status, 0); assert.match(bad.stderr, /effort/i);
+});
+
+test('incident cases are written under the hub home, never into the hub repo; the CLI and the API read seeds + incidents', async () => {
+  const env = bareEnv(); const home = env['AGENT_HUB_HOME'] as string;
+  const dir = incidentCasesDir(home);
+  assert.ok(dir.startsWith(home) && !dir.startsWith(repoRoot), dir);
+  assert.equal(SEED_CASES_DIR.toLowerCase(), seedDir.toLowerCase());
+  saveCase(dir, caseOf({ id: 'my-incident', source: 'incident' }));
+  const r = hub(['--dry'], env);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /my-incident/); assert.match(r.stdout, /1 incident/); assert.match(r.stdout, /6 seed/);
+  // API: POST writes into the incident folder only; GET counts both folders
+  const w = apiWorld();
+  saveCase(w.seedDir, caseOf({ id: 'a-seed', source: 'seed' }));
+  const p = await w.call('POST', '/api/review-eval/cases', { title: 'From text', diffFrom: 'text', diff: DIFF, file: 'src/a.ts', line: 3 });
+  assert.equal(p.status, 200, JSON.stringify(p.json));
+  assert.equal(loadCases(w.casesDir).length, 1); assert.equal(loadCases(w.seedDir).length, 1, 'the seed folder is not written');
+  assert.deepEqual(((await w.call('GET', '/api/review-eval')).json as { cases: unknown }).cases, { total: 2, seed: 1, incident: 1, buggy: 2, clean: 0 });
 });
 
 test('hub review-eval --compare without a saved baseline fails before any spend', () => {

@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { btn, chip, closeBtn, dialog, field, h, icon, toast } from '../ui.js';
 import {
   ANSWER_RU, EFFORTS, EFFORT_RU, IN_PROGRESS, RISK_RU, ROUND_CAP, SEV_RU, STATE_RU, STEPS, STEP_TEXT,
-  blockers, cardText, closedCount, countsText, errRu, groupByFile, model, nothingFound, pick, plural, reasonRu, redCheck, riskWhyRu, short, stepStates, str, votesText, warnRu,
+  NOT_APPROVED_RE, blockers, cardText, closedCount, countsText, errRu, groupByFile, model, nothingFound, pick, plural, reasonRu, redCheck, riskWhyRu, short, stepStates, str, votesText, warnRu,
 } from '../review-model.js';
 import { go, pageHead } from './common.js';
 
@@ -45,7 +45,7 @@ export default async function view(ctx) {
     if (!busy && m.review.headSha) accept = await api.get(`/reviews/${rid}/can-accept?sha=${m.review.headSha}`, true).catch(() => null);
     if (!busy && (rules === null || force)) rules = await api.get(`/projects/${projectId}/review-rules`, true).catch(() => ({ repeated: [], hasReviewMd: false }));
     if (dead || mine !== loadSeq) return;
-    const key = JSON.stringify([m.review.state, m.review.round, m.review.headSha, m.review.approvedSha, m.findings.map((f) => [f.id, f.answer]), m.checks.map((c) => c.ok), m.reasons, accept && accept.ok === true, Array.isArray(rules?.repeated) ? rules.repeated.length : 0]);
+    const key = JSON.stringify([m.review.state, m.review.round, m.review.headSha, m.review.approvedSha, m.findings.map((f) => [f.id, f.answer]), m.checks.map((c) => c.ok), m.reasons, accept && accept.ok === true, Array.isArray(rules?.repeated) ? rules.repeated.length : 0, m.checkPlan ? [m.checkPlan.digest, m.checkPlan.approved] : null]);
     if (force || key !== sig) { sig = key; draw(m, accept); }
     busyFlag = busy;
     if (busy && !dead) schedule(); else clearTimeout(timer);
@@ -77,6 +77,13 @@ export default async function view(ctx) {
     b.disabled = false;
     if (r) { sig = ''; await reload(); }
   };
+  // Approves exactly the list shown (its digest); the server refuses a list that changed meanwhile. Then the round starts again.
+  const approveChecks = async (m, b) => {
+    b.disabled = true;
+    const ok = await post(`/reviews/${rid}/checks/approve`, { digest: m.checkPlan.digest, approved: true }, 'Проверки одобрены на этом компьютере');
+    if (!ok) { b.disabled = false; await reload(); return; }
+    await rerun(m, b);
+  };
   function answerDialog(f, answer) {
     const rejected = answer === 'rejected';
     const ta = h('textarea.textarea', { rows: 4, maxLength: 1000, placeholder: rejected ? 'Почему это не ошибка' : 'Почему так и задумано', 'aria-label': 'Причина', 'data-autofocus': true });
@@ -98,7 +105,7 @@ export default async function view(ctx) {
     const name = h('input.input', { type: 'text', maxLength: 200, value: f.title, 'aria-label': 'Название примера' });
     const save = async (b) => {
       b.disabled = true;
-      const r = await post('/review-eval/cases', { title: name.value.trim() || f.title, diffFrom: 'review', reviewId: rid, findingId: f.id }, 'Пример сохранён в eval/review');
+      const r = await post('/review-eval/cases', { title: name.value.trim() || f.title, diffFrom: 'review', reviewId: rid, findingId: f.id }, 'Пример сохранён в папке хаба (review-eval)');
       b.disabled = false;
       if (r) document.getElementById('dlg').close();
     };
@@ -146,6 +153,7 @@ export default async function view(ctx) {
   function headline(m) {
     const st = m.review.state;
     if (IN_PROGRESS.has(st)) return h('div.rv-big', { role: 'status' }, 'Идёт ревью…');
+    if (m.reasons.some((x) => NOT_APPROVED_RE.test(x))) return h('div.stack.rv-gap', h('div.rv-big', 'Проверки ждут вашего одобрения'), h('p.muted', 'Пока вы не посмотрите и не одобрите команды проверок, ни тесты, ни ИИ-ревью не запускаются.'));
     if (redCheck(m)) return h('div.stack.rv-gap', h('div.rv-big', 'ИИ-ревью не запускалось'), h('p.muted', 'Проверки не прошли: ворота закрыты. Исправьте их и запустите ревью снова, пока ничего не потрачено.'));
     if (st === 'reconsider') return h('div.rv-big', 'Ревью остановлено');
     if (m.reasons.length && !m.findings.length) return h('div.rv-big', 'Ревью не завершилось');
@@ -163,8 +171,9 @@ export default async function view(ctx) {
       h('div.row-flex.rv-meta', branch ? h('span.chip.chip-info', icon('branch', 'sm'), h('span.rv-branch', branch)) : null, chip(stT, stTone), chip(`круг ${r.round} из ${ROUND_CAP}`, 'line'), chip(`глубина: ${pick(EFFORT_RU, r.effort)}`, 'line'), chip(`риск: ${riskT}`, riskTone), r.headSha ? h('span.t-meta.mono', 'коммит ' + short(r.headSha)) : null),
       headline(m),
       r.state === 'reconsider' ? h('div.alert.err', { role: 'alert' }, icon('alert'), h('div.stack', h('b', 'Три круга ревью не сошлись — пересмотрите подход'), h('span', 'Ещё одна заплатка не поможет: вернитесь к задаче и измените план.'))) : null,
-      m.reasons.length && r.state !== 'reconsider' && !redCheck(m) ? h('div.alert.warn', icon('alert'), h('ul.rv-list', m.reasons.map((x) => h('li', reasonRu(x))))) : null,
+      (() => { const rs = m.reasons.filter((x) => !NOT_APPROVED_RE.test(x)); return rs.length && r.state !== 'reconsider' && !redCheck(m) ? h('div.alert.warn', icon('alert'), h('ul.rv-list', rs.map((x) => h('li', reasonRu(x))))) : null; })(),
       stepper(states),
+      m.checkPlan ? safe(() => checkPlanBlock(m), 'Не удалось показать, что запускают проверки') : null,
       m.checks.length ? checksBlock(m, checksBad) : null,
       m.warnings.length ? h('div.rv-note', icon('info', 'sm'), h('div.stack.rv-gap', m.warnings.map((x) => h('span', warnRu(x))))) : null,
       riskBlock(m),
@@ -177,6 +186,25 @@ export default async function view(ctx) {
       const mark = s === 'done' ? icon('check', 'sm') : s === 'fail' ? icon('alert', 'sm') : s === 'skip' ? '–' : String(i + 1);
       return h('li.rv-step.is-' + s, { 'aria-current': s === 'current' ? 'step' : null }, h('span.rv-mark', mark), h('span.rv-step-t', h('span.rv-step-n', name), h('span.rv-step-s', STEP_TEXT[s])));
     }));
+  }
+
+  // What the checks run and the approval of exactly that. Checks are branch code (the agent could have changed it) run with the user's rights.
+  function checkPlanBlock(m) {
+    const p = m.checkPlan;
+    if (!p.checks.length) return null;
+    const body = [
+      h('p', p.note || 'Проверки запускают код ветки с вашими правами, вне песочницы агента.'),
+      h('b.t-label', 'Команды'),
+      h('pre.rv-pre', p.checks.map((c) => c.join(' ')).join('\n')),
+      p.scripts.length ? [h('b.t-label', 'Скрипты package.json, которые они запустят'), h('pre.rv-pre', p.scripts.map(([k, v]) => `${k}: ${v}`).join('\n'))] : null,
+      p.files.length ? [h('b.t-label', 'Файлы, которые запустятся'), h('ul.rv-list', p.files.map(([k, v]) => h('li', h('span.mono.rv-wrap', k), v ? ` — отпечаток ${v.slice(0, 12)}` : ' — нет в коммите')))] : null,
+      h('p.t-meta', 'Одобрение действует на этом компьютере, пока команды, скрипты и эти файлы не меняются. Любая их правка в ветке потребует одобрить снова.'),
+    ];
+    if (p.approved) return h('details.rv-checks', h('summary', 'Что запускают проверки'), h('div.stack.rv-gap', body));
+    const b = IN_PROGRESS.has(m.review.state) ? null : btn('Одобрить проверки', { kind: 'primary', icon: 'check', onclick: () => approveChecks(m, b) });
+    return h('section.stack.rv-gap.rv-approve', { 'aria-label': 'Одобрение проверок' },
+      h('div.alert.warn', { role: 'alert' }, icon('alert'), h('div.stack', h('b', 'Проверки ждут вашего одобрения'), h('span', 'Посмотрите, что будет запущено. Без одобрения ни тесты, ни ИИ-ревью не запускаются.'))),
+      body, b);
   }
 
   function checksBlock(m, bad) {

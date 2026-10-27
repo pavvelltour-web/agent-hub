@@ -10,10 +10,17 @@ const slash = (p: string): string => p.replace(/\\/g, '/').replace(/\/{2,}/g, '/
 const IMAGE = /\.(?:png|jpe?g|gif|svg|webp|ico|bmp|avif)$/;
 const isDoc = (p: string): boolean => /\.mdx?$/.test(p) || p.startsWith('docs/') || IMAGE.test(p);
 
-/** Paths that are always high, docs or not: pipeline files, agent rules, dependency manifests and lockfiles. */
+/**
+ * Paths that are always high, docs or not: pipeline files, agent and review rules, files that change what the gate's checks run or how git
+ * shows a diff, editor/container/tool configs that can start code, dependency manifests and lockfiles.
+ */
 const ALWAYS_HIGH: [RegExp, string][] = [
   [/^\.github\/(?:workflows|actions)\/|^\.circleci\/|(?:^|\/)(?:\.gitlab-ci\.ya?ml|azure-pipelines\.ya?ml|jenkinsfile|\.travis\.yml)$/, 'CI / pipeline file'],
-  [/(?:^|\/)(?:agents|claude)\.md$|(?:^|\/)rules\/|^\.(?:claude|codex)\/|(?:^|\/)\.cursorrules$|^\.cursor\/rules\/|^hub\.json$/, 'agent rules or configuration'],
+  [/(?:^|\/)(?:agents|claude)\.md$|(?:^|\/)rules\/|(?:^|\/)\.(?:claude|codex|agents)\/|(?:^|\/)\.cursorrules$|^\.cursor\/rules\/|(?:^|\/)hub\.json$|(?:^|\/)\.mcp\.json$/, 'agent rules or configuration'],
+  [/(?:^|\/)review\.md$/, 'review rules (REVIEW.md)'],
+  [/(?:^|\/)\.gitattributes$|(?:^|\/)\.npmrc$|(?:^|\/)\.yarnrc[^/]*$|^scripts\/security\.mjs$/, 'file that changes what checks run or how the diff is shown'],
+  [/(?:^|\/)(?:tsconfig[^/]*\.json|jsconfig[^/]*\.json|\.eslintrc[^/]*|eslint\.config\.[^/]+|(?:jest|vitest|vite|playwright|karma|ava|cypress)\.config\.[^/]+|karma\.conf\.[^/]+|\.mocharc[^/]*|\.c8rc[^/]*|\.nycrc[^/]*|\.taprc[^/]*|biome\.jsonc?)$/, 'type-check, lint or test-runner configuration'],
+  [/(?:^|\/)\.vscode\/|(?:^|\/)\.devcontainer\//, 'editor or dev-container configuration (can start code)'],
   [/(?:^|\/)(?:package\.json|cargo\.toml|pyproject\.toml|go\.mod|requirements[^/]*\.txt)$/, 'dependency manifest'],
   [/(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|cargo\.lock|poetry\.lock|uv\.lock|go\.sum|gemfile\.lock|composer\.lock|pipfile\.lock)$/, 'lockfile'],
   [/^\.husky\/|(?:^|\/)\.git\/hooks\//, 'git hook'],
@@ -58,7 +65,8 @@ export function globMatch(glob: string, path: string): boolean {
 const outside = (p: string): boolean => p.length > MAX_PATH || p.includes('\0') || /^[a-z]:/i.test(p) || p.startsWith('/') || p.split('/').includes('..');
 
 /**
- * Risk tier of a change from its paths alone. High: CI/pipeline files, agent rules (`AGENTS.md`, `CLAUDE.md`, `rules/**`), dependency manifests and
+ * Risk tier of a change from its paths alone. High: CI/pipeline files, agent rules (`AGENTS.md`, `CLAUDE.md`, `rules/**`), `REVIEW.md` at any depth,
+ * check / lint / test-runner config (`tsconfig*`, `eslint*`, `.npmrc`, `scripts/security.mjs`, ...), `.gitattributes`, `.vscode/`, `.devcontainer/`, dependency manifests and
  * lockfiles, auth/keys/payments/billing/deletion/installer/hook/migration code, owner-listed `humanPaths`, and any path that is absolute, contains
  * `..`, NUL or is oversized. Low only when every path is docs/copy/images and none is high. Everything else is medium.
  */

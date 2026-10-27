@@ -74,10 +74,17 @@ export function facts(cwd: string, baseSha?: string): Facts {
   return { head, branch, changed: [...byPath.values()], dirty: status.length > 0, diffStat: git(cwd, ['diff', '--stat', baseSha ? `${baseSha}` : 'HEAD']).out.split('\n').slice(-1)[0] ?? '' };
 }
 
-/** Checkpoint uncommitted work on the agent's own branch. Repo hooks are NOT skipped; if the commit is refused the card says so. */
+/** Every path except the hub's own folder: what a checkpoint may stage and what "uncommitted work" means. */
+export const NOT_HUB_DIR = ['--', '.', ':(exclude).hub'];
+
+/**
+ * Checkpoint uncommitted work on the agent's own branch. The hub's own `.hub/` (handoff cards, audit) is never committed, even if the agent
+ * staged it. Repo hooks are NOT skipped; if the commit is refused the card says so.
+ */
 export function checkpoint(cwd: string, message: string): { committed: boolean; sha: string; note?: string } {
-  git(cwd, ['add', '-A']);
-  if (!git(cwd, ['status', '--porcelain']).out) return { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out };
+  git(cwd, ['add', '-A', ...NOT_HUB_DIR]);
+  git(cwd, ['reset', '-q', '--', '.hub']);
+  if (git(cwd, ['diff', '--cached', '--quiet']).ok) return { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out };
   const c = git(cwd, ['-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', 'commit', '-m', message]);
   return c.ok ? { committed: true, sha: git(cwd, ['rev-parse', 'HEAD']).out } : { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out, note: `commit refused: ${c.err.split('\n')[0] ?? ''}` };
 }
