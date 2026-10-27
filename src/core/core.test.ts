@@ -137,6 +137,31 @@ test('rules: every project type gets the shared rules plus its own section, no t
   assert.ok(renderRules('x', 'web-saas').split('\n').length < 90, 'stays short: it is loaded on every turn');
 });
 
+test('rules: token-saving context rules and the Autopilot lessons are in, and the text stays short and free of filler', async () => {
+  const { renderRules } = await import('./compilers.ts');
+  const { REPO_ROOT } = await import('./registry.ts');
+  const keyPhrases = ['removed only by the user', 'verbatim and nothing else', '2 repairs', 'Cause first', 'placeholders', 'pointers, not a retelling'];
+  const exact = [
+    'Ask the graph first: `graphify query "<question>" --budget 800`. Open only the files and line ranges it names. Never list or read the whole repository.',
+    'Read a file in slices (`offset`/`limit`); re-read only what changed.',
+    'Run the tests once after the last edit, and again only after a change or a failure. Stop when the acceptance test passes.',
+    'Keep only non-standard conventions here; never describe the repository layout (the graph does that).',
+  ];
+  for (const type of [undefined, 'web-saas', 'mobile-app', 'automation', 'design-study']) {
+    const t = renderRules('demo', type);
+    for (const s of exact) assert.ok(t.includes(s), `${type}: missing rule: ${s.slice(0, 40)}`);
+    for (const k of keyPhrases) assert.ok(t.includes(k), `${type}: missing key phrase "${k}"`);
+    assert.ok(t.trimEnd().split('\n').length <= 70, `${type}: ${t.trimEnd().split('\n').length} lines, max 70`);
+    assert.doesNotMatch(t, /^#+ .*(overview|layout|structure|repository map|project map)/im, `${type}: no repository overview section`);
+    assert.doesNotMatch(t, /be thorough|think deeply|make sure 100\s*%/i, `${type}: no filler that burns tokens`);
+  }
+  // The hub's own AGENTS.md follows the same rules (it is loaded on every turn of every agent working on this repo).
+  const own = readFileSync(join(REPO_ROOT, 'AGENTS.md'), 'utf8');
+  for (const k of keyPhrases) assert.ok(own.includes(k), `AGENTS.md: missing key phrase "${k}"`);
+  assert.doesNotMatch(own, /^#+ .*(repository map|overview)/im, 'AGENTS.md: the graph is the map, not a section here');
+  assert.doesNotMatch(own, /be thorough|think deeply|make sure 100\s*%/i);
+});
+
 test('init says plainly which skills are missing or not installed, in Russian, with the install command when known', async () => {
   const { planInit } = await import('./init.ts');
   const root = mkdtempSync(join(tmpdir(), 'hub-notes-'));

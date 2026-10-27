@@ -19,6 +19,7 @@ Build a local-first hub (CLI + localhost panel) that unifies skills, rules, plug
 - After changing docs or code, refresh incrementally: `/graphify . --update` (re-extracts changed files only). Commit `graph.json` and `GRAPH_REPORT.md` with the change.
 - Use `graphify path "A" "B"` to trace a dependency and `graphify explain "<node>"` for one concept before opening files.
 - If the graph has no answer, search narrowly (`rg` on the named file), then add the missing link via `--update`.
+- The graph is the repository map. This file holds only non-standard conventions, as pointers, not a retelling: every line is paid by every later session.
 
 ## Hard rules
 
@@ -29,6 +30,8 @@ Build a local-first hub (CLI + localhost panel) that unifies skills, rules, plug
 - No `git push`, no publishing, no paid calls, no installs of new dependencies without the user's explicit OK.
 - Spawn processes with argument arrays, never shell strings. Canonicalize paths; write only inside allowed roots.
 - Server binds `127.0.0.1` only, with session token and Host/Origin checks.
+- The user's words are the contract: a requirement is removed only by the user. Never invent a fact about the user (prices, texts, accounts): use visible placeholders.
+- Irreversible or outward-facing actions (deploy, publish, pay, message, delete data, rewrite history) are a question in every mode.
 
 ## Workflow
 
@@ -37,7 +40,9 @@ Build a local-first hub (CLI + localhost panel) that unifies skills, rules, plug
 3. Run `npm test`, `npm run typecheck` and `npm run security` before claiming done. Tests use `node:test`; `src/**/*.test.ts` sit next to the code.
 4. Regenerate diagrams (`hub diagram --check`) when structure changes.
 5. Report with honest statuses: **observed** (ran/saw it), **inferred**, **proposed**, **approved** (only the user approves).
-6. If you stop before done, write a handoff card in `.hub/handoffs/` (facts: branch, files, failing tests; then goal, done, next steps, open questions).
+6. Repair: a red check or blocking finding goes back to the same executor verbatim and nothing else. Caps: 2 repairs per context, 1 re-review per fix, 2 retries (the second with a changed approach); out of budget means the cut was wrong, report it.
+7. Cause first, then fix: a weakened or deleted assertion is not a repair; no cause found is BLOCKED. A wide change is three green steps (new beside old, migrate, delete old).
+8. If you stop before done, write a handoff card in `.hub/handoffs/` (facts: branch, files, failing tests; then goal, done, next steps, open questions).
 
 ## Models and effort
 
@@ -85,20 +90,6 @@ Build a local-first hub (CLI + localhost panel) that unifies skills, rules, plug
 - Body/captions ≥ 14 px, metadata ≥ 12 px, primary CTA 46 px non-shrinking, touch targets ≥ 44 px.
 - Work surfaces opaque; glass only for navigation chrome.
 - Verify real consumers (active nav, CTA, toast/undo, portals, error text) in the rendered build, not only tokens.
-
-## Repository map
-
-```
-src/core | history | adapters | run | econ | stages | diagram | server | cli | lib   (web/ = the panel)
-registry/     catalog entries (commands + descriptions, no vendored files)
-stages/       lifecycle stage templates
-packs/        knowledge packs
-design/       themes.json → tokens.css / tokens.json, preview.html
-docs/         PLAN, ARCHITECTURE, DATA-MODEL, SCHEMES, TOOLING, MODELS-AND-LIMITS, SECURITY, OPTIMIZATION, adr/
-specs/        Spec Kit specs, plans, tasks per part
-eval/golden/  frozen tasks for A/B measurement
-.hub/         handoffs, audit log, security reports
-```
 
 ## Definition of done
 
