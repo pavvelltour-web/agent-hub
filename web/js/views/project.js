@@ -4,6 +4,7 @@ import { EFFORT_RU, go, linkProject, pageHead, pctText, runRow, sessionRow, shor
 import { chatPanel } from './chat.js';
 import { historyPanel } from './history.js';
 import { reviewLink, reviewLinks } from './review.js';
+import { verifyApprovalDialog } from './cascade.js';
 import { toolsPanel } from './tools.js';
 import { logsPanel } from './logs.js';
 
@@ -77,6 +78,10 @@ async function tasks(id, o) {
   const cls = h('select.select', { 'aria-label': 'Тип задачи', onchange: advise }, TASKS.filter(([v]) => v !== 'summary').map(([v, t]) => h('option', { value: v }, t)));
   const sec = h('input.check', { type: 'checkbox', 'aria-label': 'Касается безопасности', onchange: advise });
   const sparse = h('input.input', { placeholder: 'src, docs (пусто: весь проект)', 'aria-label': 'Только эти папки' });
+  // Verify-and-escalate: the command runs without a shell (words split by spaces, no quotes) and only after the user approves exactly what it starts.
+  const verify = h('input.input', { placeholder: 'npm test', 'aria-label': 'Проверка: команда', maxLength: 300, disabled: true });
+  const casc = h('input.check', { type: 'checkbox', 'aria-label': 'Если не получится — эскалировать', onchange: () => { verify.disabled = !casc.checked; if (casc.checked) verify.focus(); } });
+  const verifyArgv = () => verify.value.trim().split(/\s+/).filter(Boolean);
   const sparseList = () => sparse.value.split(',').map((x) => x.trim()).filter(Boolean);
   const adv = h('div.plate.card.tight.stack');
   let choice = null;
@@ -90,12 +95,23 @@ async function tasks(id, o) {
   const start = async () => {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name.value)) return toast('Название: латиница, цифры, точка и дефис, например export-json', 'err');
     if (!prompt.value.trim()) return toast('Опишите, что нужно сделать', 'err');
-    try { const r = await api.post('/runs', { projectId: id, prompt: prompt.value, agent: choice.agent, model: shortModel(choice.agent, choice.model), effort: choice.effort, mode: 'task', task: name.value, cls: cls.value, ...(sparseList().length ? { sparse: sparseList() } : {}) }); go(`/p/${id}/chat/${r.run.id}`); } catch { /* toast */ }
+    const body = { projectId: id, prompt: prompt.value, agent: choice.agent, model: shortModel(choice.agent, choice.model), effort: choice.effort, mode: 'task', task: name.value, cls: cls.value, ...(sparseList().length ? { sparse: sparseList() } : {}), ...(casc.checked ? { strategy: 'cascade', ...(verifyArgv().length ? { verify: verifyArgv() } : {}) } : {}) };
+    const send = async () => {
+      try { const r = await api.post('/runs', body, true); go(`/p/${id}/chat/${r.run.id}`); }
+      catch (e) {
+        if (e.body?.needsApproval) return verifyApprovalDialog({ projectId: id, verify: body.verify, raw: e.body.plan, onApproved: send });
+        toast(e.message === 'network' ? 'Нет связи с сервером hub. Он запущен?' : e.message, 'err');
+      }
+    };
+    await send();
   };
   return h('div.grid-2',
     h('section.group', sectionHead('Задачи в своих ветках', h('span.t-meta', 'ваши файлы не затрагиваются, пока вы не примете результат')), runs.length ? h('div.list', runs.map((r) => (links.has(r.id) ? h('div.rv-task', runRow(r, `#/p/${id}/chat/${r.id}`), reviewLink(id, r, links.get(r.id))) : runRow(r, `#/p/${id}/chat/${r.id}`)))) : empty('Задач пока нет', 'Опишите первую справа. Агент поработает в отдельной ветке git, а результат вы посмотрите и примете сами.')),
     h('section.plane.card.stack', h('h3.t-heading', 'Новая задача'), field('Название', name), field('Что сделать', prompt),
       h('div.row-flex', field('Тип', cls), h('label.row-flex', { style: { alignSelf: 'flex-end', minHeight: '44px' } }, sec, h('span.t-label', 'Касается безопасности'))),
-      field('Показать агенту только эти папки (необязательно)', sparse), h('b.t-label', 'Кого и зачем советуем'), adv,
+      field('Показать агенту только эти папки (необязательно)', sparse),
+      h('label.row-flex', { style: { minHeight: '44px' } }, casc, h('span.t-label', 'Если не получится — эскалировать')),
+      field('Проверка: npm test', verify), h('p.t-meta', 'Sonnet пишет, hub запускает проверку; красная дважды: Opus разбирает, Opus правит. Команда без оболочки: слова через пробел; её нужно один раз одобрить. Можно задать в hub.json: "verify": ["npm", "test"].'),
+      h('b.t-label', 'Кого и зачем советуем'), adv,
       o.project.exists ? btn('Запустить', { kind: 'primary', icon: 'branch', onclick: start }) : h('p.t-meta', 'Папка проекта не найдена')));
 }

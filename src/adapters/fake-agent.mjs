@@ -54,6 +54,28 @@ if (scenario.startsWith('fixture:')) {
     if (codex) out({ type: 'turn.completed', usage: { input_tokens: 240000, cached_input_tokens: 210000, output_tokens: 4200 } });
     else out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: { input_tokens: 12000, cache_creation_input_tokens: 3000, cache_read_input_tokens: 190000, output_tokens: 3100 }, total_cost_usd: 0.18 });
   }
+} else if (scenario === 'cascade-script') {
+  // Cascade (src/run/cascade.test.ts): FAKE_CASCADE_SCRIPT is a JSON file, an array with one step per call, in call order:
+  // { write?: { <relative path>: <content> }, text?: string, login?: true, sleepMs?: number }. Each call appends {argv, prompt, cwd} to FAKE_CAPTURE_FILE and writes the files into its cwd.
+  const steps = JSON.parse(readFileSync(process.env.FAKE_CASCADE_SCRIPT, 'utf8'));
+  const argv = process.argv.slice(2);
+  const index = existsSync(process.env.FAKE_CAPTURE_FILE) ? readFileSync(process.env.FAKE_CAPTURE_FILE, 'utf8').split('\n').filter(Boolean).length : 0;
+  appendFileSync(process.env.FAKE_CAPTURE_FILE, JSON.stringify({ argv, prompt, cwd: process.cwd() }) + '\n');
+  const step = steps[index] ?? {};
+  out({ type: 'system', subtype: 'init', session_id: `cascade-${index}`, model: 'claude-sonnet-5-5' });
+  if (step.sleepMs) await sleep(step.sleepMs);
+  if (step.login) out({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login', usage: { input_tokens: 0, output_tokens: 0 } });
+  else {
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    for (const [rel, content] of Object.entries(step.write ?? {})) {
+      const abs = join(process.cwd(), rel);
+      if (!abs.startsWith(process.cwd())) throw new Error('fake-agent: path outside cwd');
+      mkdirSync(dirname(abs), { recursive: true }); writeFileSync(abs, content);
+    }
+    const text = step.text ?? `step ${index} done`;
+    out({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+    out({ type: 'result', subtype: 'success', is_error: false, result: text, usage: { input_tokens: 10, output_tokens: 5 } });
+  }
 } else if (scenario.startsWith('review-')) {
   // Review reviewers: one final assistant text holding the structured result, in the shape of the CLI that was started (claude / codex).
   // The real CLIs' structured-output shapes under --json-schema / --output-schema are UNVERIFIED; these are the documented/assumed ones.

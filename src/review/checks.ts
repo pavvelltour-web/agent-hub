@@ -323,6 +323,7 @@ function readPackage(read: Reader): { state: 'missing' } | { state: 'ok'; pkg: u
 }
 
 const planCache = new Map<string, Omit<CheckPlan, 'approved'>>();
+type PlanKind = 'review' | 'verify';
 
 /** A node argument that names a file (not a package such as `tsx`, not a glob). */
 const fileLike = (v: string | undefined): v is string => !!v && !/[*?]/.test(v) && (/^\.{1,2}[\\/]/.test(v) || (NODE_FILE.test(v) && !v.startsWith('-')));
@@ -385,17 +386,32 @@ function approvals(home: string): Record<string, string[]> {
  * check runs (a changed `test` script needs a new approval), `.npmrc`, and the content of every `node <file>` the checks start.
  */
 export function planChecks(root: string, tree: string, sha: string, home: string): CheckPlan {
-  const configured = readReviewConfig(root).checks;
+  return planFor('review', root, tree, sha, home, readReviewConfig(root).checks);
+}
+
+/** The approval-store key and digest of a plan: the cascade's verify command is approved separately from `review.checks`, even for the same argv. */
+const storeKey = (kind: PlanKind, root: string): string => (kind === 'verify' ? `${rootKey(root)}#verify` : rootKey(root));
+const digestOf = (kind: PlanKind, d: string): string => (kind === 'verify' ? sha256(`verify:${d}`) : d);
+
+function planFor(kind: PlanKind, root: string, tree: string, sha: string, home: string, configured: string[][] | undefined): CheckPlan {
   // A commit never changes: the plan of (project, folder, commit, configured list) is cached for the process; only the approval is re-read.
-  const key = HEX40.test(sha) ? JSON.stringify([rootKey(root), resolve(tree), sha, configured ?? null]) : '';
+  const key = HEX40.test(sha) ? JSON.stringify([kind, rootKey(root), resolve(tree), sha, configured ?? null]) : '';
   const cached = key ? planCache.get(key) : undefined;
-  const core = cached ?? buildPlan(root, tree, sha, configured);
-  if (key && !cached) { if (planCache.size >= 100) planCache.delete(planCache.keys().next().value as string); planCache.set(key, core); }
-  const ok = !core.checks.length || (!core.tooLarge && !core.unreadable && (approvals(home)[rootKey(root)] ?? []).includes(core.digest));
+  const built = cached ?? buildPlan(root, tree, sha, configured, kind === 'review');
+  if (key && !cached) { if (planCache.size >= 100) planCache.delete(planCache.keys().next().value as string); planCache.set(key, built); }
+  const core = { ...built, digest: digestOf(kind, built.digest) };
+  const ok = !core.checks.length || (!core.tooLarge && !core.unreadable && (approvals(home)[storeKey(kind, root)] ?? []).includes(core.digest));
   return { ...core, approved: ok };
 }
 
-function buildPlan(root: string, tree: string, sha: string, configured: string[][] | undefined): Omit<CheckPlan, 'approved'> {
+/**
+ * What the cascade's verify command (`HubConfig.verify`, an argv list from the PROJECT ROOT's hub.json) runs for commit `sha` of `tree`, and whether
+ * the user approved exactly that on this machine. Same digest as `planChecks` (argv, the whole `scripts` object for npm-like commands, `.npmrc`, every
+ * `node <file>`), in its own approval slot, and without the security script (verify runs only what it lists).
+ */
+export const planVerify = (root: string, tree: string, sha: string, home: string, verify: string[]): CheckPlan => planFor('verify', root, tree, sha, home, [verify]);
+
+function buildPlan(root: string, tree: string, sha: string, configured: string[][] | undefined, security = true): Omit<CheckPlan, 'approved'> {
   const read = treeReader(tree, sha);
   const checks: string[][] = configured ? configured.map((c) => [...c]) : [];
   const pj = readPackage(read);
@@ -405,7 +421,7 @@ function buildPlan(root: string, tree: string, sha: string, configured: string[]
     if (typeof all['test'] === 'string') checks.push(['npm', 'test']);
     if (typeof all['typecheck'] === 'string') checks.push(['npm', 'run', 'typecheck']);
   }
-  if (read(SECURITY[1]!) !== null && !checks.some(isSecurityCheck)) checks.push([...SECURITY]);
+  if (security && read(SECURITY[1]!) !== null && !checks.some(isSecurityCheck)) checks.push([...SECURITY]);
   const npmLike = checks.some((c) => NPM_LIKE.test(basename(c[0] ?? '')));
   // scripts the checks reach: npm's pre/post, and `npm run x` inside a script, 3 levels deep
   const runs: string[] = [];
@@ -525,11 +541,18 @@ export const notApprovedReason = (p: Pick<CheckPlan, 'source'>): string => `Пр
  * since it was shown is refused. Keeps the last 20 approved digests per project (switching branches does not ask again for a known list).
  */
 export function approveChecks(root: string, tree: string, sha: string, digest: string, home: string): CheckPlan {
-  const plan = planChecks(root, tree, sha, home);
+  return approvePlan('review', planChecks(root, tree, sha, home), root, digest, home);
+}
+
+/** The user approves exactly the verify plan `planVerify` shows now (same digest rules as `approveChecks`). */
+export const approveVerify = (root: string, tree: string, sha: string, digest: string, home: string, verify: string[]): CheckPlan =>
+  approvePlan('verify', planVerify(root, tree, sha, home, verify), root, digest, home);
+
+function approvePlan(kind: PlanKind, plan: CheckPlan, root: string, digest: string, home: string): CheckPlan {
   if (plan.tooLarge) throw new Error('слишком большой список проверок: его нельзя показать целиком, поэтому нельзя и одобрить');
   if (plan.unreadable) throw new Error(plan.unreadable);
   if (typeof digest !== 'string' || digest !== plan.digest) throw new Error('the checks changed since they were shown: look at them again');
-  const all = approvals(home); const key = rootKey(root);
+  const all = approvals(home); const key = storeKey(kind, root);
   all[key] = [digest, ...(all[key] ?? []).filter((d) => d !== digest)].slice(0, 20);
   mkdirSync(dirname(approvalFile(home)), { recursive: true });
   writeFileSync(approvalFile(home), JSON.stringify(all, null, 1));

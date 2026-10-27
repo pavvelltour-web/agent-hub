@@ -3,6 +3,7 @@ import { agentBadge, agentName, avatar, btn, chip, closeBtn, copy, dialog, empty
 import { renderSafe, renderRun as trRun } from '../transcript.js';
 import { EFFORT, go, outcomeChip, pageHead, projectSelect, TASKS, threadsOf, workModePicker } from './common.js';
 import { reviewCard } from './review.js';
+import { cascadeCard } from './cascade.js';
 
 const PERMS = [['plan', 'Только читать'], ['edit', 'Можно править файлы'], ['full', 'Без подтверждений']];
 
@@ -175,6 +176,18 @@ export async function chatPanel({ projectId, runId, q, global }) {
     const s = stick(); transcript.append(node); if (s) toBottom();
   }
 
+  /** A thread started as a verify-and-escalate cascade shows its steps (who, what verify said) above the review card. */
+  let cascSeq = 0;
+  async function drawCascadeCard() {
+    transcript.querySelector('.casc-card')?.remove();
+    const t = current, mine = ++cascSeq;
+    if (!t) return;
+    let node; try { node = await cascadeCard({ runIds: t.runs.map((r) => r.id), projectId: t.last.projectId }); } catch { return; }
+    if (!node || mine !== cascSeq || current?.id !== t.id) return;
+    transcript.querySelector('.casc-card')?.remove();
+    const s = stick(), rv = transcript.querySelector('.rv-card'); if (rv) rv.before(node); else transcript.append(node); if (s) toBottom();
+  }
+
   async function open(t) {
     stopLive();
     current = t; drawHead(); drawList(); resetPerm();
@@ -189,11 +202,12 @@ export async function chatPanel({ projectId, runId, q, global }) {
       if (liveRun) attach(d.run, events.at(-1)?.seq || 0, c);
     });
     toBottom();
+    drawCascadeCard();
     drawReviewCard();
     history.replaceState(null, '', location.hash.replace(/\/chat(\/\w+)?/, '/chat/' + t.last.id));
   }
   function attach(run, after, c) {
-    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderSafe(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); drawReviewCard(); });
+    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderSafe(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); drawCascadeCard(); drawReviewCard(); });
     live = { runId: run.id, close }; setBusy(true);
   }
   function stopLive() { live?.close(); live = null; setBusy(false); }

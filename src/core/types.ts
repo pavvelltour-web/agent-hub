@@ -47,6 +47,8 @@ export interface HubConfig {
   limits: { handoffThresholdPercent: number; autoHandoff: boolean };
   /** Review gate settings. Optional; unknown keys in hub.json are tolerated. `checks` are argv lists; `humanPaths` are globs that always need a human approval. */
   review?: { effort?: string; checks?: string[][]; humanPaths?: string[] };
+  /** Verify command of the verify-and-escalate cascade (an argv list, e.g. ["npm", "test"]). Read from the PROJECT ROOT, never the branch; it runs only after the same digest-pinned approval as `review.checks` (ADR-017). hub.json can come from a clone: untrusted. */
+  verify?: string[];
 }
 
 export interface LockEntry {

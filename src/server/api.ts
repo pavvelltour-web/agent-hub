@@ -28,10 +28,12 @@ import { resolveSource } from '../history/source.ts';
 import { addLimit, getSession, latestLimit, listProjects, listSessions, projectId, search, usageByModel, type Db } from '../history/store.ts';
 import { parseFrontmatter } from '../lib/frontmatter.ts';
 import { isSecretPath } from '../lib/paths.ts';
-import { checkSparse } from '../run/git.ts';
-import { RunManager, type StartReq } from '../run/runner.ts';
+import { checkSparse, git } from '../run/git.ts';
+import { defaultLadder, readCascadeFor, readVerify, runCascade, validArgv, type CascadeResult, type Rung } from '../run/cascade.ts';
+import { approveVerify } from '../review/checks.ts';
+import { RunManager, type RunRow, type StartReq } from '../run/runner.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
-import { GateError, answer as answerFindingGate, approve as approveReview, approveReviewChecks, canAcceptNow, launchReview, reviewChecks, reviewDiffText, reviewView, reviewsOfRun, startFix } from '../review/gate.ts';
+import { GateError, answer as answerFindingGate, approve as approveReview, approveReviewChecks, canAcceptNow, launchReview, reviewChecks, reviewDiffText, reviewView, reviewsOfRun, startFix, usableAgents } from '../review/gate.ts';
 import { MAX_DIFF_BYTES, SEED_CASES_DIR, caseFromFinding, caseSummary, incidentCasesDir, readBaseline, saveCase } from '../review/eval.ts';
 import { getReview } from '../review/store.ts';
 import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
@@ -53,6 +55,31 @@ function rootOf(c: Ctx, id: number | undefined): string {
   return r;
 }
 class HttpError extends Error { status: number; constructor(status: number, msg: string) { super(msg); this.status = status; } }
+
+/**
+ * Verify-and-escalate start: the verify command comes from the request (the user's own browser) or the PROJECT ROOT's hub.json, and runs only after the
+ * same digest-pinned approval as review checks. Unapproved: 400 with `needsApproval` and the plan, nothing starts. Answers as soon as the first run exists.
+ */
+async function cascadeStart(c: Ctx, body: Body, req: StartReq, resuming: boolean, model: string | undefined, effort: string | undefined, advice: unknown): Promise<Res> {
+  if (resuming) return bad(400, 'a cascade starts a fresh task: it cannot resume a thread or use a work mode');
+  const fromBody = body['verify'] !== undefined && body['verify'] !== null;
+  if (fromBody && !validArgv(body['verify'])) return bad(400, 'verify must be a non-empty list of strings (program and arguments)');
+  const verify = fromBody ? (body['verify'] as string[]) : readVerify(req.projectRoot);
+  if (!verify) return bad(400, 'no verify command: fill in «Проверка» or put "verify": ["npm", "test"] into hub.json of the project folder');
+  const ladder: Rung[] = defaultLadder();
+  const ex = ladder[0] as Rung;   // the first rung is what the user chose (or the advisor picked) for the task; the other two stay the default
+  ladder[0] = { ...ex, agent: req.agent, model: model ?? (req.agent === ex.agent ? ex.model : ''), effort: effort && ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? (effort as Rung['effort']) : ex.effort };
+  const available = c.review?.available ?? usableAgents().available;
+  const missing = [...new Set(ladder.map((r) => r.agent))].filter((a) => !available.includes(a));
+  if (missing.length) return bad(400, `${missing.join(', ')} is not usable now (not installed or not signed in): the cascade would stop at that step`);
+  const out = await new Promise<{ run: RunRow } | { result: CascadeResult } | { error: Error }>((resolve) => {
+    runCascade({ req: { ...req, mode: 'task' }, verify, ladder, runs: c.runs, maxRepairs: 2, onStart: (run) => resolve({ run }) }).then((result) => resolve({ result }), (error: Error) => resolve({ error }));
+  });
+  if ('run' in out) return ok({ run: out.run, advice, cascade: true });
+  if ('error' in out) return bad(400, out.error.message);
+  const r = out.result;
+  return r.needsApproval ? { status: 400, json: { error: r.reason ?? 'the verify command is not approved', needsApproval: true, digest: r.needsApproval.digest, plan: r.needsApproval } } : bad(400, r.reason ?? 'the cascade did not start');
+}
 
 const RUN_ID = /^r[0-9a-z]{2,40}$/, REVIEW_ID = /^rv[0-9a-z]{2,40}$/, FINDING_ID = /^fd[0-9a-z]{2,40}$/, SHA = /^[0-9a-f]{7,40}$/i;
 function reviewId(c: Ctx, raw: string | undefined): string {
@@ -312,7 +339,7 @@ const ROUTES: [string, RegExp, Handler][] = [
   }],
 
   ['GET', /^\/api\/runs$/, (c, { q }) => ok(c.runs.list({ ...(num(q.get('project')) != null ? { projectId: num(q.get('project')) as number } : {}), limit: Math.min(200, num(q.get('limit')) ?? 50) }).map((r) => ({ ...r, live: c.runs.isLive(r.id) })))],
-  ['POST', /^\/api\/runs$/, (c, { body }) => {
+  ['POST', /^\/api\/runs$/, async (c, { body }) => {
     const prompt = str(body['prompt']);
     if (!prompt) return bad(400, 'prompt required');
     // Continue a session from the history: same agent, same project folder, the agent's own memory of that session.
@@ -336,6 +363,8 @@ const ROUTES: [string, RegExp, Handler][] = [
     try {
       let req: StartReq = { agent, prompt, projectRoot: root, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(askedPerm ? { permission: askedPerm } : {}), ...(wm ? {} : { mode: body['mode'] === 'task' ? 'task' : 'chat' }), ...(sparse ? { sparse } : {}), ...(cls ? { cls } : {}), ...(est ? { est } : {}), ...(str(body['task']) ? { task: str(body['task']) as string } : {}), ...(str(body['resumeRunId']) ? { resumeRunId: str(body['resumeRunId']) as string } : {}), ...(sess && sid ? { resumeNativeId: sess.nativeId, resumeOfSession: sid } : {}) };
       if (wm) { const depth = str(body['depth']); req = applyWorkMode(depth && wm.autopilot && ['strict', 'normal', 'deep'].includes(depth) ? { ...wm, autopilot: { ...wm.autopilot, depth: depth as 'strict' | 'normal' | 'deep' } } : wm, req); }
+      if (body['strategy'] === 'cascade') return await cascadeStart(c, body, req, !!(resuming || wm), model, effort, advice);
+      if (body['strategy'] !== undefined && body['strategy'] !== 'single') return bad(400, "strategy must be 'single' or 'cascade'");
       const run = c.runs.start(req);
       return ok({ run, advice });
     } catch (e) { return bad(400, (e as Error).message); }
@@ -345,6 +374,19 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (!run) return bad(404, 'run not found');
     const card = c.runs.handoffCard(run.id);
     return ok({ run: { ...run, live: c.runs.isLive(run.id) }, events: c.runs.events(run.id).slice(-2000), card: card ?? null });
+  }],
+  ['GET', /^\/api\/runs\/(\w+)\/cascade$/, (c, { params }) => (RUN_ID.test(params[0] as string) ? ok({ cascade: readCascadeFor(c.runs.home, params[0] as string) ?? null }) : bad(400, 'bad run id'))],
+  // The cascade's verify command runs code of the task folder with the user's rights: same digest-pinned approval as review checks (ADR-017). Human HTTP path only.
+  ['POST', /^\/api\/verify\/approve$/, (c, { body }) => {
+    if (body['approved'] !== true) return bad(400, 'approve needs approved: true');
+    const root = rootOf(c, num(body['projectId']));
+    const verify = body['verify'] !== undefined && body['verify'] !== null ? body['verify'] : readVerify(root);
+    if (!validArgv(verify)) return bad(400, 'no valid verify command');
+    const head = git(root, ['rev-parse', 'HEAD']).out;
+    if (!/^[0-9a-f]{40}$/.test(head)) return bad(400, 'a cascade needs a git repository with a commit');
+    const digest = str(body['digest']);
+    if (!digest) return bad(400, 'digest required');
+    try { return ok(approveVerify(root, root, head, digest, c.runs.home, verify)); } catch (e) { return bad(409, (e as Error).message); }
   }],
   ['POST', /^\/api\/runs\/(\w+)\/stop$/, (c, { params }) => ok({ stopped: c.runs.stop(params[0] as string) })],
   ['POST', /^\/api\/runs\/(\w+)\/handoff$/, (c, { params, body }) => {
