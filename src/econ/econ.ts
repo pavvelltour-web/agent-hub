@@ -123,14 +123,14 @@ export function settledOutcome(outcome: string | null, reviewState: string | nul
   return reviewState === 'passed' ? 'done' : reviewState === 'reconsider' ? 'failed' : 'review';
 }
 /** info_json of the same latest review: its `checks` hold the gate's clean-copy check results. */
-const REVIEW_INFO_SQL = "(SELECT v.info_json FROM review v JOIN run u ON u.id = v.run_id WHERE u.cwd = r.cwd AND u.branch = r.branch ORDER BY v.rowid DESC LIMIT 1)";
+export const REVIEW_INFO_SQL = "(SELECT v.info_json FROM review v JOIN run u ON u.id = v.run_id WHERE u.cwd = r.cwd AND u.branch = r.branch ORDER BY v.rowid DESC LIMIT 1)";
 /** The gate rejected the work: three rounds did not converge, or one of its checks (run in a clean copy) was red. */
-function gateRejected(rstate: string | null | undefined, info: string | null | undefined): boolean {
+export function gateRejected(rstate: string | null | undefined, info: string | null | undefined): boolean {
   if (rstate === 'reconsider') return true;
   try { const c = (JSON.parse(info ?? 'null') as { checks?: { ok?: unknown }[] } | null)?.checks; return Array.isArray(c) && c.some((x) => x?.ok === false); } catch { return false; }
 }
 /** SQL for `run r`: the state of the latest review of the run's branch (same folder + branch), or NULL. */
-const REVIEW_STATE_SQL = "(SELECT v.state FROM review v JOIN run u ON u.id = v.run_id WHERE u.cwd = r.cwd AND u.branch = r.branch ORDER BY v.rowid DESC LIMIT 1)";
+export const REVIEW_STATE_SQL = "(SELECT v.state FROM review v JOIN run u ON u.id = v.run_id WHERE u.cwd = r.cwd AND u.branch = r.branch ORDER BY v.rowid DESC LIMIT 1)";
 /** Review-gate reviewer runs are plumbing, not the user's work: never part of stats, routing or shared cases. */
 export const NOT_REVIEWER_SQL = "(r.work_mode IS NULL OR r.work_mode != 'gate-reviewer')";
 

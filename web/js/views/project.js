@@ -7,6 +7,7 @@ import { reviewLink, reviewLinks } from './review.js';
 import { verifyApprovalDialog } from './cascade.js';
 import { toolsPanel } from './tools.js';
 import { logsPanel } from './logs.js';
+import { forecastBlock } from './forecast.js';
 
 const TABS = [['', 'Обзор', 'today'], ['chat', 'Чат', 'chat'], ['tasks', 'Задачи', 'task'], ['history', 'История', 'history'], ['tools', 'Инструменты', 'library'], ['logs', 'Журнал', 'logs']];
 
@@ -66,6 +67,7 @@ function overview(id, o) {
     !o.hub && o.project.exists ? h('div.alert.info', icon('info'), h('div.stack', { style: { flex: 1 } }, h('b', 'Claude и Codex пока не связаны с этой папкой'), h('span', 'Сейчас у каждого свои правила и свои скиллы. Кнопка создаст один файл правил и общий набор скиллов. Сначала вы увидите список файлов.'), h('div', btn('Связать Claude и Codex', { kind: 'primary', onclick: () => linkProject(id, () => location.reload()) })))) : null,
     h('section.group', sectionHead('Путь проекта', h('span.t-meta', '8 шагов от идеи до итогов. Нажмите на шаг, чтобы увидеть, что в нём делается.')), stepper), h('div.grid-2', stageCard,
       h('div.stack', h('div.plane.card.tight.stack', h('b.t-label', 'Инструменты проекта'), h('div.row-flex', chip(tk ? `подключено: ${tk.selected.length}` : 'пока не выбраны', tk ? 'ok' : 'warn'), o.tokens ? chip(`≈ ${fmt.tok(o.tokens)} токенов на сообщение`, 'line') : null), h('p.t-meta', 'Скиллы, плагины и MCP: что подключено именно здесь и сколько это стоит.'), btn('Открыть инструменты', { kind: 'glass', onclick: () => go(`/p/${id}/tools`) })))),
+    h('section.group', sectionHead('Прогноз проекта', h('span.t-meta', 'по открытым задачам из tasks.md и вашим прошлым запускам')), forecastBlock(id)),
     h('div.grid-2', h('section.group', sectionHead('Недавние разговоры', h('a.btn.btn-text.btn-sm', { href: `#/p/${id}/history` }, 'Вся история')), o.sessions.length ? h('div.list', o.sessions.map(sessionRow)) : empty('Разговоров пока нет')),
       h('section.group', sectionHead('Запущено из панели'), o.runs.length ? h('div.list', o.runs.map((r) => runRow(r, `#/p/${id}/chat/${r.id}`))) : empty('Пока ничего', 'Начните чат, и он появится здесь.'))));
 }

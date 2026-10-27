@@ -1,0 +1,20 @@
+/* Project forecast (7.3). Tokens only (--hub-*). An opaque work surface, nothing glass. */
+.fc-card { background: var(--hub-surface); border-radius: var(--hub-radius-card); padding: var(--hub-space-5); box-shadow: inset 0 0 0 1px var(--hub-line); min-width: 0; overflow-wrap: anywhere; }
+.fc-gap { gap: var(--hub-space-3); }
+.fc-line { margin: 0; font: var(--hub-type-title); color: var(--hub-ink); }
+.fc-rows { display: flex; flex-direction: column; gap: var(--hub-space-2); }
+.fc-row { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; gap: var(--hub-space-3); align-items: center; padding: var(--hub-space-2) var(--hub-space-3); border-radius: var(--hub-radius-control); background: var(--hub-surface-2); min-height: var(--hub-target-min); }
+.fc-grow { min-width: 0; display: flex; flex-direction: column; gap: 4px; font: var(--hub-type-body); }
+.fc-bar { position: relative; height: 10px; border-radius: var(--hub-radius-pill); background: color-mix(in srgb, var(--hub-ink) 12%, transparent); overflow: hidden; }
+.fc-band { position: absolute; top: 0; bottom: 0; background: var(--hub-accent); box-shadow: inset 0 0 0 1px var(--hub-accent-edge); border-radius: var(--hub-radius-pill); }
+.fc-burn { display: flex; flex-direction: column; gap: 4px; }
+.fc-track { height: 8px; border-radius: var(--hub-radius-pill); background: color-mix(in srgb, var(--hub-ink) 12%, transparent); overflow: hidden; }
+.fc-done { display: block; height: 100%; background: var(--hub-accent); box-shadow: inset 0 0 0 1px var(--hub-accent-edge); }
+.fc-risk { margin: 0; padding-left: var(--hub-space-5); display: flex; flex-direction: column; gap: var(--hub-space-1); font: var(--hub-type-body); }
+.fc-card .chip { white-space: normal; overflow-wrap: anywhere; border-radius: 12px; }
+@media (max-width: 720px) {
+  .fc-card { padding: var(--hub-space-4); }
+  .fc-line { font: var(--hub-type-body); font-weight: 640; }
+  .fc-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .fc-row > .t-label { grid-column: 1 / -1; }
+}

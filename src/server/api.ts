@@ -45,6 +45,7 @@ import { approveStage, stageStatus } from '../stages/engine.ts';
 import { GateError, answer as answerFindingGate, approve as approveReview, approveReviewChecks, canAcceptNow, launchReview, reviewChecks, reviewDiffText, reviewView, reviewsOfRun, startFix, usableAgents } from '../review/gate.ts';
 import { MAX_DIFF_BYTES, SEED_CASES_DIR, caseFromFinding, caseSummary, incidentCasesDir, readBaseline, saveCase } from '../review/eval.ts';
 import { getReview } from '../review/store.ts';
+import { phase7Routes } from './phase7-api.ts';
 import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
 
 export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; seedDir?: string; baselinePath?: string };
@@ -54,8 +55,8 @@ export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, 
   starter?: { fetch?: TextFetcher } }
 /** `text` (with `type`) answers with a plain-text body instead of JSON, e.g. a download; `headers` are added to the safe defaults the server sets. */
 export interface Res { status: number; json?: unknown; text?: string; type?: string; headers?: Record<string, string> }
-type Body = Record<string, unknown>;
-type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
+export type Body = Record<string, unknown>;
+export type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
 
 const pricesJson = (t: PriceTable): Res => ok({ models: [...t.models.values()].map((e) => ({ ...e, overridden: t.overridden.has(e.id) })), rejected: t.rejected, rejectedRows: t.rejectedRows, ...(t.overrideProblem ? { overrideProblem: t.overrideProblem } : {}) });
 const ok = (json: unknown): Res => ({ status: 200, json });
@@ -671,6 +672,7 @@ const ROUTES: [string, RegExp, Handler][] = [
     const text = readFileSync(p, 'utf8');
     return ok({ id, frontmatter: parseFrontmatter(text), text: clip(text, 8000) });
   }],
+  ...phase7Routes,
 ];
 
 export async function handle(c: Ctx, method: string, pathname: string, q: URLSearchParams, body: Body): Promise<Res> {
