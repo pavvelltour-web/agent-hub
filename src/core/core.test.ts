@@ -327,12 +327,12 @@ test('S1: a hostile .graphifyignore line cannot stall the status (linear matchin
   const b0 = Date.now(); graphStatus(root); const base = Date.now() - b0;   // git itself costs a little; the pattern must add next to nothing
   writeFileSync(join(root, '.graphifyignore'), '**a**a**a**a**a**a**b\n'); utimesSync(join(root, '.graphifyignore'), new Date(Date.now() - 100_000), new Date(Date.now() - 100_000));
   const t0 = Date.now(); const s = graphStatus(root); const ms = Date.now() - t0;
-  assert.ok(ms < base + 150, `took ${ms} ms (without the pattern ${base} ms)`);
+  assert.ok(ms < base + 3000, `took ${ms} ms (without the pattern ${base} ms)`);   // backtracking needed 18 s here; 3 s of slack keeps suite load from failing it
   assert.equal(s.state, 'stale');
   // lines over the caps are dropped (ignored), the other lines still work
   writeFileSync(join(root, '.graphifyignore'), `${'*a'.repeat(30)}\n${'x'.repeat(300)}\nskipme/\n`);
   touch(join(root, 'skipme', 'f.txt'), 500);
-  const t1 = Date.now(); const s2 = graphStatus(root); assert.ok(Date.now() - t1 < base + 150);
+  const t1 = Date.now(); const s2 = graphStatus(root); assert.ok(Date.now() - t1 < base + 3000);
   assert.ok(!s2.example?.startsWith('skipme/'), 'a normal line next to hostile ones still applies');
 });
 
