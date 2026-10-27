@@ -100,3 +100,11 @@ test('a line that makes parse or the consumer throw cannot escape the stdout lis
   assert.ok(warns.every((w) => w.kind === 'warn' && !/blew up/.test(w.message)), 'fixed message, no exception text');
   assert.deepEqual(ev.filter((e) => e.kind !== 'warn').map((e) => e.kind), ['tool', 'tool_result', 'done'], 'later lines are still parsed and delivered');
 });
+
+test('claude parse: per-call prompt size (input + cache writes + cache reads) becomes a context event; the run total in `result` does not; hostile numbers are ignored', () => {
+  const ctx = (usage: unknown): unknown[] => claudeAdapter.parse({ type: 'assistant', message: { content: [{ type: 'text', text: 'x' }], usage } }).filter((e) => e.kind === 'context');
+  assert.deepEqual(ctx({ input_tokens: 10, cache_creation_input_tokens: 5, cache_read_input_tokens: 900, output_tokens: 40 }), [{ kind: 'context', tokens: 915 }]);
+  assert.deepEqual(ctx({ input_tokens: 'many', cache_read_input_tokens: -5, cache_creation_input_tokens: Infinity }), []);
+  assert.deepEqual(ctx(undefined), []); assert.deepEqual(ctx([1, 2]), []);
+  assert.ok(!claudeAdapter.parse({ type: 'result', is_error: false, usage: { input_tokens: 1, cache_read_input_tokens: 900000, output_tokens: 1 } }).some((e) => e.kind === 'context'), 'a whole run summed over many calls is not a context size');
+});

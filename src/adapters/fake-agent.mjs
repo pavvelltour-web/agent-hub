@@ -175,6 +175,15 @@ if (scenario.startsWith('fixture:')) {
   else if (mode === 'auto') step('WebFetch', { url: 'https://example.com' }, false, 'This command requires approval');
   else step('WebFetch', { url: 'https://example.com' }, false, 'Permission to use WebFetch has been denied.');
   out({ type: 'result', subtype: 'success', is_error: false, result: 'done', usage: { input_tokens: 1, output_tokens: 1 }, total_cost_usd: 0 });
+} else if (scenario === 'claude-bigctx') {
+  // A context that grows past the hub's limit (src/run/run.test.ts, ADR-018): per-call usage of 120K then 260K tokens. A continuation from a handoff card is small.
+  // FAKE_BIGCTX_END=1: the run ends on its own; FAKE_BIGCTX_ALWAYS=1: the continuation grows too. Otherwise the run would go on for 60 s and the hub must stop it.
+  const fresh = /Handoff card/.test(prompt) && !process.env.FAKE_BIGCTX_ALWAYS;
+  const call = (cached, text) => out({ type: 'assistant', message: { content: [{ type: 'text', text }], usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: cached, output_tokens: 5 } } });
+  out({ type: 'system', subtype: 'init', session_id: fresh ? 'bigctx-2' : 'bigctx-1', model: 'claude-sonnet-5-5' });
+  if (fresh) call(5000, 'fresh start'); else { call(120000, 'working'); call(260000, 'working more'); }
+  if (fresh || process.env.FAKE_BIGCTX_END) out({ type: 'result', subtype: 'success', is_error: false, result: 'ok', usage: { input_tokens: 10, cache_read_input_tokens: 1000, output_tokens: 20 }, total_cost_usd: 0.01 });
+  else await sleep(60000);
 } else if (scenario === 'slow') {
   out({ type: 'system', subtype: 'init', session_id: 'slow-1' });
   await sleep(60000);

@@ -30,11 +30,17 @@ export interface StoredEvent { seq: number; ts: string; kind: string; data: unkn
 const COLS = 'id, agent, model, effort, prompt, cwd, branch, started_at AS startedAt, ended_at AS endedAt, outcome, session_native_id AS sessionNativeId, tokens_in AS tokensIn, tokens_out AS tokensOut, cost_usd AS costUsd, handoff_of AS handoffOf, resume_of AS resumeOf, error, project_id AS projectId, tokens_cached AS tokensCached, cls, est_json AS estJson, rating, project_type AS projectType, permission, work_mode AS workMode, base_sha AS baseSha, verify_passed AS verifyPassed';
 const MAX_CONCURRENT = 4;
 const MAX_KEEP = 400;
+/** ADR-018: above this many prompt tokens in ONE model call a task run is stopped and continued in a fresh session from its handoff card. */
+export const CONTEXT_LIMIT = 250_000;
+/** A task gets at most this many sessions in a row stopped for context size (the original and two fresh ones); then the user continues by hand. */
+const CONTEXT_CHAIN_MAX = 3;
 
 /** `summarize`: false = deterministic handoff summary only; a function replaces the model call (tests). Default: try the cheap model, fall back. */
 export interface RunManagerOpts { exe?: Partial<Record<AgentId, { cmd: string; prefix: string[] }>>; env?: NodeJS.ProcessEnv; summarize?: boolean | ((inp: HandoffInput) => Promise<Summary | undefined>); home?: string;
   /** Tests: where work modes and MCP server definitions come from (defaults: the repo's `modes/` and the hub library). */
-  lean?: { modesDir?: string; catalog?: RegistryEntry[] } }
+  lean?: { modesDir?: string; catalog?: RegistryEntry[] };
+  /** Prompt-token size that counts as a large context (default `CONTEXT_LIMIT`; 0 switches the watch off). */
+  contextLimit?: number }
 
 /** The hub's session token / cookie / approval secrets must never reach an agent process: only the user's browser may approve a review. */
 const HUB_SECRET_ENV = /hub.*(?:token|cookie|session|secret)/i;
@@ -104,11 +110,26 @@ export class RunManager {
         .run(id, projectId(this.db, req.projectRoot), req.agent, req.model || null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode, baseSha ?? null);
     });
 
+    // How many sessions of this chain were already stopped for context size (a fresh session after a context stop is `handoffOf` the stopped one).
+    let ctxDepth = 0;
+    for (let p = req.handoffOf ? this.get(req.handoffOf) : undefined; p?.outcome === 'context' && ctxDepth < CONTEXT_CHAIN_MAX; p = p.handoffOf ? this.get(p.handoffOf) : undefined) ctxDepth++;
+    const ctxLimit = this.opts.contextLimit ?? CONTEXT_LIMIT, ctxCapped = ctxDepth + 1 >= CONTEXT_CHAIN_MAX;
+    let ctxWarned = false, ctxStop = false;
     const events: HubEvent[] = [];
     let seq = 0, limit: Extract<HubEvent, { kind: 'limit' }> | undefined, tokIn = 0, tokOut = 0, cost = 0, cached = 0;
     const emit = (raw: HubEvent): void => {
       const e = sanitizeEvent(raw);
       if (e.kind === 'limit' && e.reached && limit) return;   // Codex reports the same limit as `error` and `turn.failed`: keep one
+      if (ctxStop && e.kind === 'warn' && e.message === 'stopped by user') return;   // the hub stopped it, the user did not
+      if (e.kind === 'context') {
+        // Per-call prompt size: watched, never stored or shown. A run in a hub task folder is stopped and continued from a card; a chat in the user's own folder is only warned.
+        if (ctxLimit > 0 && e.tokens > ctxLimit && !ctxWarned) {
+          ctxWarned = true;
+          if (branch && !req.isolatedCwd) { ctxStop = true; emit({ kind: 'warn', message: ctxCapped ? 'контекст большой, и это уже три сессии подряд: остановил, продолжите вручную по карточке' : 'контекст большой: начну новую сессию по карточке' }); this.stop(id); }
+          else emit({ kind: 'warn', message: `контекст большой (${Math.round(e.tokens / 1000)} тыс.): лучше начать новый чат, так дешевле` });
+        }
+        return;
+      }
       const row: StoredEvent = { seq: ++seq, ts: new Date().toISOString(), kind: e.kind, data: e };
       // Live text deltas are shown but never stored: a secret split across two deltas cannot be redacted per piece, and the
       // final `text` event (redacted whole) is the record. The gap in `seq` is harmless for replay (`seq > after`).
@@ -141,22 +162,32 @@ export class RunManager {
       { env, ...(exe ? { exe } : {}) });
     const entry = { handle, stopped: false };
     this.live.set(id, entry);
+    /** Commit a checkpoint, write the handoff card (reason as given) and record it on the run. false = the card could not be written. */
+    const handover = async (reason: HandoffInput['reason'], resetsAt?: string): Promise<boolean> => {
+      try {
+        const inp: HandoffInput = { runId: id, task: req.task ?? 'chat', prompt: req.prompt, from: { agent: req.agent, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}) }, reason, cwd, events, ...(baseSha ? { baseSha } : {}), ...(resetsAt ? { resetsAt } : {}) };
+        const sum = await this.summarize(inp);
+        const card = sum ? writeCard(join(req.projectRoot, '.hub'), inp, sum, 'claude-haiku-5-5') : writeCard(join(req.projectRoot, '.hub'), inp);
+        emit({ kind: 'warn', message: `handoff_ready:${card.path}` });
+        this.db.prepare('INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES (?,?,?,?,?)').run(id, ++seq, new Date().toISOString(), 'handoff', JSON.stringify({ path: card.path, id: card.id, branch: card.facts.branch, files: card.facts.changed.length, committed: card.facts.committed, resetsAt: resetsAt ?? null }));
+        this.subs.get(id)?.forEach((cb) => cb({ seq, ts: new Date().toISOString(), kind: 'handoff', data: { path: card.path, id: card.id } }));
+        return true;
+      } catch (e) { emit({ kind: 'error', message: `could not write handoff card: ${(e as Error).message}` }); return false; }
+    };
     void handle.done.then(async () => {
       this.live.delete(id);
       lean?.cleanup();
-      const outcome = limit ? 'limit' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
+      const outcome = limit ? 'limit' : ctxStop ? 'context' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
       this.db.prepare('UPDATE run SET outcome = ?, ended_at = ? WHERE id = ?').run(outcome, new Date().toISOString(), id);
       // A reviewer has no work to hand over, and its projectRoot is the task folder: a card there would be committed into the branch.
       if (outcome === 'limit' && limit && reviewer) emit({ kind: 'warn', message: 'reviewer stopped on a usage limit: no handoff card (the review round fails and can be run again)' });
-      else if (outcome === 'limit' && limit) {
-        try {
-          const inp: HandoffInput = { runId: id, task: req.task ?? 'chat', prompt: req.prompt, from: { agent: req.agent, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}) }, reason: 'limit_reached', cwd, events, ...(baseSha ? { baseSha } : {}), ...(limit.resetsAt ? { resetsAt: limit.resetsAt } : {}) };
-          const sum = await this.summarize(inp);
-          const card = sum ? writeCard(join(req.projectRoot, '.hub'), inp, sum, 'claude-haiku-5-5') : writeCard(join(req.projectRoot, '.hub'), inp);
-          emit({ kind: 'warn', message: `handoff_ready:${card.path}` });
-          this.db.prepare('INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES (?,?,?,?,?)').run(id, ++seq, new Date().toISOString(), 'handoff', JSON.stringify({ path: card.path, id: card.id, branch: card.facts.branch, files: card.facts.changed.length, committed: card.facts.committed, resetsAt: limit.resetsAt ?? null }));
-          this.subs.get(id)?.forEach((cb) => cb({ seq, ts: new Date().toISOString(), kind: 'handoff', data: { path: card.path, id: card.id } }));
-        } catch (e) { emit({ kind: 'error', message: `could not write handoff card: ${(e as Error).message}` }); }
+      else if (outcome === 'limit' && limit) await handover('limit_reached', limit.resetsAt);
+      else if (outcome === 'context') {
+        // Same worktree, same agent, model, effort and permission (a review thread stays in plan): only the context is fresh.
+        if (await handover('context') && !ctxCapped) {
+          try { const next = this.handoff(id, { agent: req.agent, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}) }); emit({ kind: 'warn', message: `новая сессия по карточке: ${next.id}` }); }
+          catch (e) { emit({ kind: 'warn', message: `не удалось начать новую сессию: ${(e as Error).message.slice(0, 200)}; продолжите вручную по карточке` }); }
+        }
       }
       note(runHooks('sessionEnd', hooks.sessionEnd, cwd, { ...env, HUB_RUN_ID: id, HUB_AGENT: req.agent, HUB_OUTCOME: outcome }));
       const endRow: StoredEvent = { seq: ++seq, ts: new Date().toISOString(), kind: 'end', data: { outcome } };

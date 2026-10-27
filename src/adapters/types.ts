@@ -12,6 +12,7 @@ export type HubEvent =
   | { kind: 'diff'; path: string; added: number; removed: number; hunks: string }
   | { kind: 'todo'; items: { text: string; state: 'pending' | 'active' | 'done' }[] }
   | { kind: 'usage'; uncachedIn: number; cachedIn: number; out: number; reasoning?: number; costUsd?: number; ms?: number }
+  | { kind: 'context'; tokens: number }                                                 // size of the prompt of ONE model call (what the next call must carry); watched by the runner, never stored or shown
   | { kind: 'unknown'; type: string }
   | { kind: 'limit'; reached: boolean; message: string; resetsAt?: string; usedPercent?: number }
   | { kind: 'warn'; message: string }

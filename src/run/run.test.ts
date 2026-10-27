@@ -357,3 +357,75 @@ test('RunManager lean tool sets: MCP-naming mode starts strict and the temp file
     assert.ok(!calls()[3]!.argv.some((x) => /slash|mcp/.test(x)), 'a review-gate reviewer is never touched');
   } finally { delete process.env['SHADCN_TOKEN']; rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); rmSync(modes, { recursive: true, force: true }); }
 });
+
+// ── fresh context at the right size (ADR-018) ─────────────────────────────────────────────────────────────────────────────────────────────
+const WARN_TEXT = 'контекст большой: начну новую сессию по карточке';
+const ctxRun = (env: Record<string, string>, opts: { contextLimit?: number } = {}): { rm: RunManager; db: ReturnType<typeof openDb> } => {
+  const db = openDb(':memory:');
+  return { db, rm: new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-bigctx', ...env }, summarize: false, home: mkdtempSync(join(tmpdir(), 'hub-home-')), ...opts }) };
+};
+type ChainRow = { id: string; outcome: string | null; cwd: string | null; branch: string | null; prompt: string | null };
+const chain = (db: ReturnType<typeof openDb>, id: string): ChainRow[] => {
+  const out: ChainRow[] = []; let cur: string | undefined = id;
+  while (cur && out.length < 6) { out.push(db.prepare('SELECT id, outcome, cwd, branch, prompt FROM run WHERE id = ?').get(cur) as unknown as ChainRow); cur = (db.prepare('SELECT id FROM run WHERE handoff_of = ?').get(cur) as { id: string } | undefined)?.id; }
+  return out;
+};
+const waitChain = async (rm: RunManager, db: ReturnType<typeof openDb>, id: string): Promise<ChainRow[]> => {
+  for (let i = 0; i < 80; i++) { await waitEnd(rm, id); const c = chain(db, id); if (c.every((r) => r.outcome && !rm.isLive(r.id))) return c; await new Promise((r) => setTimeout(r, 150)); }
+  return chain(db, id);
+};
+const warnsOf = (rm: RunManager, id: string): string[] => rm.events(id).filter((e) => e.kind === 'warn').map((e) => (e.data as { message: string }).message);
+
+test('context past 250K on a task run: the agent is stopped, a handoff card with reason context is written, a fresh session continues in the SAME worktree', async () => {
+  const root = repo(); const { rm, db } = ctxRun({});
+  try {
+    const t0 = Date.now();
+    const a = rm.start({ agent: 'claude', prompt: 'Implement the parser', projectRoot: root, task: 'ctx1', mode: 'task' });
+    writeFileSync(join(a.cwd!, 'parser.ts'), 'export const p = 1;\n');
+    const c = await waitChain(rm, db, a.id);
+    assert.ok(Date.now() - t0 < 30_000, 'the over-long run was killed, not waited for (the fake would sleep 60 s)');
+    assert.equal(c[0]!.outcome, 'context');
+    const warns = warnsOf(rm, a.id);
+    assert.equal(warns.filter((w) => w === WARN_TEXT).length, 1, 'warned once, not on every turn above the limit: ' + warns.join(' | '));
+    assert.ok(!warns.some((w) => /stopped by user/.test(w)), 'the hub, not the user, stopped it: no misleading message');
+    const card = rm.handoffCard(a.id)!;
+    assert.ok(card); assert.match(card.markdown, /reason: context/); assert.match(card.markdown, /files_changed: \["parser\.ts"\]/); assert.match(card.markdown, /checkpoint_committed: true/);
+    assert.equal(c.length, 2, 'one fresh session was started');
+    assert.equal(c[1]!.cwd, a.cwd, 'same worktree'); assert.equal(c[1]!.branch, a.branch);
+    assert.match(c[1]!.prompt ?? '', /Handoff card/); assert.match(c[1]!.prompt ?? '', /context grew large/); assert.ok(!/usage limit ended/.test(c[1]!.prompt ?? ''), 'the card prompt says why: not a usage limit');
+    assert.equal(c[1]!.outcome, 'review', 'the fresh session finished on the task branch');
+    const fresh = rm.events(c[1]!.id).find((e) => e.kind === 'text')!.data as { text: string };
+    assert.match(fresh.text, /fresh start/);
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(`${root}-worktrees`, { recursive: true, force: true }); }
+});
+
+test('context watch: below the limit nothing happens; the limit can be raised or switched off; a chat in the user\'s own folder is warned, never stopped', async () => {
+  const root = repo();
+  try {
+    for (const [name, opts] of [['higher limit', { contextLimit: 300_000 }], ['off', { contextLimit: 0 }]] as const) {
+      const { rm, db } = ctxRun({ FAKE_BIGCTX_END: '1' }, opts);
+      const a = rm.start({ agent: 'claude', prompt: 'task', projectRoot: root, task: 'ctx2' + (name === 'off' ? 'b' : 'a'), mode: 'task' });
+      const c = await waitChain(rm, db, a.id);
+      assert.equal(c.length, 1, name); assert.equal(c[0]!.outcome, 'review', name);
+      assert.ok(!warnsOf(rm, a.id).some((m) => /контекст/.test(m)), name);
+    }
+    const { rm, db } = ctxRun({ FAKE_BIGCTX_END: '1' });
+    const chat = rm.start({ agent: 'claude', prompt: 'just chatting', projectRoot: root });
+    const c = await waitChain(rm, db, chat.id);
+    assert.equal(c.length, 1, 'no automatic new session for a chat'); assert.equal(c[0]!.outcome, 'done', 'the chat ran to its end');
+    const w = warnsOf(rm, chat.id);
+    assert.ok(w.some((m) => /контекст большой/.test(m)) && !w.includes(WARN_TEXT), 'warned, with a text that does not promise a new session: ' + w.join(' | '));
+    assert.equal(rm.handoffCard(chat.id), undefined, 'no card for a run in the user\'s own folder that was not stopped');
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(`${root}-worktrees`, { recursive: true, force: true }); }
+});
+
+test('context handover is capped: a task whose fresh sessions keep growing past the limit stops after three sessions instead of looping', async () => {
+  const root = repo(); const { rm, db } = ctxRun({ FAKE_BIGCTX_ALWAYS: '1' });
+  try {
+    const a = rm.start({ agent: 'claude', prompt: 'Huge task', projectRoot: root, task: 'ctx3', mode: 'task' });
+    const c = await waitChain(rm, db, a.id);
+    assert.deepEqual(c.map((r) => r.outcome), ['context', 'context', 'context']);
+    assert.ok(warnsOf(rm, c[2]!.id).some((m) => /три сессии подряд/.test(m)), 'the user is told why it stopped');
+    assert.ok(rm.handoffCard(c[2]!.id), 'the last session still leaves a card for a manual continue');
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(`${root}-worktrees`, { recursive: true, force: true }); }
+});

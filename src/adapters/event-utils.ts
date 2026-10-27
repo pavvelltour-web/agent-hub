@@ -83,6 +83,7 @@ export function sanitizeEvent(raw: HubEvent): HubEvent {
       const reasoning = optCount(e['reasoning']), ms = optCount(e['ms']), cost = e['costUsd'];
       return { kind: 'usage', uncachedIn: count(e['uncachedIn']), cachedIn: count(e['cachedIn']), out: count(e['out']), ...(reasoning !== undefined ? { reasoning } : {}), ...(typeof cost === 'number' && Number.isFinite(cost) ? { costUsd: cost } : {}), ...(ms !== undefined ? { ms } : {}) };
     }
+    case 'context': return { kind: 'context', tokens: Math.floor(count(e['tokens'])) };
     case 'unknown': return { kind: 'unknown', type: text(e['type'], 60, '(none)') };
     case 'limit': {
       const p = e['usedPercent'], r = e['resetsAt'];

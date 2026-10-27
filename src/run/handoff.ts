@@ -5,7 +5,7 @@ import { redact } from '../lib/redact.ts';
 import { checkpoint, facts, git, type Facts } from './git.ts';
 
 export interface HandoffInput {
-  runId: string; task: string; prompt: string; from: { agent: string; model?: string; effort?: string }; reason: 'limit_reached' | 'limit_soon' | 'manual' | 'failed';
+  runId: string; task: string; prompt: string; from: { agent: string; model?: string; effort?: string }; reason: 'limit_reached' | 'limit_soon' | 'manual' | 'failed' | 'context';
   cwd: string; baseSha?: string; events: HubEvent[]; resetsAt?: string; to?: { agent: string; model?: string; effort?: string };
 }
 export interface Card { id: string; path: string; markdown: string; facts: Facts & { committed: boolean; checkpointNote?: string }; summaryBy: 'deterministic' | string }
@@ -55,6 +55,8 @@ export function writeCard(hubDir: string, inp: HandoffInput, summary = determini
 
 /** The prompt the next agent receives: the card + the rules of continuing. No transcript. */
 export const handoffPrompt = (card: Card, originalPrompt: string): string =>
-  `You are continuing work another coding agent started and had to stop (its usage limit ended). Do not start over and do not ask the user to re-explain.\n\n` +
+  (/^reason: context$/m.test(card.markdown)
+    ? `You are continuing work a previous session of this task started. Its context grew large, so you are a fresh session: the card below is all you carry over. Do not start over and do not ask the user to re-explain.\n\n`
+    : `You are continuing work another coding agent started and had to stop (its usage limit ended). Do not start over and do not ask the user to re-explain.\n\n`) +
   `Original task:\n${originalPrompt}\n\nHandoff card (facts were collected by code from git and logs):\n\n${card.markdown}\n\n` +
   `Rules: work on branch ${card.facts.branch} in the current folder; check \`git status\` and the failing step first; run the tests before you say "done"; do not push.`;

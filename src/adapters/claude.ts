@@ -33,7 +33,7 @@ export const claudeAdapter: AgentAdapter = {
   },
 };
 
-type ClaudeLine = { type?: string; subtype?: string; session_id?: string; model?: string; message?: { content?: Block[] }; event?: { type?: string; delta?: { type?: string; text?: string } }; is_error?: boolean; result?: string; duration_ms?: number; usage?: Record<string, number>; total_cost_usd?: number; rate_limit_info?: { status?: string; utilization?: number; resetsAt?: number } };
+type ClaudeLine = { type?: string; subtype?: string; session_id?: string; model?: string; message?: { content?: Block[]; usage?: Record<string, number> }; event?: { type?: string; delta?: { type?: string; text?: string } }; is_error?: boolean; result?: string; duration_ms?: number; usage?: Record<string, number>; total_cost_usd?: number; rate_limit_info?: { status?: string; utilization?: number; resetsAt?: number } };
 
 function parseLine(line: unknown): HubEvent[] {
   if (!line || typeof line !== 'object' || Array.isArray(line)) return [];
@@ -56,6 +56,15 @@ function parseLine(line: unknown): HubEvent[] {
           if (b.name === 'TodoWrite' && Array.isArray(b.input?.['todos'])) {
             out.push({ kind: 'todo', items: (b.input['todos'] as { content?: unknown; status?: unknown }[]).filter((t) => t && typeof t === 'object').map((t) => ({ text: safe(String(t.content ?? '')), state: t.status === 'completed' ? 'done' : t.status === 'in_progress' ? 'active' : 'pending' })) });
           }
+        }
+      }
+      {
+        // Per-call prompt size = input + cache writes + cache reads. Shape as the API reports it; not yet seen on a signed-in CLI here (unverified), so every field is checked.
+        const u = l.message?.usage;
+        if (u && typeof u === 'object') {
+          const n = (k: string): number => (typeof u[k] === 'number' && Number.isFinite(u[k]) && u[k] > 0 ? u[k] : 0);
+          const tokens = n('input_tokens') + n('cache_creation_input_tokens') + n('cache_read_input_tokens');
+          if (tokens > 0) out.push({ kind: 'context', tokens });
         }
       }
       break;
