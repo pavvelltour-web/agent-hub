@@ -37,7 +37,7 @@ test('contextBreakdown: turnsLeft comes from the mean growth per step and is nul
 
 test('thresholds: amber from 200K, red from 250K (the runner stops at the same number); the cache goes cold after the 5-minute TTL', () => {
   assert.equal(HANDOFF_AT, CONTEXT_LIMIT, 'one number for the gauge and the runner (ADR-018)'); assert.equal(AMBER_AT, 200_000);
-  assert.deepEqual([199_999, 200_000, 249_999, 250_000, 900_000].map(contextLevel), ['ok', 'amber', 'amber', 'red', 'red']);
+  assert.deepEqual([199_999, 200_000, 249_999, 250_000, 900_000].map((u) => contextLevel(u)), ['ok', 'amber', 'amber', 'red', 'red']);
   assert.equal(contextLevel(0), 'ok'); assert.equal(contextLevel(Number.NaN), 'ok');
   assert.equal(CACHE_TTL_SEC, 300);
   assert.deepEqual(cacheState(0), { state: 'warm' }); assert.deepEqual(cacheState(120), { state: 'warm' });
@@ -112,7 +112,7 @@ test('readContext: no step rows (Codex, an old run) means nothing measured; an u
 // ── the panel's data layer (plain JS, tested here with the rest of the gauge) ───────────────────────────────────────────────────────────────
 const web = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'js');
 const M = await import(pathToFileURL(join(web, 'context-model.js')).href) as { contextModel: (r: unknown) => any; gaugeText: (m: any) => string[]; segments: (m: any) => any[]; cacheLine: (m: any, elapsedSec: number) => { text: string; tone: string } | null; tokText: (n: unknown) => string };
-const answer = { runId: 'rab12', agent: 'claude', live: false, model: 'claude-sonnet-5-5', turns: 5, used: 64_000, firstCall: 20_000, window: 1_000_000, level: 'ok', handoffAt: 250_000, amberAt: 200_000, rulesTokens: 2_000, skillsTokens: 18_000, estimated: true, cache: { ageSec: 100, ttlSec: 300 },
+const answer = { runId: 'rab12', agent: 'claude', live: false, model: 'claude-sonnet-5-5', turns: 5, used: 64_000, firstCall: 20_000, window: 1_000_000, level: 'ok', handoff: 'restart', limit: 250_000, handoffAt: 250_000, amberAt: 200_000, rulesTokens: 2_000, skillsTokens: 18_000, estimated: true, cache: { ageSec: 100, ttlSec: 300 },
   breakdown: { system: 0, rules: 2_000, skills: 18_000, conversation: 44_000, used: 64_000, window: 1_000_000, turnsLeft: 16, handoffAt: 250_000 } };
 
 test('gauge text: «Контекст 64 тыс из 1 млн · правила · скиллы · разговор · до передачи»; an unknown window says so and has no bar', () => {

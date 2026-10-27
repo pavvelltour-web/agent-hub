@@ -13,6 +13,16 @@ const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js
 const MAX_BODY = 1_000_000;
 const CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
+/**
+ * Headers a route may add to its answer: a download name and nothing else. The security headers the server sets (`nosniff`, CSP, no-store, referrer policy) come
+ * AFTER nothing a route says, and a route cannot set cookies, redirects or a content type through `headers`. A value with a line break is dropped.
+ */
+export function routeHeaders(h: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(h ?? {})) if (k.toLowerCase() === 'content-disposition' && typeof v === 'string' && /^attachment; filename="[\w.-]{1,80}"$/.test(v)) out['content-disposition'] = v;
+  return out;
+}
+
 export interface Started { server: Server; port: number; token: string; url: string; close: () => Promise<void>; warnings: string[] }
 
 const eqToken = (a: string, b: string): boolean => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
@@ -67,7 +77,7 @@ export async function startServer(ctx: Ctx, o: { port?: number; token?: string; 
         const origin = req.headers.origin;
         const meta = { userAction: method !== 'GET' && !!origin && hostOk(origin.replace(/^https?:\/\//, '')) && req.headers['x-hub-user-action'] === 'click' };
         const r = await handle(ctx, method, url.pathname, url.searchParams, body, meta);
-        if (r.text !== undefined) return send(res, r.status, r.text, r.type ?? 'text/plain; charset=utf-8', r.headers ?? {});
+        if (r.text !== undefined) return send(res, r.status, r.text, r.type ?? 'text/plain; charset=utf-8', routeHeaders(r.headers));
         return send(res, r.status, JSON.stringify(r.json ?? {}));
       }
       if (method !== 'GET' && method !== 'HEAD') return send(res, 405, JSON.stringify({ error: 'method not allowed' }));

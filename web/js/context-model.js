@@ -2,6 +2,7 @@
 // The answer of `GET /api/runs/:id/context` is read by type (never `String(x)`); the numbers are the per-call prompt sizes of ADR-018, the window is
 // null unless the price table names one (then the gauge shows «окно неизвестно» and no bar), and rules/skills are estimates and are written as such.
 const LEVELS = new Set(['ok', 'amber', 'red']);
+const HANDOFFS = new Set(['restart', 'warn', 'off']);
 const AGENTS = new Set(['claude', 'codex']);
 const RUN_ID = /^r[0-9a-z]{2,40}$/;
 const WARM_SEC = 120;
@@ -28,6 +29,7 @@ export function contextModel(raw) {
   return {
     runId: typeof r.runId === 'string' && RUN_ID.test(r.runId) ? r.runId : '', agent: AGENTS.has(r.agent) ? r.agent : '', model: plain(r.model, 100), live: r.live === true,
     turns: Math.floor(num(r.turns)), used: orNull(r.used), window: num(r.window) > 0 ? num(r.window) : null, level: LEVELS.has(r.level) ? r.level : 'ok',
+    handoff: HANDOFFS.has(r.handoff) ? r.handoff : 'off', limit: num(r.limit) || num(r.handoffAt),   // what the runner REALLY does at the limit (restart / only warn / nothing); an unknown word promises nothing
     handoffAt: num(r.handoffAt) || 250000, amberAt: num(r.amberAt) || 200000, rulesTokens: num(r.rulesTokens), skillsTokens: num(r.skillsTokens),
     cache: age !== null && ttl > 0 ? { ageSec: age, ttlSec: ttl } : null,
     breakdown: r.breakdown && typeof r.breakdown === 'object' ? { system: num(b.system), rules: num(b.rules), skills: num(b.skills), conversation: num(b.conversation), turnsLeft: orNull(b.turnsLeft) } : null,
@@ -47,10 +49,26 @@ export function gaugeText(m) {
     if (b.rules > 0) out.push(`правила ≈ ${tokText(b.rules)}`);
     if (b.skills > 0) out.push(`скиллы ≈ ${tokText(b.skills)}`);
     if (b.conversation > 0) out.push(`разговор ${tokText(b.conversation)}`);
-    if (b.turnsLeft === 0) out.push(m.level === 'red' ? 'до передачи: пора' : 'до передачи меньше шага');
-    else if (b.turnsLeft !== null) out.push(`до передачи ≈ ${steps(b.turnsLeft)}`);
+    if (b.turnsLeft !== null && m.handoff !== 'off') {
+      const red = m.level === 'red';
+      if (m.handoff === 'restart') out.push(b.turnsLeft === 0 ? (red ? 'до передачи: пора' : 'до передачи меньше шага') : `до передачи ≈ ${steps(b.turnsLeft)}`);
+      else out.push(b.turnsLeft === 0 ? (red ? `порог ${tokText(m.limit)} пройден` : `до ${tokText(m.limit)} меньше шага`) : `до ${tokText(m.limit)} ≈ ${steps(b.turnsLeft)}`);   // warn: the hub only warns, so it does not call it a handover
+    }
   }
   return out;
+}
+
+/** The chip that goes with the level. Its words match what the runner does at the limit: it never promises a restart that will not happen. */
+export function levelChip(m) {
+  if (m.used === null || m.level === 'ok') return null;
+  if (m.level === 'amber') return ['Контекст становится большим', 'warn'];
+  return m.handoff === 'restart' ? ['Пора начать новую сессию', 'err'] : m.handoff === 'warn' ? ['Контекст большой — начните новую сессию сами', 'err'] : ['Контекст очень большой', 'err'];
+}
+
+/** The mark at the limit on the bar: only with a known window and a limit in force. */
+export function tick(m) {
+  if (!m.window || !m.limit || m.handoff === 'off' || m.limit > m.window) return null;
+  return { left: (m.limit / m.window) * 100, title: m.handoff === 'restart' ? 'Здесь hub начнёт новую сессию из короткой записи' : 'Здесь hub только предупредит: новую сессию нужно начать самому' };
 }
 
 /** Bar segments as a percentage of the WINDOW. No window, no bar: an empty list. */

@@ -85,7 +85,7 @@ const { writeFileSync: wf, rmSync: rm } = await import('node:fs');
 const hubHome = process.env['AGENT_HUB_HOME'] as string;
 
 test('GET /api/runs/:id/context: latest per-call size, the first call as baseline, parts that add up, no window unless the price table names one', async () => {
-  wf(join(root, 'AGENTS.md'), 'rule line\n'.repeat(400));   // 4000 bytes: about 1000 tokens, read by SIZE only
+  wf(join(root, 'CLAUDE.md'), 'rule line\n'.repeat(400));   // CLAUDE.md is the file Claude loads (review fix N5); 4000 bytes: about 1000 tokens, read by SIZE only
   const r = await api(`/api/runs/${run.id}/context`);
   assert.equal(r.status, 200);
   assert.deepEqual([r.json.used, r.json.firstCall, r.json.turns, r.json.window, r.json.level, r.json.handoffAt, r.json.amberAt], [1110, 915, 3, null, 'ok', 250_000, 200_000], 'the bundled price table names no window: it stays unknown');

@@ -38,9 +38,10 @@ import { isSecretPath } from '../lib/paths.ts';
 import { checkSparse, git } from '../run/git.ts';
 import { defaultLadder, readCascadeFor, readVerify, runCascade, validArgv, type CascadeResult, type Rung } from '../run/cascade.ts';
 import { approveVerify } from '../review/checks.ts';
-import { RunManager, type RunRow, type StartReq } from '../run/runner.ts';
-import { buildTrace, pageTurns, readTraceEvents, traceJsonl } from '../run/trace.ts';
-import { AMBER_AT, CACHE_TTL_SEC, HANDOFF_AT, contextBreakdown, contextLevel, modelWindow, readContext, rulesTokens } from '../econ/context.ts';
+import { REVIEWER_MODE, RunManager, type RunRow, type StartReq } from '../run/runner.ts';
+import { cachedTrace, pageTurns, traceJsonl, type Trace } from '../run/trace.ts';
+import { AMBER_AT, CACHE_TTL_SEC, CONTEXT_CHAIN_MAX, contextBreakdown, contextChainDepth, contextLevel, handoffMode, modelWindow, readContext, rulesTokens } from '../econ/context.ts';
+import { sharedSkillsEstimator, type SkillsEstimator } from '../econ/skills-estimate.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 import { GateError, answer as answerFindingGate, approve as approveReview, approveReviewChecks, canAcceptNow, launchReview, reviewChecks, reviewDiffText, reviewView, reviewsOfRun, startFix, usableAgents } from '../review/gate.ts';
 import { MAX_DIFF_BYTES, SEED_CASES_DIR, caseFromFinding, caseSummary, incidentCasesDir, readBaseline, saveCase } from '../review/eval.ts';
@@ -51,6 +52,8 @@ import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } f
 export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; seedDir?: string; baselinePath?: string };
   /** Tests: which graphify to use (`tool: null` = none). Without it the hub looks for graphify on this PC. */
   graph?: { tool?: GraphTool | null };
+  /** Tests: where the skills-list estimate for the context gauge comes from (default: a worker thread, see `econ/skills-estimate.ts`). */
+  skills?: SkillsEstimator;
   /** Tests: a fake GitHub for the starter kit. Without it the hub fetches only from the repositories named in registry/starter.json. */
   starter?: { fetch?: TextFetcher } }
 /** `text` (with `type`) answers with a plain-text body instead of JSON, e.g. a download; `headers` are added to the safe defaults the server sets. */
@@ -102,23 +105,11 @@ async function cascadeStart(c: Ctx, body: Body, req: StartReq, resuming: boolean
   return r.needsApproval ? { status: 400, json: { error: r.reason ?? 'the verify command is not approved', needsApproval: true, digest: r.needsApproval.digest, plan: r.needsApproval } } : bad(400, r.reason ?? 'the cascade did not start');
 }
 
-function traceOf(c: Ctx, id: string): { run: RunRow; trace: ReturnType<typeof buildTrace>; truncated: boolean } {
+function traceOf(c: Ctx, id: string): { run: RunRow; trace: Trace; truncated: boolean } {
   if (!RUN_ID.test(id)) throw new HttpError(400, 'bad run id');
   const run = c.runs.get(id);
   if (!run) throw new HttpError(404, 'run not found');
-  const { events, truncated } = readTraceEvents(c.db, id);
-  return { run, trace: buildTrace(events, { model: run.model ?? '', ...(run.effort ? { effort: run.effort } : {}) }), truncated };
-}
-/** Skills-list size per project and agent: scanning the skill folders is not free, and the gauge asks every few seconds. An estimate, so a minute old is fine. */
-const skillsCache = new Map<string, { at: number; tokens: number }>();
-function skillsTokens(root: string, agent: AgentId): number {
-  const key = `${root}|${agent}`, hit = skillsCache.get(key);
-  if (hit && Date.now() - hit.at < 60_000) return hit.tokens;
-  let tokens = 0;
-  try { tokens = auditLoading(root).totals[agent]?.now ?? 0; } catch { /* a project folder that cannot be read has no estimate */ }
-  if (skillsCache.size >= 50) skillsCache.clear();
-  skillsCache.set(key, { at: Date.now(), tokens });
-  return tokens;
+  return { run, ...cachedTrace(c.db, id, { model: run.model ?? '', ...(run.effort ? { effort: run.effort } : {}) }) };
 }
 const RUN_ID = /^r[0-9a-z]{2,40}$/, REVIEW_ID = /^rv[0-9a-z]{2,40}$/, FINDING_ID = /^fd[0-9a-z]{2,40}$/, SHA = /^[0-9a-f]{7,40}$/i;
 function reviewId(c: Ctx, raw: string | undefined): string {
@@ -529,12 +520,17 @@ const ROUTES: [string, RegExp, Handler][] = [
     const run = c.runs.get(id), t = readContext(c.db, id);
     if (!run || !t) return bad(404, 'run not found');
     const window = modelWindow(run.model);
-    const base = { runId: run.id, agent: run.agent, live: c.runs.isLive(run.id), model: run.model ? clip(run.model, 100) : null, turns: t.turns, window, handoffAt: HANDOFF_AT, amberAt: AMBER_AT, used: t.used, firstCall: t.firstCall, estimated: true };
-    if (t.used === null || t.firstCall === null) return ok({ ...base, level: null, breakdown: null, rulesTokens: 0, skillsTokens: 0, cache: null });
+    // What the runner will do at the limit, from the runner's own predicate and the limit it was built with (a cascade step is told `autoContinue: false`: it shows in the cascade state).
+    const limit = c.runs.contextLimit, capped = contextChainDepth((rid) => c.runs.get(rid), run.handoffOf) + 1 >= CONTEXT_CHAIN_MAX;
+    const handoff = handoffMode({ limit, branch: run.branch, isolated: run.workMode === REVIEWER_MODE, capped, autoContinue: readCascadeFor(c.runs.home, run.id) ? false : undefined });
+    const base = { runId: run.id, agent: run.agent, live: c.runs.isLive(run.id), model: run.model ? clip(run.model, 100) : null, turns: t.turns, window, handoff, limit, handoffAt: limit, amberAt: AMBER_AT, used: t.used, firstCall: t.firstCall, estimated: true };
+    if (t.used === null || t.firstCall === null) return ok({ ...base, level: null, breakdown: null, rulesTokens: 0, skillsTokens: 0, skillsKnown: false, cache: null });
     const projectRoot = (c.db.prepare('SELECT root FROM project WHERE id = ?').get(run.projectId) as { root: string } | undefined)?.root;
-    const rules = rulesTokens(run.cwd && existsSync(run.cwd) ? run.cwd : projectRoot ?? ''), skills = projectRoot ? skillsTokens(projectRoot, run.agent as AgentId) : 0;
+    const agent = run.agent === 'codex' ? 'codex' : 'claude';
+    const rules = rulesTokens(run.cwd && existsSync(run.cwd) ? run.cwd : projectRoot ?? '', agent);
+    const known = projectRoot ? (c.skills ?? sharedSkillsEstimator()).peek(projectRoot, agent) : null, skills = known ?? 0;   // null = not computed yet: never waited for, never guessed
     const age = t.lastTs ? Math.max(0, Math.round((Date.now() - Date.parse(t.lastTs)) / 1000)) : null;
-    return ok({ ...base, level: contextLevel(t.used), breakdown: contextBreakdown({ firstCall: t.firstCall, rulesTokens: rules, skillsTokens: skills, lastContext: t.used, window, turns: t.turns }), rulesTokens: rules, skillsTokens: skills,
+    return ok({ ...base, level: contextLevel(t.used, limit), breakdown: contextBreakdown({ firstCall: t.firstCall, rulesTokens: rules, skillsTokens: skills, lastContext: t.used, window, turns: t.turns, limit }), rulesTokens: rules, skillsTokens: skills, skillsKnown: known !== null,
       cache: run.agent === 'claude' && age !== null && Number.isFinite(age) ? { ageSec: age, ttlSec: CACHE_TTL_SEC } : null });
   }],
   ['GET', /^\/api\/runs\/(\w+)\/cascade$/, (c, { params }) => (RUN_ID.test(params[0] as string) ? ok({ cascade: readCascadeFor(c.runs.home, params[0] as string) ?? null }) : bad(400, 'bad run id'))],

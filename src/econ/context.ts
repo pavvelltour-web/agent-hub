@@ -16,7 +16,7 @@ export const AMBER_AT = 200_000;
 export const CACHE_TTL_SEC = 300;
 export const WARM_SEC = 120;
 
-export interface Breakdown { system: number; rules: number; skills: number; conversation: number; used: number; window: number | null; turnsLeft: number | null; handoffAt: typeof HANDOFF_AT }
+export interface Breakdown { system: number; rules: number; skills: number; conversation: number; used: number; window: number | null; turnsLeft: number | null; handoffAt: number }
 
 const TOKEN_CAP = 1e12;
 const whole = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.min(Math.floor(v), TOKEN_CAP) : 0);
@@ -27,17 +27,42 @@ const whole = (v: unknown): number => (typeof v === 'number' && Number.isFinite(
  * The parts always add up to `used` (an estimate larger than what was measured is cut). `turns` = model calls so far; `turnsLeft` = calls until `HANDOFF_AT` at the
  * mean growth per call, or null when there are fewer than two calls or no growth. `window` null = unknown.
  */
-export function contextBreakdown(o: { firstCall: number; rulesTokens: number; skillsTokens: number; lastContext: number; window: number | null; turns: number }): Breakdown {
+export function contextBreakdown(o: { firstCall: number; rulesTokens: number; skillsTokens: number; lastContext: number; window: number | null; turns: number; /** The limit the runner really uses (default `HANDOFF_AT`); 0 = no limit, then there is no `turnsLeft`. */ limit?: number }): Breakdown {
   const used = whole(o.lastContext), first = whole(o.firstCall), turns = whole(o.turns);
   const fixed = Math.min(first, used);
   const rules = Math.min(whole(o.rulesTokens), fixed), skills = Math.min(whole(o.skillsTokens), fixed - rules);
   const growth = turns >= 2 && used > first ? (used - first) / (turns - 1) : 0;
-  const window = whole(o.window) || null;
-  return { system: fixed - rules - skills, rules, skills, conversation: used - fixed, used, window, turnsLeft: growth > 0 ? Math.max(0, Math.floor((HANDOFF_AT - used) / growth)) : null, handoffAt: HANDOFF_AT };
+  const window = whole(o.window) || null, limit = o.limit === undefined ? HANDOFF_AT : whole(o.limit);
+  return { system: fixed - rules - skills, rules, skills, conversation: used - fixed, used, window, turnsLeft: growth > 0 && limit > 0 ? Math.max(0, Math.floor((limit - used) / growth)) : null, handoffAt: limit };
 }
 
 export type Level = 'ok' | 'amber' | 'red';
-export const contextLevel = (used: number): Level => { const u = whole(used); return u >= HANDOFF_AT ? 'red' : u >= AMBER_AT ? 'amber' : 'ok'; };
+/** Red from the limit (the runner's, default 250K; with no limit the default line still marks a large context), amber from 200K or 80 % of a lower limit. */
+export const contextLevel = (used: number, limit: number = HANDOFF_AT): Level => {
+  const u = whole(used), red = whole(limit) || HANDOFF_AT, amber = Math.min(AMBER_AT, red * 0.8);
+  return u >= red ? 'red' : u >= amber ? 'amber' : 'ok';
+};
+
+/**
+ * What the runner does when one call's prompt passes the limit (ADR-018), as ONE predicate that the runner and the gauge both call so they cannot drift:
+ * `restart` = the hub stops the run and starts a fresh session from a card (a hub task folder, chain not capped, not told `autoContinue: false`);
+ * `warn` = the user is told and must continue by hand (a chat in the user's own folder, a reviewer, a capped chain, a cascade step: the hub may stop the run but starts nothing);
+ * `off` = the watch is switched off (`limit` 0).
+ */
+export type Handoff = 'restart' | 'warn' | 'off';
+export function handoffMode(o: { limit: number; branch: string | null; isolated: boolean; capped: boolean; autoContinue?: boolean | undefined }): Handoff {
+  if (!(o.limit > 0)) return 'off';
+  return hubOwnsFolder(o.branch, o.isolated) && !o.capped && o.autoContinue !== false ? 'restart' : 'warn';
+}
+/** The hub stops a run at the limit only in a hub task worktree (`branch`), never a reviewer (`isolated`): the only place it commits a checkpoint (ADR-014/018). */
+export const hubOwnsFolder = (branch: string | null | undefined, isolated: boolean): boolean => !!branch && !isolated;
+/** Sessions of one task already stopped for context size, counted back along `handoffOf` (a fresh session after a context stop is `handoffOf` the stopped one). */
+export const CONTEXT_CHAIN_MAX = 3;
+export function contextChainDepth(get: (id: string) => { outcome: string | null; handoffOf: string | null } | undefined, handoffOf: string | null | undefined): number {
+  let depth = 0;
+  for (let p = handoffOf ? get(handoffOf) : undefined; p?.outcome === 'context' && depth < CONTEXT_CHAIN_MAX; p = p.handoffOf ? get(p.handoffOf) : undefined) depth++;
+  return depth;
+}
 
 export type Cache = { state: 'warm' } | { state: 'cooling'; secondsLeft: number } | { state: 'cold' };
 /** `ageSec` = seconds since the last model call. */
@@ -87,11 +112,11 @@ export function readContext(db: Db, runId: string): ThreadContext | undefined {
 
 const MAX_RULES_BYTES = 1_000_000;
 /**
- * Estimate (bytes / 4, rounded up) of the rule files the agent loads from a folder: AGENTS.md and CLAUDE.md. Only the SIZE of a regular file is read, never its text
- * (a link or a directory counts as 0). An estimate, shown as one.
+ * Estimate (bytes / 4, rounded up) of the rule file the agent loads from a folder: CLAUDE.md for Claude, AGENTS.md for Codex (each reads only its own). Only the SIZE of a
+ * regular file is read, never its text: a link or a directory counts as 0 (so a symlinked CLAUDE.md, and `@AGENTS.md` imports inside it, are not counted: the panel says «≈»).
  */
-export function rulesTokens(dir: string): number {
+export function rulesTokens(dir: string, agent: 'claude' | 'codex'): number {
   let bytes = 0;
-  for (const name of ['AGENTS.md', 'CLAUDE.md']) { try { const st = lstatSync(join(dir, name)); if (st.isFile()) bytes += Math.min(st.size, MAX_RULES_BYTES); } catch { /* none */ } }
+  for (const name of [agent === 'codex' ? 'AGENTS.md' : 'CLAUDE.md']) { try { const st = lstatSync(join(dir, name)); if (st.isFile()) bytes += Math.min(st.size, MAX_RULES_BYTES); } catch { /* none */ } }
   return Math.ceil(bytes / 4);
 }

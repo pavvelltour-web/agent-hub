@@ -8,6 +8,8 @@ import { buildTrace, MAX_PAGE_TURNS, MAX_TOOLS_PER_TURN, MAX_TRACE_ROWS, pageTur
 import { MAX_TURN_ROWS, RunManager, type StoredEvent } from './runner.ts';
 import { costUsd } from '../econ/econ.ts';
 import { openDb } from '../history/store.ts';
+import { readContext } from '../econ/context.ts';
+const warns = (rm: RunManager, id: string): string[] => rm.events(id).filter((e) => e.kind === 'warn').map((e) => (e.data as { message: string }).message);
 
 const T0 = Date.parse('2026-10-27T10:00:00.000Z');
 const at = (ms: number): string => new Date(T0 + ms).toISOString();
@@ -179,5 +181,12 @@ test('the runner caps stored turn rows per run: a hostile CLI cannot grow the lo
     const n = (db.prepare("SELECT COUNT(*) AS n FROM run_event WHERE run_id = ? AND kind = 'turn'").get(run.id) as { n: number }).n;
     assert.equal(n, MAX_TURN_ROWS);
     assert.ok(rm.events(run.id).some((e) => e.kind === 'warn' && /шагов больше/.test((e.data as { message: string }).message)), 'the user is told once that the trace is cut');
+    // Past the cap the LAST row keeps being updated: the gauge and the cache note must not freeze at call 5000.
+    const lastCall = 1 + 5 + (100 + MAX_TURN_ROWS + 299);
+    assert.equal(readContext(db, run.id)!.used, lastCall, 'the gauge sees the newest call, not call 5000');
+    const last = db.prepare("SELECT ts, data FROM run_event WHERE run_id = ? AND kind = 'turn' ORDER BY seq DESC LIMIT 1").get(run.id) as { ts: string; data: string };
+    assert.equal((JSON.parse(last.data) as { context: number }).context, lastCall);
+    assert.ok(Date.now() - Date.parse(last.ts) < 60_000, 'and its time moved on with it');
+    assert.equal(warns(rm, run.id).filter((m) => /шагов больше/.test(m)).length, 1, 'the warning is not repeated');
   } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });

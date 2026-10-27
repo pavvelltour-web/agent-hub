@@ -16,7 +16,7 @@ import { handoffPrompt, writeCard, type Card, type HandoffInput } from './handof
 import { readRunnerHooks, runHooks } from './hooks-run.ts';
 import { modelSummary, type Summary } from './summarize.ts';
 import { sanitizeEvent } from '../adapters/event-utils.ts';
-import { HANDOFF_AT } from '../econ/context.ts';
+import { CONTEXT_CHAIN_MAX, HANDOFF_AT, contextChainDepth, handoffMode, hubOwnsFolder } from '../econ/context.ts';
 import { costUsd as priceUsd, weighted } from '../econ/econ.ts';
 import { makeGuard, type RunGuard } from './breaker.ts';
 
@@ -38,7 +38,6 @@ const MAX_KEEP = 400;
 /** ADR-018: above this many prompt tokens in ONE model call a task run is stopped and continued in a fresh session from its handoff card. */
 export const CONTEXT_LIMIT = HANDOFF_AT;
 /** A task gets at most this many sessions in a row stopped for context size (the original and two fresh ones); then the user continues by hand. */
-const CONTEXT_CHAIN_MAX = 3;
 /** ADR-024: at most this many `turn` rows (one per model call) are stored per run; a hostile or runaway CLI cannot grow the log with them. */
 export const MAX_TURN_ROWS = 5000;
 
@@ -129,10 +128,10 @@ export class RunManager {
     });
 
     // How many sessions of this chain were already stopped for context size (a fresh session after a context stop is `handoffOf` the stopped one).
-    let ctxDepth = 0;
-    for (let p = req.handoffOf ? this.get(req.handoffOf) : undefined; p?.outcome === 'context' && ctxDepth < CONTEXT_CHAIN_MAX; p = p.handoffOf ? this.get(p.handoffOf) : undefined) ctxDepth++;
-    const ctxLimit = this.opts.contextLimit ?? CONTEXT_LIMIT, ctxCapped = ctxDepth + 1 >= CONTEXT_CHAIN_MAX;
-    const ctxRestart = !ctxCapped && req.autoContinue !== false;
+    const ctxDepth = contextChainDepth((rid) => this.get(rid), req.handoffOf);
+    const ctxLimit = this.contextLimit, ctxCapped = ctxDepth + 1 >= CONTEXT_CHAIN_MAX;
+    // The same predicate the context gauge uses (`GET /api/runs/:id/context`), so what the panel promises is what happens here.
+    const ctxRestart = handoffMode({ limit: ctxLimit, branch, isolated: !!req.isolatedCwd, capped: ctxCapped, autoContinue: req.autoContinue }) === 'restart';
     // A continuation keeps the chain's ORIGINAL task text (not the previous handoff prompt, which would nest one card inside the next).
     const origPrompt = req.handoffOf ? this.rootPrompt(req.handoffOf) ?? req.prompt : req.prompt;
     let ctxWarned = false, ctxStop = false, guardStopped = false, handleRef: RunHandle | undefined;
@@ -167,7 +166,13 @@ export class RunManager {
       }
       liveNew += data.newIn; liveCached += data.cachedIn; liveOut += data.out;
       guardCheck();
-      if (turnRows >= MAX_TURN_ROWS) { if (!turnCapWarned) { turnCapWarned = true; emit({ kind: 'warn', message: `шагов больше ${MAX_TURN_ROWS}: подробный разбор показывает первые ${MAX_TURN_ROWS}` }); } return; }
+      if (turnRows >= MAX_TURN_ROWS && lastTurn) {
+        // Past the cap no new rows are written, but the LAST row keeps following the newest call: the gauge and its cache note must not freeze at call 5000 (the trace shows what came first).
+        if (!turnCapWarned) { turnCapWarned = true; emit({ kind: 'warn', message: `шагов больше ${MAX_TURN_ROWS}: подробный разбор показывает первые ${MAX_TURN_ROWS}, размер контекста обновляется` }); }
+        lastTurn = { mid: e.mid ?? '', seq: lastTurn.seq, data };
+        this.db.prepare('UPDATE run_event SET data = ?, ts = ? WHERE run_id = ? AND seq = ?').run(JSON.stringify(data), new Date().toISOString(), id, lastTurn.seq);
+        return;
+      }
       const n = ++seq;
       this.db.prepare('INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES (?,?,?,?,?)').run(id, n, new Date().toISOString(), 'turn', JSON.stringify(data));
       turnRows++; lastTurn = { mid: e.mid ?? '', seq: n, data };
@@ -181,7 +186,7 @@ export class RunManager {
         if (this.live.get(id)?.stopped) return;   // the user already clicked Stop: stopped wins, whatever was still buffered
         if (ctxLimit > 0 && e.tokens > ctxLimit && !ctxWarned) {
           ctxWarned = true;
-          if (branch && !req.isolatedCwd) {
+          if (hubOwnsFolder(branch, !!req.isolatedCwd)) {
             ctxStop = true;
             emit({ kind: 'warn', message: ctxCapped ? 'контекст большой, и это уже три сессии подряд: остановил, продолжите вручную по карточке' : ctxRestart ? 'контекст большой: начну новую сессию по карточке' : 'контекст большой: остановил, карточка записана; продолжите вручную' });
             handleRef?.stop();   // the hub's own stop: not the user's (`stopped` stays false)
@@ -195,7 +200,7 @@ export class RunManager {
       // Live text deltas are shown but never stored: a secret split across two deltas cannot be redacted per piece, and the
       // final `text` event (redacted whole) is the record. The gap in `seq` is harmless for replay (`seq > after`).
       if (e.kind === 'partial') { this.subs.get(id)?.forEach((cb) => cb(row)); return; }
-      this.db.prepare('INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES (?,?,?,?,?)').run(id, row.seq, row.ts, e.kind, JSON.stringify(e));
+      this.db.prepare('INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES (?,?,?,?,?)').run(id, row.seq, row.ts, e.kind, JSON.stringify(e.kind === 'tool_result' ? { ...e, bytes: Buffer.byteLength(e.body) } : e));   // the size of a result is stored with it: a trace does not have to measure a 64 KB body
       const kept = e.kind === 'tool_result' ? { ...e, body: '' } : e.kind === 'tool' ? { ...e, input: {} } : e;   // handoff/summaries read summaries only: keep RAM small
       if (events.length < MAX_KEEP) events.push(kept); else { events.shift(); events.push(kept); }
       if (e.kind === 'session') { this.db.prepare('UPDATE run SET session_native_id = ?, model = COALESCE(model, ?) WHERE id = ?').run(e.nativeId, e.model ?? null, id); }
@@ -273,6 +278,9 @@ export class RunManager {
     });
     return this.get(id) as RunRow;
   }
+
+  /** The prompt size (tokens of one call) past which a run is stopped or warned; 0 = off. The gauge reports this, not the default. */
+  get contextLimit(): number { return this.opts.contextLimit ?? CONTEXT_LIMIT; }
 
   private async summarize(inp: HandoffInput): Promise<Summary | undefined> {
     const s = this.opts.summarize;

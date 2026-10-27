@@ -109,9 +109,12 @@ export function buildTrace(events: StoredEvent[], o: TraceOpts = {}): Trace {
  * bytes. The tool input and the output text stay in the database (they can be 64 KB each). At most `max` rows; `truncated` says there were more.
  */
 export function readTraceEvents(db: Db, runId: string, max = MAX_TRACE_ROWS): { events: StoredEvent[]; truncated: boolean } {
-  const rows = db.prepare(`SELECT seq, ts, kind, CASE kind
-      WHEN 'tool' THEN json_object('id', json_extract(data, '$.id'), 'name', json_extract(data, '$.name'))
-      WHEN 'tool_result' THEN json_object('id', json_extract(data, '$.id'), 'isError', json_extract(data, '$.isError'), 'bytes', length(CAST(json_extract(data, '$.body') AS BLOB)))
+  // json_valid first: one damaged row must read as an empty row, not make every trace of the run fail. The size of a result body is stored at write time (`bytes`); the
+  // body itself is measured only for rows written before that.
+  const rows = db.prepare(`SELECT seq, ts, kind, CASE
+      WHEN NOT json_valid(data) THEN '{}'
+      WHEN kind = 'tool' THEN json_object('id', json_extract(data, '$.id'), 'name', json_extract(data, '$.name'))
+      WHEN kind = 'tool_result' THEN json_object('id', json_extract(data, '$.id'), 'isError', json_extract(data, '$.isError'), 'bytes', COALESCE(json_extract(data, '$.bytes'), length(CAST(json_extract(data, '$.body') AS BLOB))))
       ELSE data END AS data
     FROM run_event WHERE run_id = ? AND kind IN ('session', 'turn', 'tool', 'tool_result', 'usage', 'end') ORDER BY seq LIMIT ?`).all(runId, max + 1) as unknown as { seq: number; ts: string; kind: string; data: string }[];
   const events: StoredEvent[] = [];
@@ -131,3 +134,19 @@ export function pageTurns(turns: Turn[], o: { after?: number; limit?: number }):
 
 /** The download: one JSON object per line (turns, then the totals). No text of any tool input or output. */
 export const traceJsonl = (t: Trace): string => t.turns.map((x) => JSON.stringify({ type: 'turn', ...x })).concat(JSON.stringify({ type: 'totals', ...t.totals, slowest: t.slowest })).join('\n') + '\n';
+
+/** Traces built recently, per database and run, kept until the run writes another row: a page of a long run must not rebuild the whole trace. */
+export const TRACE_CACHE_MAX = 8;
+const traceCache = new WeakMap<object, Map<string, { maxSeq: number; value: { trace: Trace; truncated: boolean } }>>();
+export function cachedTrace(db: Db, runId: string, o: TraceOpts = {}): { trace: Trace; truncated: boolean } {
+  let m = traceCache.get(db); if (!m) traceCache.set(db, (m = new Map()));
+  const maxSeq = (db.prepare('SELECT MAX(seq) AS m FROM run_event WHERE run_id = ?').get(runId) as { m: number | null }).m ?? 0, key = `${runId}|${o.model ?? ''}|${o.effort ?? ''}`;
+  const hit = m.get(key);
+  if (hit && hit.maxSeq === maxSeq) { m.delete(key); m.set(key, hit); return hit.value; }   // least recently used goes first
+  const { events, truncated } = readTraceEvents(db, runId);
+  const value = { trace: buildTrace(events, o), truncated };
+  m.delete(key); m.set(key, { maxSeq, value });
+  while (m.size > TRACE_CACHE_MAX) m.delete(m.keys().next().value as string);
+  return value;
+}
+export const traceCacheSize = (db: Db): number => traceCache.get(db)?.size ?? 0;
