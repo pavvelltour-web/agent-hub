@@ -13,7 +13,12 @@ const NODE = 'node';
 const tmp = (name = 'hub-chk-'): string => mkdtempSync(join(tmpdir(), name));
 const withTmp = async (fn: (dir: string) => void | Promise<void>, name?: string): Promise<void> => {
   const dir = tmp(name);
-  try { await fn(dir); } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  try { await fn(dir); } finally {
+    // A killed process can hold its folder for a moment on Windows; cleanup is best effort and must not fail the test.
+    for (let i = 0; i < 40; i++) {
+      try { rmSync(dir, { recursive: true, force: true }); break; } catch { await new Promise((r) => setTimeout(r, 250)); }
+    }
+  }
 };
 const js = (code: string, ...args: string[]): string[] => [NODE, '-e', code, ...args];
 
