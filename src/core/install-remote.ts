@@ -13,17 +13,31 @@ import type { McpSpec, Plan, RegistryEntry } from './types.ts';
  */
 const REPO = 'davila7/claude-code-templates';
 export const MAX_FILE = 200_000, MAX_TOTAL = 1_000_000, MAX_FILES = 40;
-export type TextFetcher = (url: string, maxChars?: number) => Promise<string>;
+/** `signal` is an outer deadline (for example the time budget of one skill); it is combined with the 20 s per-request timeout. */
+export type TextFetcher = (url: string, maxChars?: number, signal?: AbortSignal) => Promise<string>;
 
 const ALLOWED = (u: URL): boolean => u.protocol === 'https:' && ((u.hostname === 'www.aitmpl.com' || u.hostname === 'aitmpl.com') || (u.hostname === 'raw.githubusercontent.com' && u.pathname.startsWith(`/${REPO}/`)));
 
-/** A text fetcher limited to the hosts `allowed` accepts: https only, no redirects (a redirect to another host is an error), size caps, 20 s timeout. */
-export const makeTextFetcher = (allowed: (u: URL) => boolean): TextFetcher => async (url, maxChars = MAX_FILE) => {
+/**
+ * A text fetcher limited to the hosts `allowed` accepts: no redirects (a redirect to another host is an error), 20 s per request plus an optional outer deadline,
+ * and a size cap enforced while the body streams: a body that never ends or lies about its length is cut off at the cap (4 bytes per character), never buffered.
+ */
+export const makeTextFetcher = (allowed: (u: URL) => boolean): TextFetcher => async (url, maxChars = MAX_FILE, signal) => {
   if (!allowed(new URL(url))) throw new Error('host not allowed');
-  const r = await fetch(url, { signal: AbortSignal.timeout(20_000), redirect: 'error' });
-  if (!r.ok) throw new Error(`HTTP ${r.status} for ${url.split('/').slice(-2).join('/')}`);
-  if (Number(r.headers.get('content-length') ?? 0) > maxChars * 2) throw new Error('file too large');
-  const t = await r.text();
+  const r = await fetch(url, { signal: signal ? AbortSignal.any([AbortSignal.timeout(20_000), signal]) : AbortSignal.timeout(20_000), redirect: 'error' });
+  if (!r.ok) { await r.body?.cancel().catch(() => undefined); throw new Error(`HTTP ${r.status} for ${url.split('/').slice(-2).join('/')}`); }
+  if (Number(r.headers.get('content-length') ?? 0) > maxChars * 2) { await r.body?.cancel().catch(() => undefined); throw new Error('file too large'); }
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  const reader = r.body?.getReader();
+  if (reader) for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > maxChars * 4) { await reader.cancel().catch(() => undefined); throw new Error('file too large'); }
+    chunks.push(value);
+  }
+  const t = new TextDecoder().decode(Buffer.concat(chunks));
   if (t.length > maxChars) throw new Error('file too large');
   return t;
 };

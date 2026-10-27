@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openDb } from '../history/store.ts';
 import { RunManager } from '../run/runner.ts';
 import { claudeAdapter } from '../adapters/claude.ts';
 import { codexAdapter } from '../adapters/codex.ts';
 import { validate, FINDING_SCHEMA, HUNT_SCHEMA, VERIFY_SCHEMA, type Schema } from './schema.ts';
-import { ReviewError, extractJson, hunt, parseHunt, verify, verifyMany } from './agents.ts';
+import { ReviewError, extractJson, hunt, parseHunt, readPrompt, verify, verifyMany } from './agents.ts';
 import type { RawFinding, ReviewerPick } from './types.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -286,4 +286,20 @@ test('parseHunt (E7): the 30-finding cap applies after the lists are joined', ()
   const a = JSON.stringify({ findings: Array.from({ length: 20 }, (_, i) => f(i)) }), b = JSON.stringify({ findings: Array.from({ length: 20 }, (_, i) => f(i + 20)) });
   assert.throws(() => parseHunt(`${a}\n${b}`, 'correctness'), (e: unknown) => e instanceof ReviewError && /more than 30/.test(e.message));
   assert.equal(parseHunt(`${a}\n${a}`, 'correctness').length, 20, 'repeats are joined once and stay under the cap');
+});
+
+test('reviewer prompts resolve from the source layout and from a compiled dist/ copy, and a missing prompt is an error, not an empty prompt', () => {
+  const here = import.meta.url;
+  assert.match(readPrompt('hunt.md', here), /\S/);
+  const pkg = mkdtempSync(join(tmpdir(), 'hub-dist-'));
+  try {
+    mkdirSync(join(pkg, 'dist', 'review'), { recursive: true }); mkdirSync(join(pkg, 'src', 'review', 'prompts'), { recursive: true });
+    writeFileSync(join(pkg, 'src', 'review', 'prompts', 'hunt.md'), '  from the package src  \n');
+    const dist = pathToFileURL(join(pkg, 'dist', 'review', 'agents.js')).href;
+    assert.equal(readPrompt('hunt.md', dist), 'from the package src', 'dist/review/agents.js finds ../../src/review/prompts');
+    writeFileSync(join(pkg, 'dist', 'review', 'x.md'), 'unused'); mkdirSync(join(pkg, 'dist', 'review', 'prompts'));
+    writeFileSync(join(pkg, 'dist', 'review', 'prompts', 'hunt.md'), 'next to the compiled file');
+    assert.equal(readPrompt('hunt.md', dist), 'next to the compiled file', 'a prompts folder next to the file wins');
+    assert.throws(() => readPrompt('nope.md', dist), /not found/);
+  } finally { rmSync(pkg, { recursive: true, force: true }); }
 });

@@ -20,7 +20,14 @@ const NO_RESULT = 'no structured result';
 export const MAX_DIFF = 200_000;
 const MAX_CONTEXT = { brief: 20_000, review: 41_000, agents: 30_000 };
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
-const read = (name: string): string => readFileSync(new URL(`./prompts/${name}`, import.meta.url), 'utf8').trim();
+/** A reviewer prompt, from `./prompts` next to this file (source layout) or `../../src/review/prompts` (a compiled `dist/review/` copy). `base` is for tests. */
+export function readPrompt(name: string, base: string = import.meta.url): string {
+  for (const rel of [`./prompts/${name}`, `../../src/review/prompts/${name}`]) {
+    try { return readFileSync(new URL(rel, base), 'utf8').trim(); } catch { /* try the other layout */ }
+  }
+  throw new Error(`reviewer prompt ${name} not found`);
+}
+const read = (name: string): string => readPrompt(name);
 
 const LENS_TEXT: Record<Lens, string> = {
   correctness: 'Lens: correctness and root cause. Find code that does not do what it is meant to do, and trace each defect to the line that causes it.',

@@ -1,5 +1,6 @@
 import { api, prefs, qs } from './api.js';
 import { avatar, clear, closeBtn, debounce, dialog, h, icon, skeleton } from './ui.js';
+import { welcomeDone } from './welcome-flag.js';
 
 prefs.set({});   // re-apply saved theme/accent/material
 
@@ -21,7 +22,6 @@ const NAV = [
   ['/', 'Сегодня', 'today'], ['/projects', 'Проекты', 'folder'], ['/chat', 'Чат', 'chat'], ['/history', 'История', 'history'],
   ['/models', 'Модели', 'models'], ['/library', 'Инструменты', 'library'], ['/logs', 'Журнал', 'logs'],
 ];
-const welcomeDone = () => { try { return localStorage.getItem('hub.welcomeDone') === '1'; } catch { return false; } };
 const section = (path) => (path === '/' ? '/' : '/' + path.split('/')[1]);
 const navKey = (path) => (path.startsWith('/p/') ? '/projects' : path.startsWith('/s/') ? '/history' : section(path));
 

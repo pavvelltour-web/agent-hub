@@ -1,6 +1,7 @@
-import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, parse, resolve } from 'node:path';
+import { basename, dirname, join, parse, resolve } from 'node:path';
 import { isSecretPath, pathKey } from '../lib/paths.ts';
 import { git, minimalEnv } from '../run/git.ts';
 import { validArgv } from '../run/cascade.ts';
@@ -26,16 +27,35 @@ const GIT_INIT = ['git', 'init', '-b', 'main'];
 
 const inside = (p: string, base: string): boolean => { const k = pathKey(p), b = pathKey(base); return k === b || k.startsWith(b.endsWith('/') ? b : b + '/'); };
 
-/** Where a new project may not be created: a drive root, a credential folder, an agent's own store, the hub's data. */
-function checkFolder(root: string): void {
-  if (parse(root).root === root) throw new Error('a drive or filesystem root is not a project folder');
-  if (isSecretPath(root)) throw new Error('this folder is not allowed');
+/** The real path of `p`: the nearest existing ancestor resolved (short 8.3 names, links, junctions, case) and the not-yet-existing tail appended as written. */
+function canonical(p: string): string {
+  const tail: string[] = [];
+  for (let cur = p; ;) {
+    try { return join(realpathSync.native(cur), ...tail); } catch { /* not there: go up */ }
+    const up = dirname(cur);
+    if (up === cur) return p;
+    tail.unshift(basename(cur)); cur = up;
+  }
+}
+
+/**
+ * Where a new project may not be created: a drive root, a credential folder, an agent's own store, the hub's data. Every check runs on the real path
+ * (the nearest existing ancestor resolved), so a short name, a junction or another spelling of a forbidden folder does not get past it.
+ * Returns the real path of the folder. `planned` = the path the plan was made for: a changed real path (a link inserted since) is refused.
+ */
+function checkFolder(root: string, planned?: string): string {
+  let st; try { st = lstatSync(root); } catch { st = undefined; }
+  if (st?.isSymbolicLink()) throw new Error('the folder is a link: choose the real folder');
+  const real = canonical(root);
+  if (planned !== undefined && pathKey(real) !== pathKey(planned)) throw new Error('the folder path changed since the plan (a link was inserted into it): make the plan again');
+  if (parse(real).root === real) throw new Error('a drive or filesystem root is not a project folder');
+  if (isSecretPath(real) || isSecretPath(root)) throw new Error('this folder is not allowed');
   const stores = [join(homedir(), '.claude'), join(homedir(), '.codex'), join(homedir(), '.agents'), ...(process.env['APPDATA'] ? [join(process.env['APPDATA'], 'Claude')] : []), HUB_HOME];
-  if (stores.some((s) => inside(root, s))) throw new Error('this folder belongs to an agent or to the hub itself: choose another');
-  let st; try { st = lstatSync(root); } catch { return; }          // does not exist yet: fine
-  if (st.isSymbolicLink()) throw new Error('the folder is a link: choose the real folder');
+  if (stores.some((s) => inside(real, canonical(s)) || inside(root, s))) throw new Error('this folder belongs to an agent or to the hub itself: choose another');
+  if (!st) return real;                                                  // does not exist yet: fine
   if (!st.isDirectory()) throw new Error('not a folder');
-  if (readdirSync(root).length) throw new Error('the folder is not empty: choose a new or empty folder (hub new never mixes into existing work)');
+  if (readdirSync(real).length) throw new Error('the folder is not empty: choose a new or empty folder (hub new never mixes into existing work)');
+  return real;
 }
 
 const templateFiles = (dir: string, sub = ''): string[] => readdirSync(join(dir, sub), { withFileTypes: true }).flatMap((d) => {
@@ -47,8 +67,8 @@ const templateFiles = (dir: string, sub = ''): string[] => readdirSync(join(dir,
 export function planNewProject(type: string, folder: string): NewProjectPlan {
   if (!(TEMPLATE_TYPES as readonly string[]).includes(type)) throw new Error(`unknown project type "${String(type).slice(0, 40)}"`);
   if (typeof folder !== 'string' || !folder.trim() || folder.includes('\0')) throw new Error('folder required');
-  const root = resolve(folder.trim());
-  checkFolder(root);
+  if (/^[\\/]{2}/.test(folder.trim())) throw new Error('network (UNC), device (\\\\.\\) and \\\\?\\ paths are not supported: use a normal folder path such as C:\\Users\\you\\project');
+  const root = checkFolder(resolve(folder.trim()));
   const name = basename(root);
   const tdir = join(REPO_ROOT, 'templates', type);
   if (!existsSync(join(tdir, 'hub.json'))) throw new Error(`template for ${type} is missing`);
@@ -84,7 +104,7 @@ export function applyNewProject(plan: NewProjectPlan, opts: { approved: boolean 
   if (!opts.approved) throw new Error('plan not approved');
   const root = resolve(plan.root);
   for (const s of plan.steps) if (JSON.stringify(s.argv) !== JSON.stringify(GIT_INIT) || resolve(s.cwd) !== root) throw new Error('step not allowed');
-  checkFolder(root);
+  checkFolder(root, root);
   const written = applyPlan(plan, { approved: true });
   const steps = plan.steps.map((s) => {
     const r = git(root, s.argv.slice(1), minimalEnv());
@@ -92,3 +112,6 @@ export function applyNewProject(plan: NewProjectPlan, opts: { approved: boolean 
   });
   return { ...written, steps };
 }
+
+/** What the user looked at: the type, folder, every file (path, action, text or link target), the planned steps and the verify command. Apply needs this exact value. */
+export const planDigest = (p: NewProjectPlan): string => createHash('sha256').update(JSON.stringify([p.type, p.root, p.changes.map((c) => [c.path, c.action, c.after]), p.steps.map((x) => [x.argv, x.cwd]), p.verify])).digest('hex');

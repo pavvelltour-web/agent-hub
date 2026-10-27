@@ -1,9 +1,10 @@
 import { api } from '../api.js';
 import { btn, chip, closeBtn, dialog, empty, fmt, h, icon, toast } from '../ui.js';
 import { addProjectDialog, agentCard, go, pageHead, planDialog, TYPES } from './common.js';
+import { starterDialog } from './starter-dialog.js';
+import { markWelcomeDone } from '../welcome-flag.js';
 
 /** First run: Агенты → История → Первый проект → Набор скиллов. Every step can be skipped; nothing is written without the user's confirmation. */
-export const WELCOME_DONE = 'hub.welcomeDone';
 const STEPS = [['agents', 'Агенты', 'Агенты'], ['history', 'История', 'История'], ['project', 'Первый проект', 'Проект'], ['skills', 'Набор скиллов', 'Скиллы']];
 
 export default async function view({ q }) {
@@ -11,7 +12,8 @@ export default async function view({ q }) {
   let timer = null;
   const body = h('div.stack');
   const nav = h('ol.wz-steps', { 'aria-label': 'Шаги первого запуска' });
-  const finish = () => { try { localStorage.setItem(WELCOME_DONE, '1'); } catch { /* private mode: the page shows again, that is fine */ } go('/'); };
+  const finish = () => { markWelcomeDone(); go('/'); };
+  let lastInstall = null;     // { backupId, ids } of the install made on this page: the undo button needs it
   const next = () => { if (step < STEPS.length - 1) { step++; draw(); } else finish(); };
   const foot = (primary) => h('div.row-flex.wz-foot',
     primary,
@@ -60,19 +62,21 @@ export default async function view({ q }) {
         const ids = [...picked];
         if (!ids.length) { toast('Отметьте хотя бы один скилл'); return; }
         let r; try { r = await api.post('/starter/plan', { ids }); } catch { return; }
-        const skipped = (r.skipped || []).map((s) => `${s.id}: ${s.reason}`);
-        planDialog({ title: 'Набор скиллов', r: { ...r, notes: [...skipped, ...(r.notes || [])] }, apply: async () => { const a = await api.post('/starter/apply', { ids, digest: r.digest, approved: true }); toast(`В библиотеке: ${a.installed.join(', ')}. Агентам они не видны, пока вы не подключите их к проекту.`, 'ok'); step = STEPS.length - 1; draw(); return a; } });
+        starterDialog({ r, ids, onInstalled: (a) => { lastInstall = { backupId: a.backupId, ids: a.installed }; toast(`В библиотеке: ${a.installed.join(', ')}. Агентам они не видны, пока вы не подключите их к проекту.`, 'ok'); draw(); } });
       } });
+      const undo = () => lastInstall ? h('div.alert.info', icon('check'), h('div.stack', h('span', `Установлено в библиотеку: ${lastInstall.ids.join(', ')}. Агентам они не видны, пока вы не подключите их к проекту.`),
+        btn('Откатить', { kind: 'glass', onclick: async () => { try { await api.post('/starter/undo', { backupId: lastInstall.backupId }); toast('Установка отменена: папки скиллов удалены', 'ok'); lastInstall = null; draw(); } catch { /* api shows the toast */ } } }))) : null;
       const rows = items.map((i) => {
         const can = i.state === 'available';
         const box = h('input.check', { type: 'checkbox', checked: picked.has(i.id), disabled: !can, 'aria-label': i.id, onchange: (e) => { e.target.checked ? picked.add(i.id) : picked.delete(i.id); } });
         return h('label.plate.wz-skill', box, h('div.stack', { style: { gap: '4px' } },
-          h('div.row-flex', h('b', i.id), chip(i.license === 'unknown' ? 'лицензия не указана' : i.license, i.licenseKnown ? 'line' : 'warn'),
-            i.state === 'installed' ? chip('уже есть', 'ok') : i.state === 'manual' ? chip('ставится вручную', 'soft') : null),
+          h('div.row-flex', h('b', i.id), chip(i.licenseKnown ? `${i.license} · по данным списка` : 'лицензия не указана', i.licenseKnown ? 'line' : 'warn'),
+            i.state === 'installed' ? chip('уже есть', 'ok') : i.state === 'manual' ? chip('ставится вручную', 'soft') : i.state === 'unpinned' ? chip('не закреплён', 'warn') : null),
           h('span.t-meta', i.why),
-          i.state === 'manual' ? h('span.t-meta', i.installCommand ? h('code.mono', i.installCommand) : i.note) : null));
+          i.state === 'manual' || i.state === 'unpinned' ? h('span.t-meta', i.installCommand ? h('code.mono', i.installCommand) : i.note) : null));
       });
-      return [h('p.muted', 'Скиллы кладутся в библиотеку hub и не стоят ни одного токена, пока вы не подключите их к проекту. Перед записью вы увидите все файлы и версию источника.'),
+      return [h('p.muted', 'Скиллы кладутся в библиотеку hub и не стоят ни одного токена, пока вы не подключите их к проекту. Перед записью вы увидите все файлы целиком и коммит источника.'),
+        undo(),
         h('p.t-meta', 'Папка: ', h('span.mono', home + '\\skills')),
         rows.length ? h('div.stack', rows) : empty('Список пуст'), foot(apply)];
     },
@@ -104,7 +108,7 @@ function newProjectDialog(onCreated) {
     if (!path) { toast('Укажите папку для нового проекта'); return; }
     let r; try { r = await api.post('/new/plan', { type: sel.value, path }); } catch { return; }
     document.getElementById('dlg').close();
-    planDialog({ title: 'Новый проект', r: { ...r, notes: [...r.notes] }, apply: async () => { const a = await api.post('/new/apply', { type: sel.value, path, approved: true }); onCreated(a.id); return a; } });
+    planDialog({ title: 'Новый проект', r: { ...r, notes: [...r.notes] }, apply: async () => { const a = await api.post('/new/apply', { type: sel.value, path, approved: true, digest: r.digest }); onCreated(a.id); return a; } });
   };
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') show(); });
   dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Новый проект по шаблону'), closeBtn()),

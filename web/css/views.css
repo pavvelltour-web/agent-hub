@@ -226,3 +226,12 @@ details > summary { cursor: pointer; }
 .wz .mono { font-size: 12px; }
 .alert > div { min-width: 0; }
 .alert .stack span { overflow-wrap: anywhere; }
+/* starter confirm step: every file in full, behind an explicit "show all" */
+.sd { max-width: 100%; }
+.sd-file summary { min-height: 44px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; cursor: pointer; padding: 6px 14px; }
+.sd-file > p, .sd-file > pre { margin: 0 14px 12px; }
+.sd-text { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.sd-full .sd-text { max-height: none; }
+.sd-foot { align-items: center; flex-wrap: wrap; position: sticky; bottom: 0; background: var(--hub-surface); padding-top: var(--hub-space-3); }
+.alert .stack span { white-space: pre-wrap; }
+.sd .btn { white-space: normal; text-align: left; max-width: 100%; height: auto; padding-top: 8px; padding-bottom: 8px; }

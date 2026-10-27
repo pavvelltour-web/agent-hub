@@ -508,12 +508,14 @@ test('graph API: status says built/stale/missing; update needs approval and an a
   } finally { graphCtx.tool = null; rmSync(scriptDir, { recursive: true, force: true }); }
 });
 
-test('starter API: list needs no network; plan shows files, license and commit; apply needs approval and the previewed digest; writes only into the hub library', async () => {
-  const SHA = 'c'.repeat(40);
-  const md = (extra = ''): string => `---\nname: test-driven-development\ndescription: tdd.\n---\nWrite the test first.${extra}`;
+test('starter API: list needs no network; plan returns EVERY byte of every file; apply needs approval, the previewed digest and honours the ticks; writes only into the hub library; undo restores the earlier state', async () => {
+  const SHA = 'bb92a77741419a4ab5f06e711a283343f1ada0c3';
+  const big = 'Write the test first.\n'.repeat(450);                                   // ~9.9 KB: more than any dialog shows by default
+  const md = (extra = ''): string => `---\nname: test-driven-development\ndescription: tdd.\n---\n${big}${extra}`;
   let body = md();
+  const calls: string[] = [];
   starterCtx.fetch = async (url: string): Promise<string> => {
-    if (/\/git\/ref\/heads\/main$/.test(url)) return JSON.stringify({ object: { sha: SHA } });
+    calls.push(url);
     if (/\/git\/trees\//.test(url)) return JSON.stringify({ truncated: false, tree: [{ path: 'skills/test-driven-development/SKILL.md', mode: '100644', type: 'blob', size: body.length }] });
     if (url.endsWith('/skills/test-driven-development/SKILL.md')) return body;
     throw new Error('unexpected ' + url);
@@ -532,9 +534,13 @@ test('starter API: list needs no network; plan shows files, license and commit; 
 
     const plan = await api('/api/starter/plan', { method: 'POST', body: { ids: ['test-driven-development', 'graphify'] } });
     assert.equal(plan.status, 200); assert.match(plan.json.digest, /^[0-9a-f]{64}$/);
-    assert.equal(plan.json.skills[0].commit, SHA); assert.equal(plan.json.skills[0].license, 'MIT');
+    assert.equal(plan.json.skills[0].commit, SHA); assert.equal(plan.json.skills[0].license, 'MIT'); assert.equal(plan.json.skills[0].defaultChecked, true);
     assert.match(plan.json.skipped[0].reason, /graphifyy/);
     assert.ok(plan.json.changes.every((c: any) => c.path.startsWith('skills/')), 'relative to the hub library, nothing else');
+    const sk = plan.json.changes.find((c: any) => c.path.endsWith('SKILL.md'));
+    assert.equal(sk.after, body, 'the plan carries the whole file, not a cut');
+    assert.ok(sk.after.length > 9000); assert.equal(sk.bytes, Buffer.byteLength(body));
+    assert.ok(!calls.some((u) => /git\/ref\//.test(u)), 'the commit is pinned in the list: no branch lookup');
     assert.ok(!existsSync(lib), 'the plan wrote nothing');
 
     const ids = ['test-driven-development'];
@@ -545,16 +551,47 @@ test('starter API: list needs no network; plan shows files, license and commit; 
 
     body = md();
     const p2 = await api('/api/starter/plan', { method: 'POST', body: { ids } });
-    const done = await api('/api/starter/apply', { method: 'POST', body: { ids, digest: p2.json.digest, approved: true } });
+    assert.equal(p2.json.digest, plan.json.digest, 'same bytes, same digest');
+    assert.equal((await api('/api/starter/apply', { method: 'POST', body: { ids, digest: p2.json.digest, approved: true, install: [] } })).status, 400, 'nothing ticked');
+    const done = await api('/api/starter/apply', { method: 'POST', body: { ids, digest: p2.json.digest, approved: true, install: ids } });
     assert.equal(done.status, 200, JSON.stringify(done.json)); assert.deepEqual(done.json.installed, ids);
-    assert.equal(readFileSync(join(lib, 'SKILL.md'), 'utf8'), body);
+    assert.equal(readFileSync(join(lib, 'SKILL.md'), 'utf8'), body, 'every byte that was shown is what was written');
     assert.ok(!existsSync(join(fake, '.agents', 'skills', 'test-driven-development')) && !existsSync(join(fake, '.claude', 'skills', 'test-driven-development')), 'not in the agents\' own folders');
     assert.equal((await api('/api/starter')).json.items.find((i: any) => i.id === 'test-driven-development').state, 'installed');
 
+    // undo: only a starter backup, the backup id is validated, the skill folder is gone afterwards, a second undo is refused
+    assert.equal((await api('/api/starter/undo', { method: 'POST', body: { backupId: '../x' } })).status, 400);
+    assert.equal((await api('/api/starter/undo', { method: 'POST', body: {} })).status, 400);
+    assert.equal((await api('/api/starter/undo', { method: 'POST', body: { backupId: 'no-such-backup' } })).status, 400, 'not a starter install');
+    const undone = await api('/api/starter/undo', { method: 'POST', body: { backupId: done.json.backupId } });
+    assert.equal(undone.status, 200, JSON.stringify(undone.json)); assert.deepEqual(undone.json.ids, ids);
+    assert.ok(!existsSync(lib), 'the skill folder is gone');
+    assert.equal((await api('/api/starter/undo', { method: 'POST', body: { backupId: done.json.backupId } })).status, 400, 'once');
+    assert.equal((await fetch(`${base}/api/starter/undo`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 401, 'same token check as every write');
+
     starterCtx.fetch = async () => { throw new Error('HTTP 403 for x/y'); };
-    rmSync(lib, { recursive: true, force: true });
     const failed = await api('/api/starter/plan', { method: 'POST', body: { ids } });
     assert.equal(failed.status, 400, 'a skill that cannot be fetched is skipped with its reason, not a crash'); assert.match(failed.json.error, /HTTP 403/);
+  } finally { starterCtx.fetch = undefined; rmSync(join(fake, '.agent-hub', 'skills'), { recursive: true, force: true }); }
+});
+
+test('starter API: a skill with hooks:/allowed-tools: is not installed unless ticked, and its values are in the plan', async () => {
+  const md = '---\nname: test-driven-development\ndescription: x\nallowed-tools: Bash(rm:*)\n---\nbody';
+  starterCtx.fetch = async (url: string): Promise<string> => {
+    if (/\/git\/trees\//.test(url)) return JSON.stringify({ truncated: false, tree: [{ path: 'skills/test-driven-development/SKILL.md', mode: '100644', type: 'blob', size: md.length }] });
+    if (url.endsWith('/SKILL.md')) return md;
+    throw new Error('unexpected ' + url);
+  };
+  const ids = ['test-driven-development'];
+  try {
+    const plan = await api('/api/starter/plan', { method: 'POST', body: { ids } });
+    assert.equal(plan.json.skills[0].defaultChecked, false); assert.deepEqual(plan.json.skills[0].flags, [{ key: 'allowed-tools', value: 'Bash(rm:*)' }]);
+    assert.ok(plan.json.notes.some((n: string) => /allowed-tools: Bash\(rm:\*\)/.test(n)));
+    const noTick = await api('/api/starter/apply', { method: 'POST', body: { ids, digest: plan.json.digest, approved: true } });
+    assert.equal(noTick.status, 400, 'not ticked by default: nothing to install');
+    const ticked = await api('/api/starter/apply', { method: 'POST', body: { ids, digest: plan.json.digest, approved: true, install: ids } });
+    assert.equal(ticked.status, 200, JSON.stringify(ticked.json));
+    await api('/api/starter/undo', { method: 'POST', body: { backupId: ticked.json.backupId } });
   } finally { starterCtx.fetch = undefined; rmSync(join(fake, '.agent-hub', 'skills'), { recursive: true, force: true }); }
 });
 
@@ -580,13 +617,17 @@ test('new project API: pick only returns a path; plan writes nothing; apply need
     assert.equal((await api('/api/new/plan', { method: 'POST', body: { type: 'web-saas', path: 'relative/dir' } })).status, 400, 'absolute path only');
     assert.equal((await api('/api/new/plan', { method: 'POST', body: { type: 'web-saas', path: join(dir, 'secrets') } })).status, 400);
 
-    const done = await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder, approved: true } });
+    assert.match(plan.json.digest, /^[0-9a-f]{64}$/, 'the plan carries a digest of the planned files, links and steps');
+    assert.equal((await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder, approved: true } })).status, 400, 'a digest is required');
+    assert.equal((await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder, approved: true, digest: 'f'.repeat(64) } })).status, 409, 'a plan that differs from the one shown is refused');
+    assert.ok(!existsSync(folder), 'a refused apply wrote nothing');
+    const done = await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder, approved: true, digest: plan.json.digest } });
     assert.equal(done.status, 200, JSON.stringify(done.json)); assert.equal(done.json.steps[0].ok, true); assert.ok(Number.isInteger(done.json.id));
     assert.ok(existsSync(join(folder, '.git')) && existsSync(join(folder, 'brief.md')));
     assert.ok((await api('/api/projects')).json.some((p: any) => p.id === done.json.id && /новый проект$/.test(p.root)), 'the project is registered');
     assert.ok(!existsSync(join(fake, '.agent-hub', 'review-checks-approved.json')), 'creating a project approved no verify command');
 
     assert.equal((await api('/api/new/plan', { method: 'POST', body: { type: 'web-saas', path: folder } })).status, 400, 'now it is not empty');
-    assert.match((await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder, approved: true } })).json.error, /not empty/);
+    assert.match((await api('/api/new/apply', { method: 'POST', body: { type: 'web-saas', path: folder, approved: true, digest: plan.json.digest } })).json.error, /not empty/);
   } finally { stub.picked = null; rmSync(dir, { recursive: true, force: true }); }
 });

@@ -12,8 +12,8 @@ import { addSkillRoot, HUB_HOME, library, loadUserConfig, removeSkillRoot, REPO_
 import { scout } from '../core/scout.ts';
 import { fetchAitmpl, searchGithub } from '../core/scout-remote.ts';
 import { planLibraryInstall, previewComponent, type TextFetcher } from '../core/install-remote.ts';
-import { planStarter, previewStarter, starterItems } from '../core/starter.ts';
-import { applyNewProject, planNewProject } from '../core/templates.ts';
+import { applyStarter, planStarter, previewStarter, starterItems, undoStarter } from '../core/starter.ts';
+import { applyNewProject, planDigest, planNewProject } from '../core/templates.ts';
 import { planInstall } from '../core/install.ts';
 import { listPlugins } from '../core/profile.ts';
 import { auditLoading, compileProfile, skillInfoFrom, type Desired, type SkillState } from '../core/loading.ts';
@@ -57,6 +57,7 @@ type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body })
 const pricesJson = (t: PriceTable): Res => ok({ models: [...t.models.values()].map((e) => ({ ...e, overridden: t.overridden.has(e.id) })), rejected: t.rejected, rejectedRows: t.rejectedRows, ...(t.overrideProblem ? { overrideProblem: t.overrideProblem } : {}) });
 const ok = (json: unknown): Res => ({ status: 200, json });
 const bad = (status: number, error: string): Res => ({ status, json: { error } });
+const STARTER_PLAN_MAX = 1_200_000;
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) + '…' : s);
 const num = (v: unknown): number | undefined => (v === undefined || v === null || v === '' ? undefined : Number.isFinite(Number(v)) ? Number(v) : undefined);
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
@@ -253,13 +254,25 @@ const ROUTES: [string, RegExp, Handler][] = [
     let pv; try { pv = await previewStarter(ids, c.starter?.fetch); } catch (e) { return bad(400, (e as Error).message); }
     if (!pv.items.length) return bad(400, pv.skipped.length ? `nothing to install: ${pv.skipped.map((s) => `${s.id}: ${s.reason}`).join('; ')}` : 'nothing to install');
     const plan = planStarter(pv);
-    if (params[0] === 'plan') return ok({ digest: pv.digest, notes: plan.notes, skipped: pv.skipped,
-      skills: pv.items.map((i) => ({ id: i.id, license: i.license, licenseKnown: i.licenseKnown, repo: i.repo, path: i.path, commit: i.commit, target: i.target, runsCode: i.runsCode, files: i.files, text: clip(i.text, 6000) })),
-      changes: plan.changes.map((ch) => ({ path: ch.path.slice(HUB_HOME.length + 1).replace(/\\/g, '/'), action: ch.action, note: ch.note ?? null, before: null, after: clip(ch.after, 3000) })) });
+    if (params[0] === 'plan') {
+      // EVERY byte the digest covers is sent: the panel must be able to show all of it. The preview is capped (1 MB of text) and a larger plan is refused, never cut.
+      const bytes = plan.changes.reduce((n, ch) => n + Buffer.byteLength(ch.after), 0);
+      if (bytes > STARTER_PLAN_MAX) return bad(400, `the plan is larger than ${STARTER_PLAN_MAX} bytes and cannot be shown in full`);
+      return ok({ digest: pv.digest, notes: plan.notes, skipped: pv.skipped,
+        skills: pv.items.map((i) => ({ id: i.id, license: i.license, licenseKnown: i.licenseKnown, repo: i.repo, path: i.path, commit: i.commit, target: i.target, runsCode: i.runsCode, flags: i.flags, defaultChecked: i.defaultChecked, files: i.files })),
+        changes: plan.changes.map((ch) => ({ path: ch.path.slice(HUB_HOME.length + 1).replace(/\\/g, '/'), action: ch.action, note: ch.note ?? null, before: null, after: ch.after, bytes: Buffer.byteLength(ch.after) })) });
+    }
     if (body['approved'] !== true) return bad(400, 'apply needs approved: true');
     if (body['digest'] !== pv.digest) return bad(409, 'the skills changed since you previewed them; review them again');
-    const r = applyPlan(plan, { approved: true });
-    return ok({ backupId: r.backupId, written: r.written.length, installed: pv.items.map((i) => i.id), skipped: pv.skipped, fallbacks: r.fallbacks });
+    const install = Array.isArray(body['install']) ? (body['install'] as unknown[]).filter((x): x is string => typeof x === 'string') : undefined;
+    let r; try { r = applyStarter(pv, install ? { install } : {}); } catch (e) { return bad(400, (e as Error).message); }
+    return ok({ backupId: r.backupId, written: r.written.length, installed: r.installed, skipped: pv.skipped, fallbacks: r.fallbacks });
+  }],
+  // undo of a starter install: hub-home backups made by starter apply only (the project undo above takes a project id)
+  ['POST', /^\/api\/starter\/undo$/, (_c, { body }) => {
+    const id = str(body['backupId']);
+    if (!id) return bad(400, 'backupId required');
+    try { return ok(undoStarter(id)); } catch (e) { return bad(400, (e as Error).message); }
   }],
   // ---- new project from a template: pick a folder (returns the path only), plan, apply. The verify command it writes stays unapproved (ADR-017).
   ['POST', /^\/api\/new\/pick$/, (c) => {
@@ -270,9 +283,11 @@ const ROUTES: [string, RegExp, Handler][] = [
     const path = str(body['path']);
     if (!path || !isAbsolute(path)) return bad(400, 'an absolute folder path is required');
     let plan; try { plan = planNewProject(String(body['type'] ?? ''), path); } catch (e) { return bad(400, (e as Error).message); }
-    if (params[0] === 'plan') return ok({ root: plan.root, verify: plan.verify, notes: plan.notes, steps: plan.steps.map((s) => ({ argv: s.argv, note: s.note })),
+    if (params[0] === 'plan') return ok({ digest: planDigest(plan), root: plan.root, verify: plan.verify, notes: plan.notes, steps: plan.steps.map((s) => ({ argv: s.argv, note: s.note })),
       changes: plan.changes.map((ch) => ({ path: ch.path.slice(plan.root.length + 1).replace(/\\/g, '/'), action: ch.action, note: ch.note ?? null, before: null, after: clip(ch.after, 3000) })) });
     if (body['approved'] !== true) return bad(400, 'apply needs approved: true');
+    if (!str(body['digest'])) return bad(400, 'digest required: the one shown with the plan');
+    if (body['digest'] !== planDigest(plan)) return bad(409, 'the plan changed since you looked at it; review it again');
     let r; try { r = applyNewProject(plan, { approved: true }); } catch (e) { return bad(400, (e as Error).message); }
     return ok({ id: projectId(c.db, plan.root), backupId: r.backupId, written: r.written.length, steps: r.steps, fallbacks: r.fallbacks });
   }],

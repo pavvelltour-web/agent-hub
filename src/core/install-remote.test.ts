@@ -73,3 +73,30 @@ test('MCP: becomes a library entry with env NAMES only, never values; it is not 
   const raw = readFileSync(join(HUB_HOME, 'registry', 'mcps-audio-elevenlabs.json'), 'utf8');
   assert.ok(!raw.includes('<your-api-key>'), 'the placeholder value is not stored either');
 });
+
+test('makeTextFetcher stops reading at the cap while streaming (a body with no end is not buffered) and honours an outer deadline signal', async () => {
+  const { createServer } = await import('node:http');
+  const { makeTextFetcher } = await import('./install-remote.ts');
+  let sent = 0, closed = false;
+  const srv = createServer((req, res) => {
+    if (req.url === '/small') { res.end('hello'); return; }
+    res.writeHead(200, { 'content-type': 'text/plain' });             // no content-length: a chunked body that never ends
+    res.on('close', () => { closed = true; });
+    const chunk = 'x'.repeat(64 * 1024);
+    const pump = (): void => { while (!closed && sent < 5000) { sent++; if (!res.write(chunk)) { res.once('drain', pump); return; } } if (!closed) res.end(); };
+    if (req.url === '/slow') { res.write('a'); return; }                // starts, then stalls
+    pump();
+  });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+  const f = makeTextFetcher((u) => u.hostname === '127.0.0.1');
+  try {
+    assert.equal(await f(`${base}/small`, 100), 'hello');
+    await assert.rejects(f(`${base}/endless`, 100_000), /too large/);
+    assert.ok(sent < 200, `the reader gave up early (sent ${sent} chunks of 5000)`);
+    const t = Date.now();
+    await assert.rejects(f(`${base}/slow`, 1000, AbortSignal.timeout(150)));
+    assert.ok(Date.now() - t < 5000, 'the outer deadline ended the request, not the 20 s per-request timeout');
+    await assert.rejects(f('http://example.com/x', 100), /host not allowed/);
+  } finally { await new Promise<void>((r) => srv.close(() => r())); }
+});
