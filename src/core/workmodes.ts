@@ -8,6 +8,8 @@ import { REPO_ROOT } from './registry.ts';
 
 export interface WorkMode {
   id: string; title: string; hint: string; permission: Permission; cls: TaskClass; worktree: boolean; skills: string[];
+  /** MCP servers (hub-library names) this mode may use. When set, a run starts only those (`--strict-mcp-config`); when absent MCP is left as the user configured it. */
+  mcp?: string[];
   review: 'none' | 'on-stuck' | 'phase';
   autopilot?: { mode: 'full' | 'semi' | 'interview' | 'manual'; depth: 'strict' | 'normal' | 'deep' };
   promptPrefix?: string;
@@ -28,6 +30,7 @@ export function parseWorkMode(raw: unknown): WorkMode {
   if (!CLASSES.includes(m.cls as string)) bad('bad class');
   if (typeof m.worktree !== 'boolean') bad('worktree must be true or false');
   if (!Array.isArray(m.skills) || m.skills.some((s) => typeof s !== 'string' || !NAME.test(s))) bad('bad skills');
+  if (m.mcp !== undefined && (!Array.isArray(m.mcp) || m.mcp.some((s) => typeof s !== 'string' || !NAME.test(s)))) bad('bad mcp');
   if (!REVIEWS.includes(m.review as string)) bad('bad review');
   if (m.autopilot && (!AP_MODES.includes(m.autopilot.mode) || !AP_DEPTHS.includes(m.autopilot.depth))) bad('bad autopilot settings');
   if (m.promptPrefix !== undefined && typeof m.promptPrefix !== 'string') bad('bad promptPrefix');

@@ -5,12 +5,13 @@ import { claudeAdapter } from '../adapters/claude.ts';
 import { codexAdapter } from '../adapters/codex.ts';
 import { startAgent, type RunHandle } from '../adapters/process.ts';
 import type { AgentAdapter, HubEvent, Permission } from '../adapters/types.ts';
-import type { AgentId } from '../core/types.ts';
+import type { AgentId, RegistryEntry } from '../core/types.ts';
+import { loadWorkModes } from '../core/workmodes.ts';
 import { addLimit, projectId, tx, type Db } from '../history/store.ts';
 import { HUB_HOME } from '../core/registry.ts';
 import { redact } from '../lib/redact.ts';
 import { createWorktree, isGitRepo, pushGuardEnv } from './git.ts';
-import { leanArgs } from './lean.ts';
+import { leanPlan } from './lean.ts';
 import { handoffPrompt, writeCard, type Card, type HandoffInput } from './handoff.ts';
 import { readRunnerHooks, runHooks } from './hooks-run.ts';
 import { modelSummary, type Summary } from './summarize.ts';
@@ -31,7 +32,9 @@ const MAX_CONCURRENT = 4;
 const MAX_KEEP = 400;
 
 /** `summarize`: false = deterministic handoff summary only; a function replaces the model call (tests). Default: try the cheap model, fall back. */
-export interface RunManagerOpts { exe?: Partial<Record<AgentId, { cmd: string; prefix: string[] }>>; env?: NodeJS.ProcessEnv; summarize?: boolean | ((inp: HandoffInput) => Promise<Summary | undefined>); home?: string }
+export interface RunManagerOpts { exe?: Partial<Record<AgentId, { cmd: string; prefix: string[] }>>; env?: NodeJS.ProcessEnv; summarize?: boolean | ((inp: HandoffInput) => Promise<Summary | undefined>); home?: string;
+  /** Tests: where work modes and MCP server definitions come from (defaults: the repo's `modes/` and the hub library). */
+  lean?: { modesDir?: string; catalog?: RegistryEntry[] } }
 
 /** The hub's session token / cookie / approval secrets must never reach an agent process: only the user's browser may approve a review. */
 const HUB_SECRET_ENV = /hub.*(?:token|cookie|session|secret)/i;
@@ -130,12 +133,17 @@ export class RunManager {
     const note = (r: { event: string; command: string; code: number | null; output: string }[]): void => r.forEach((h) => emit({ kind: 'warn', message: `hook ${h.event}: ${h.command} → ${h.code === 0 ? 'ok' : 'exit ' + h.code}${h.output ? ' · ' + h.output.slice(0, 120) : ''}` }));
     note(runHooks('sessionStart', hooks.sessionStart, cwd, { ...env, HUB_RUN_ID: id, HUB_AGENT: req.agent }));
     const exe = this.opts.exe?.[req.agent];
-    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: req.isolatedCwd ? [] : leanArgs(req.agent, req.cls, { projectRoot: req.projectRoot, cwd }), ...(req.extraArgs?.length ? { extraArgs: req.extraArgs } : {}) }, emit,
+    // Tool set for this run: skills and MCP servers follow the work mode (a mode that lists none starts none). The temp MCP file lives in the hub's own folder.
+    let mode; try { mode = reviewer || !workMode ? undefined : loadWorkModes(this.opts.lean?.modesDir).find((m) => m.id === workMode); } catch { mode = undefined; }
+    const lean = reviewer ? undefined : leanPlan(req.agent, mode, { projectRoot: req.projectRoot, cwd, mcpNeeded: mode?.mcp ?? [], ...(req.cls ? { cls: req.cls } : {}), tmpDir: join(home, 'tmp'), ...(this.opts.lean?.catalog ? { catalog: this.opts.lean.catalog } : {}) });
+    lean?.notes.forEach((message) => emit({ kind: 'warn', message }));
+    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: lean?.args ?? [], ...(req.extraArgs?.length ? { extraArgs: req.extraArgs } : {}) }, emit,
       { env, ...(exe ? { exe } : {}) });
     const entry = { handle, stopped: false };
     this.live.set(id, entry);
     void handle.done.then(async () => {
       this.live.delete(id);
+      lean?.cleanup();
       const outcome = limit ? 'limit' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
       this.db.prepare('UPDATE run SET outcome = ?, ended_at = ? WHERE id = ?').run(outcome, new Date().toISOString(), id);
       // A reviewer has no work to hand over, and its projectRoot is the task folder: a card there would be committed into the branch.

@@ -326,3 +326,34 @@ test('hostile numbers and ids from a live CLI (usage objects, object session id,
   const lim = db.prepare('SELECT used_percent AS p, resets_at AS r FROM limit_snapshot').all() as { p: unknown; r: unknown }[];
   assert.ok(lim.every((x) => (x.p === null || Number.isFinite(x.p)) && (x.r === null || Number.isFinite(x.r))));
 });
+
+test('RunManager lean tool sets: MCP-naming mode starts strict and the temp file is gone after the run; skill-less modes drop slash commands; an unknown server warns', async () => {
+  const root = repo(), home = mkdtempSync(join(tmpdir(), 'hub-leanhome-')), modes = mkdtempSync(join(tmpdir(), 'hub-leanmodes-')), cap = join(home, 'argv.jsonl');
+  try {
+    const m = (id: string, over: object): void => writeFileSync(join(modes, `${id}.json`), JSON.stringify({ id, title: id, hint: 'h', permission: 'edit', cls: 'implement', worktree: false, skills: [], review: 'none', ...over }));
+    m('chat', { mcp: ['shadcn'] }); m('task', { skills: ['x'], mcp: ['ghost'] });
+    const catalog = [{ id: 'mcp/shadcn', kind: 'mcp', title: 's', description: '', source: { type: 'local' }, tags: [], stages: [], projectTypes: ['*'], compat: { claude: 'native', codex: 'native' }, tokenCost: 0, risk: { executesCode: true, network: false, writesOutside: false }, sourceVerified: true, mcp: { command: 'npx', args: ['shadcn@latest', 'mcp'], env: ['SHADCN_TOKEN'] } }] as never;
+    process.env['SHADCN_TOKEN'] = 'sk-SHOULDNEVERAPPEAR1234567890';
+    const rm = new RunManager(openDb(':memory:'), { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-ok', FAKE_ARGV_FILE: cap }, summarize: false, home, lean: { modesDir: modes, catalog } });
+    const go = async (req: object): Promise<string> => { const r = rm.start({ agent: 'claude', prompt: 'hi', projectRoot: root, ...req } as never); await waitEnd(rm, r.id); return r.id; };
+    const calls = (): { argv: string[]; mcp: string | null }[] => readFileSync(cap, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { argv: string[]; mcp: string | null });
+
+    await go({ workMode: 'chat' });
+    const a = calls()[0]!;
+    assert.ok(a.argv.includes('--disable-slash-commands') && a.argv.includes('--strict-mcp-config'), a.argv.join(' '));
+    assert.deepEqual(Object.keys((JSON.parse(a.mcp as string) as { mcpServers: object }).mcpServers), ['shadcn'], 'the agent saw the file while it ran');
+    assert.ok(!(a.mcp as string).includes('SHOULDNEVERAPPEAR') && (a.mcp as string).includes('${SHADCN_TOKEN}'), 'names only');
+    assert.deepEqual(existsSync(join(home, 'tmp')) ? readdirSync(join(home, 'tmp')) : [], [], 'the temp MCP file is removed when the run ends');
+
+    const id2 = await go({ workMode: 'task' });
+    const b = calls()[1]!;
+    assert.ok(!b.argv.includes('--strict-mcp-config') && !b.argv.includes('--disable-slash-commands'), b.argv.join(' '));
+    assert.ok(rm.events(id2).some((e) => e.kind === 'warn' && /MCP: "ghost"/.test((e.data as { message: string }).message)), 'the user is told MCP was left alone');
+
+    await go({ cls: 'mechanical' });
+    assert.deepEqual(calls()[2]!.argv.filter((x) => x.startsWith('--') && /slash|mcp/.test(x)), ['--disable-slash-commands'], 'no mode: the task class decides, as before');
+
+    await go({ workMode: 'chat', isolatedCwd: root });
+    assert.ok(!calls()[3]!.argv.some((x) => /slash|mcp/.test(x)), 'a review-gate reviewer is never touched');
+  } finally { delete process.env['SHADCN_TOKEN']; rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); rmSync(modes, { recursive: true, force: true }); }
+});

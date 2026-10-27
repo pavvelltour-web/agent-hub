@@ -125,6 +125,8 @@ if (scenario.startsWith('fixture:')) {
   out({ type: 'system', subtype: 'init', session_id: 'cl-limit' });
   out({ type: 'result', is_error: true, result: 'Claude usage limit reached', usage: { input_tokens: 1, output_tokens: 1 } });
 } else if (scenario === 'claude-ok') {
+  // FAKE_ARGV_FILE: append {argv, mcp} per call: the CLI arguments and what the --mcp-config file held at that moment (lean tool sets, src/run/lean.test.ts).
+  if (process.env.FAKE_ARGV_FILE) { const a = process.argv.slice(2), i = a.indexOf('--mcp-config'); appendFileSync(process.env.FAKE_ARGV_FILE, JSON.stringify({ argv: a, mcp: i >= 0 && existsSync(a[i + 1]) ? readFileSync(a[i + 1], 'utf8') : null }) + '\n'); }
   out({ type: 'system', subtype: 'hook_started', hook_id: 'x' });
   out({ type: 'system', subtype: 'init', session_id: 'fake-claude-1', model: 'claude-sonnet-5-5' });
   out({ type: 'assistant', message: { content: [{ type: 'text', text: `got ${prompt.length} chars: ${prompt.slice(0, 40)}` }, { type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } });
