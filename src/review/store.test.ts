@@ -8,7 +8,7 @@ import { fingerprint } from './types.ts';
 import type { Finding, RawFinding, Review, Severity } from './types.ts';
 import {
   addFindings, answerFinding, clearHumanApproval, createReview, getReview, listFindings, listReviewsForRun,
-  markCleared, postedFingerprints, setHumanApproval, updateReview,
+  INTERRUPTED, markCleared, markInterruptedReviews, postedFingerprints, repeatFingerprints, setHumanApproval, updateReview,
 } from './store.ts';
 
 const base = { file: 'src/a.ts', title: 'Null deref', classOfBug: 'null-deref' };
@@ -76,7 +76,43 @@ test('answerFinding refuses open and a missing reason for rejected/intentional',
   assert.equal(listFindings(db, r.id)[0]?.answer, 'open');
   assert.equal(answerFinding(db, f.id, 'rejected', 'verified false by hand').answer, 'rejected');
   assert.equal(listFindings(db, r.id)[0]?.reason, 'verified false by hand');
-  assert.equal(answerFinding(db, f.id, 'dismissed').answer, 'dismissed');
+  // An answered finding is closed: it cannot be answered again (was: re-answered as 'dismissed'; ADR-019 now limits answers to open findings).
+  assert.throws(() => answerFinding(db, f.id, 'dismissed', 'changed my mind'), /only an open finding/);
+  assert.equal(listFindings(db, r.id)[0]?.answer, 'rejected');
+});
+
+test('dismissed needs a reason for an important or security finding (not for a nit); a fixed finding cannot be answered', () => {
+  const db = openDb(':memory:');
+  const r = createReview(db, mkReview());
+  const [imp, sec, nit, fixed] = addFindings(db, r.id, 1, [stored(raw()), stored(raw({ line: 2, title: 'S' }), 'security'), stored(raw({ line: 3, title: 'N' }), 'nit'), stored(raw({ line: 4, title: 'F' }))]) as [Finding, Finding, Finding, Finding];
+  assert.throws(() => answerFinding(db, imp.id, 'dismissed'), /reason/);
+  assert.throws(() => answerFinding(db, sec.id, 'dismissed', '   '), /reason/);
+  assert.equal(answerFinding(db, imp.id, 'dismissed', 'duplicate of another ticket').answer, 'dismissed');
+  assert.equal(answerFinding(db, nit.id, 'dismissed').answer, 'dismissed');
+  markCleared(db, fixed.id, 'ddd');
+  assert.throws(() => answerFinding(db, fixed.id, 'rejected', 'not a bug'), /only an open finding/);
+  assert.equal(listFindings(db, r.id).find((f) => f.id === fixed.id)?.answer, 'fixed');
+});
+
+test('repeatFingerprints: only this review, never fixed findings', () => {
+  const db = openDb(':memory:');
+  const r1 = createReview(db, mkReview()), r2 = createReview(db, mkReview({ runId: 'r2' }));
+  const [a, b] = addFindings(db, r1.id, 1, [stored(raw()), stored(raw({ file: 'src/b.ts' }))]) as [Finding, Finding];
+  addFindings(db, r2.id, 1, [stored(raw({ file: 'src/c.ts' }))]);
+  answerFinding(db, a.id, 'rejected', 'not a bug');
+  markCleared(db, b.id, 'ddd');
+  assert.deepEqual([...repeatFingerprints(db, r1.id)], [a.fingerprint], 'rejected stays a repeat, fixed does not');
+  assert.equal(repeatFingerprints(db, r2.id).has(a.fingerprint), false, 'another review does not see it');
+});
+
+test('markInterruptedReviews: a review left mid-round is open with the restart reason; finished ones are untouched', () => {
+  const db = openDb(':memory:');
+  const mid = createReview(db, mkReview({ state: 'verifying' })), done = createReview(db, mkReview({ state: 'passed' }));
+  db.prepare('UPDATE review SET info_json = ? WHERE id = ?').run(JSON.stringify({ completed: 1, reasons: [], checks: [{ name: 'x', ok: true }] }), mid.id);
+  assert.equal(markInterruptedReviews(db), 1);
+  assert.equal(getReview(db, mid.id)?.state, 'open'); assert.equal(getReview(db, done.id)?.state, 'passed');
+  const info = JSON.parse((db.prepare('SELECT info_json FROM review WHERE id = ?').get(mid.id) as { info_json: string }).info_json) as { completed: number; reasons: string[] };
+  assert.deepEqual(info.reasons, [INTERRUPTED]); assert.equal(info.completed, 1);
 });
 
 test('markCleared records the clearing sha and marks the finding fixed', () => {

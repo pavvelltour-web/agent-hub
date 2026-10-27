@@ -14,12 +14,14 @@ import { leanArgs } from './lean.ts';
 import { handoffPrompt, writeCard, type Card, type HandoffInput } from './handoff.ts';
 import { readRunnerHooks, runHooks } from './hooks-run.ts';
 import { modelSummary, type Summary } from './summarize.ts';
+import { markInterruptedReviews } from '../review/store.ts';
 import { sanitizeEvent } from '../adapters/event-utils.ts';
 
 export interface StartReq {
   agent: AgentId; prompt: string; projectRoot: string; task?: string; model?: string; effort?: string; permission?: Permission;
   resumeRunId?: string; resumeNativeId?: string; resumeOfSession?: string; worktree?: boolean; sparse?: string[]; handoffOf?: string; mode?: 'chat' | 'task';
   extraArgs?: string[];                                      // INTERNAL only (review gate): appended to the CLI args; api.ts must never forward it from a request body
+  isolatedCwd?: string;                                      // INTERNAL only (review gate): run in this empty folder, without project hooks or settings; api.ts must never forward it
   cls?: string; workMode?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
 }
 export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null; baseSha: string | null }
@@ -48,6 +50,7 @@ export class RunManager {
     this.db = db; this.opts = opts;
     // A crashed server leaves rows without an end: mark them so the UI never shows a ghost "running" run.
     db.prepare("UPDATE run SET outcome = 'interrupted', ended_at = ? WHERE outcome IS NULL").run(new Date().toISOString());
+    markInterruptedReviews(db);   // review rounds live in this process too: one cut off by the crash is open again, with a restart
   }
 
   start(req: StartReq): RunRow {
@@ -73,6 +76,9 @@ export class RunManager {
     } else if (req.handoffOf) {
       const prev = this.get(req.handoffOf);
       if (prev?.cwd) { cwd = prev.cwd; branch = prev.branch; baseSha = prev.baseSha ?? undefined; }
+    } else if (req.isolatedCwd) {
+      if (!isAbsolute(req.isolatedCwd) || !existsSync(req.isolatedCwd)) throw new Error('isolated folder not found');
+      cwd = req.isolatedCwd;
     } else if (req.worktree ?? req.mode === 'task') {
       if (!isGitRepo(req.projectRoot)) throw new Error('worktree needs a git repository');
       const wt = createWorktree(req.projectRoot, req.task ?? id, req.agent, { ...(req.sparse ? { sparse: req.sparse } : {}) });
@@ -110,12 +116,12 @@ export class RunManager {
 
     const home = this.opts.home ?? HUB_HOME;
     const env = pushGuardEnv(home, agentEnv(this.opts.env ?? process.env));
-    const hooks = readRunnerHooks(req.projectRoot, home);
+    const hooks: ReturnType<typeof readRunnerHooks> = req.isolatedCwd ? { approved: true, sessionStart: [], sessionEnd: [] } : readRunnerHooks(req.projectRoot, home);
     if (!hooks.approved) { emit({ kind: 'warn', message: 'hub.json has runner hooks that you have not approved on this machine: skipped. Review and approve with `hub hooks --approve <project>`.' }); hooks.sessionStart = []; hooks.sessionEnd = []; }
     const note = (r: { event: string; command: string; code: number | null; output: string }[]): void => r.forEach((h) => emit({ kind: 'warn', message: `hook ${h.event}: ${h.command} → ${h.code === 0 ? 'ok' : 'exit ' + h.code}${h.output ? ' · ' + h.output.slice(0, 120) : ''}` }));
     note(runHooks('sessionStart', hooks.sessionStart, cwd, { ...env, HUB_RUN_ID: id, HUB_AGENT: req.agent }));
     const exe = this.opts.exe?.[req.agent];
-    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: leanArgs(req.agent, req.cls, { projectRoot: req.projectRoot, cwd }), ...(req.extraArgs?.length ? { extraArgs: req.extraArgs } : {}) }, emit,
+    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: req.isolatedCwd ? [] : leanArgs(req.agent, req.cls, { projectRoot: req.projectRoot, cwd }), ...(req.extraArgs?.length ? { extraArgs: req.extraArgs } : {}) }, emit,
       { env, ...(exe ? { exe } : {}) });
     const entry = { handle, stopped: false };
     this.live.set(id, entry);

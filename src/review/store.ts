@@ -54,6 +54,22 @@ export function updateReview(db: Db, id: string, patch: Partial<Omit<Review, 'id
 export const listReviewsForRun = (db: Db, runId: string): Review[] =>
   (db.prepare('SELECT * FROM review WHERE run_id = ? ORDER BY rowid').all(runId) as unknown as ReviewRow[]).map(toReview);
 
+/** Reviews of one task branch (project + branch + folder), oldest first. Any run of the branch (task, fixer, resumed) shares them. */
+export const listReviewsForBranch = (db: Db, projectId: number, branch: string, cwd: string): Review[] =>
+  (db.prepare('SELECT r.* FROM review r JOIN run u ON u.id = r.run_id WHERE r.project_id = ? AND u.branch = ? AND u.cwd = ? ORDER BY r.rowid').all(projectId, branch, cwd) as unknown as ReviewRow[]).map(toReview);
+
+export const INTERRUPTED = 'interrupted by a restart';
+/** A round runs in the hub process only: on start, a review left in checks / hunting / verifying is open again with the reason, so it can be restarted. */
+export function markInterruptedReviews(db: Db): number {
+  const rows = db.prepare("SELECT id, info_json FROM review WHERE state IN ('checks', 'hunting', 'verifying')").all() as unknown as { id: string; info_json: string | null }[];
+  for (const r of rows) {
+    let info: Record<string, unknown> = {};
+    try { const j = r.info_json ? (JSON.parse(r.info_json) as unknown) : {}; if (j && typeof j === 'object' && !Array.isArray(j)) info = j as Record<string, unknown>; } catch { /* unreadable: start clean */ }
+    db.prepare("UPDATE review SET state = 'open', info_json = ? WHERE id = ?").run(JSON.stringify({ ...info, reasons: [INTERRUPTED] }), r.id);
+  }
+  return rows.length;
+}
+
 export function addFindings(db: Db, reviewId: string, round: number, findings: (VerifiedFinding & { severity: Severity; fingerprint: string })[]): Finding[] {
   mustReview(db, reviewId);
   const ins = db.prepare('INSERT INTO finding (id, fingerprint, review_id, round, severity, lens, file, line, title, evidence, class_of_bug, votes_real, votes_not_real, answer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -74,9 +90,11 @@ export function listFindings(db: Db, reviewId: string, filter: { severity?: Seve
 
 export function answerFinding(db: Db, findingId: string, answer: Exclude<Answer, 'open'>, reason?: string): Finding {
   if ((answer as string) === 'open') throw new Error("'open' is not a valid answer");
-  mustFinding(db, findingId);
+  const row = mustFinding(db, findingId);
+  if (row.answer !== 'open') throw new Error('only an open finding can be answered');
   const why = reason?.trim();
   if ((answer === 'rejected' || answer === 'intentional') && !why) throw new Error(`answer '${answer}' needs a reason`);
+  if (answer === 'dismissed' && (row.severity === 'important' || row.severity === 'security') && !why) throw new Error(`answer 'dismissed' needs a reason for an ${row.severity} finding`);
   db.prepare('UPDATE finding SET answer = ?, reason = ? WHERE id = ?').run(answer, why || null, findingId);
   return toFinding(mustFinding(db, findingId));
 }
@@ -99,6 +117,10 @@ export function clearHumanApproval(db: Db, reviewId: string): Review {
   return mustReview(db, reviewId);
 }
 
-/** Every fingerprint ever stored for the project (used later to drop repeated findings). */
+/** Fingerprints a new round of THIS review must not post again: shown before and not `fixed`. A fixed finding that comes back is new. */
+export const repeatFingerprints = (db: Db, reviewId: string): Set<string> =>
+  new Set((db.prepare("SELECT DISTINCT fingerprint AS fp FROM finding WHERE review_id = ? AND answer != 'fixed'").all(reviewId) as unknown as { fp: string }[]).map((x) => x.fp));
+
+/** Every fingerprint ever stored for the project: history only. Never used to drop findings (that is `repeatFingerprints`, scoped to one review). */
 export const postedFingerprints = (db: Db, projectId: number): Set<string> =>
   new Set((db.prepare('SELECT DISTINCT f.fingerprint AS fp FROM finding f JOIN review r ON r.id = f.review_id WHERE r.project_id = ?').all(projectId) as unknown as { fp: string }[]).map((x) => x.fp));

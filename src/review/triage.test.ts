@@ -88,7 +88,7 @@ test('triage: a fingerprint survives a line move (same line text, other number)'
 test('triage: sorted security, important, nit, pre-existing', () => {
   const out = triage([
     vf({ line: 1, category: 'bug' }),
-    vf({ line: 2, category: 'bug', title: 'old' }),
+    vf({ line: 20, category: 'bug', title: 'old' }),   // far from every changed line (a hunter may be off by up to LINE_SLACK)
     vf({ line: 3, category: 'risk', votes: { real: 1, notReal: 0 } }),
     vf({ line: 4, lens: 'security' }),
   ], ctx(['src/a.ts:1', 'src/a.ts:3', 'src/a.ts:4']));
@@ -112,6 +112,25 @@ test('triage: hostile input never throws (bad lines, empty file, huge strings, b
   // only the three findings with a valid file/line/category survive (bad votes count as zero); all of them are clipped
   assert.equal(out.length, 2);
   for (const f of out) { assert.ok(f.title.length <= 500); assert.ok(f.evidence.length <= 5000); assert.ok((f.classOfBug ?? '').length <= 500); }
+});
+
+test('triage: a hunter off by up to 3 lines still hits the added line; 4 away is pre-existing', () => {
+  const sev = (line: number) => triage([vf({ line })], ctx(['src/a.ts:10']))[0]?.severity;
+  for (const l of [7, 9, 11, 13]) assert.equal(sev(l), 'important', `line ${l}`);
+  for (const l of [6, 14]) assert.equal(sev(l), 'pre-existing', `line ${l}`);
+});
+
+test('triage: a/ b/ prefixes, ./, backslashes and an absolute path under the repo root match the diff; case folds on Windows only', () => {
+  const root = process.platform === 'win32' ? 'C:\\work\\repo' : '/work/repo';
+  const o = { ...ctx(['src/a.ts:10']), root };
+  for (const file of ['b/src/a.ts', 'a/src/a.ts', './src/a.ts', 'src\\a.ts', `${root}${process.platform === 'win32' ? '\\' : '/'}src${process.platform === 'win32' ? '\\' : '/'}a.ts`]) {
+    const [f] = triage([vf({ file })], o);
+    assert.equal(f?.severity, 'important', file); assert.equal(f?.file, 'src/a.ts', file);
+  }
+  const [up] = triage([vf({ file: 'SRC/A.ts' })], o);
+  assert.equal(up?.severity, process.platform === 'win32' ? 'important' : 'pre-existing');
+  const [real] = triage([vf({ file: 'b/x.ts' })], ctx(['b/x.ts:10']));
+  assert.equal(real?.file, 'b/x.ts', 'a real b/ folder is kept');
 });
 
 test('triage: backslash and ./ file spellings match the diff set', () => {

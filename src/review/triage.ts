@@ -11,6 +11,48 @@ export interface TriageOpts {
   round: number;
   /** Text of the line a finding points at; the fingerprint needs it. A throwing lookup counts as empty text. */
   lineText: (file: string, line: number) => string;
+  /** Repository root: an absolute finding path under it is made relative. */
+  root?: string;
+}
+
+/** How far (in lines) a hunter's line number may be off and still count as the added line. */
+export const LINE_SLACK = 3;
+const WIN = process.platform === 'win32';
+const fold = (s: string): string => (WIN ? s.toLowerCase() : s);
+
+/** A hunter's path as a repository path: forward slashes, no leading `./`, an absolute path under `root` made relative. */
+export function relFile(f: string, root?: string): string {
+  let p = f.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+  if (root) {
+    const r = root.replace(/\\/g, '/').replace(/\/+$/, '') + '/';
+    if (fold(p).startsWith(fold(r))) p = p.slice(r.length).replace(/^(?:\.\/)+/, '');
+  }
+  return p;
+}
+
+/** `"<file>:<line>"` keys → per-file line lists keyed by the folded path (case-insensitive on Windows), keeping the diff's own spelling. */
+function indexDiff(keys: Set<string>): Map<string, { file: string; lines: number[] }> {
+  const m = new Map<string, { file: string; lines: number[] }>();
+  for (const k of keys) {
+    const i = k.lastIndexOf(':'); if (i <= 0) continue;
+    const file = k.slice(0, i), line = Number(k.slice(i + 1));
+    if (!Number.isSafeInteger(line)) continue;
+    const key = fold(file); let e = m.get(key);
+    if (!e) m.set(key, (e = { file, lines: [] }));
+    e.lines.push(line);
+  }
+  return m;
+}
+
+/** The diff's spelling of a finding's file (an `a/` / `b/` prefix is dropped only when that names a changed file) and whether its line is added, give or take LINE_SLACK. */
+function matchDiff(idx: Map<string, { file: string; lines: number[] }>, file: string, line: number): { file: string; inDiff: boolean } {
+  let found: { file: string; lines: number[] } | undefined;
+  for (const cand of [file, file.replace(/^[ab]\//, '')]) {
+    const e = idx.get(fold(cand)); if (!e) continue;
+    if (e.lines.some((l) => Math.abs(l - line) <= LINE_SLACK)) return { file: e.file, inDiff: true };
+    found ??= e;
+  }
+  return { file: found?.file ?? file, inDiff: false };
 }
 
 const DROPPED = new Set(['style', 'cleanup', 'diagnostic']);
@@ -19,12 +61,12 @@ const MAX_FILE = 1024;
 
 const clip = (v: unknown, n: number): string => (typeof v === 'string' ? v.slice(0, n) : '');
 const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
-const normFile = (f: string): string => f.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
 
 /**
  * Filter and tag verified findings. Never throws on hostile input: unusable findings are dropped, long strings are clipped.
  * - style / cleanup / diagnostic (and unknown categories) are dropped.
- * - A finding on a line the diff did not add or change is `pre-existing`: it never blocks and is not the author's. This holds for
+ * - A finding on a line the diff did not add or change (give or take LINE_SLACK lines, after path normalisation) is `pre-existing`:
+ *   it never blocks and is not the author's. The gate passes the lines added in the WHOLE base..head diff, not one round's. This holds for
  *   the security lens too: an old security problem on an untouched line is reported, but as pre-existing, not as a blocker.
  * - Security lens on a changed line -> `security`. Bug/risk on a changed line -> `important`, except a weakly supported risk
  *   (1 real vote, 0 against, not security) which is a `nit`. At most `maxNits` nits are kept, strongest first.
@@ -33,16 +75,17 @@ const normFile = (f: string): string => f.replace(/\\/g, '/').replace(/^(?:\.\/)
 export function triage(found: VerifiedFinding[], o: TriageOpts): Finding[] {
   const seen = new Set<string>(o.posted);
   const kept: Finding[] = [];
+  const idx = indexDiff(o.diffLines);
   for (const raw of Array.isArray(found) ? found : []) {
     if (!raw || typeof raw !== 'object') continue;
     if (typeof raw.category !== 'string' || DROPPED.has(raw.category) || (raw.category !== 'bug' && raw.category !== 'risk')) continue;
     if (typeof raw.file !== 'string' || !raw.file || raw.file.length > MAX_FILE) continue;
     if (!Number.isSafeInteger(raw.line) || raw.line < 1) continue;
-    const file = normFile(raw.file);
-    if (!file) continue;
+    const rel = relFile(raw.file, o.root);
+    if (!rel) continue;
+    const { file, inDiff } = matchDiff(idx, rel, raw.line);
     const lens = clip(raw.lens, 64);
     const votes = { real: count(raw.votes?.real), notReal: count(raw.votes?.notReal) };
-    const inDiff = o.diffLines.has(`${file}:${raw.line}`);
     const severity: Severity = !inDiff ? 'pre-existing'
       : lens === 'security' ? 'security'
       : raw.category === 'risk' && votes.real === 1 && votes.notReal === 0 ? 'nit'

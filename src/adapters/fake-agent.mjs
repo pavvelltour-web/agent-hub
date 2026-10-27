@@ -3,7 +3,7 @@
 // (“!limit” or “лимит” → usage-limit stop). FAKE_DEMO=1 gives slower, richer streams for `hub ui --demo`. Never used by real work.
 // FAKE_SCENARIO=fixture:<name>.jsonl[+<name>.jsonl…] replays recorded CLI output line by line from src/adapters/fixtures/ (FAKE_FIXTURE_DELAY ms between lines, default 150).
 import { createInterface } from 'node:readline';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -61,7 +61,7 @@ if (scenario.startsWith('fixture:')) {
   const argv = process.argv.slice(2);
   if (process.env.FAKE_CAPTURE_FILE) {
     const si = argv.indexOf('--output-schema');
-    appendFileSync(process.env.FAKE_CAPTURE_FILE, JSON.stringify({ argv, prompt, schemaFileExists: si >= 0 ? existsSync(argv[si + 1]) : null, hubEnv: Object.keys(process.env).filter((k) => /hub/i.test(k)) }) + '\n');
+    appendFileSync(process.env.FAKE_CAPTURE_FILE, JSON.stringify({ argv, prompt, schemaFileExists: si >= 0 ? existsSync(argv[si + 1]) : null, hubEnv: Object.keys(process.env).filter((k) => /hub/i.test(k)), cwd: process.cwd(), cwdFiles: readdirSync(process.cwd()) }) + '\n');
   }
   const codexShape = isCodex || scenario === 'review-codex-json';
   const mi = Math.max(argv.indexOf('--model'), argv.indexOf('-m'));

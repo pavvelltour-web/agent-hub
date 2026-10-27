@@ -41,6 +41,7 @@ export default async function view(ctx) {
     const m = model(raw);
     const busy = IN_PROGRESS.has(m.review.state);
     let accept = null;
+    // The server reads the branch HEAD and the tree state itself; the sha sent here is only compared with it.
     if (!busy && m.review.headSha) accept = await api.get(`/reviews/${rid}/can-accept?sha=${m.review.headSha}`, true).catch(() => null);
     if (!busy && (rules === null || force)) rules = await api.get(`/projects/${projectId}/review-rules`, true).catch(() => ({ repeated: [], hasReviewMd: false }));
     if (dead || mine !== loadSeq) return;
@@ -130,8 +131,9 @@ export default async function view(ctx) {
   function draw(m, accept) {
     const busy = IN_PROGRESS.has(m.review.state);
     const canFix = !busy && blockers(m).length > 0;
+    const interrupted = m.reasons.includes('interrupted by a restart');
     actions.replaceChildren(
-      !busy && m.review.state !== 'reconsider' ? (() => { const b = btn('Проверить новые коммиты', { kind: 'glass', icon: 'refresh', title: 'Ревью посмотрит только то, что изменилось после прошлого круга', onclick: () => rerun(m, b) }); return b; })() : null);
+      !busy && m.review.state !== 'reconsider' ? (() => { const b = btn(interrupted ? 'Запустить ревью снова' : 'Проверить новые коммиты', { kind: interrupted ? 'primary' : 'glass', icon: 'refresh', title: interrupted ? 'Круг ревью прервался при перезапуске хаба: он начнётся заново' : 'Ревью посмотрит только то, что изменилось после прошлого круга', onclick: () => rerun(m, b) }); return b; })() : null);
     const live = m.findings.filter((f) => f.severity !== 'pre-existing');
     const old = m.findings.filter((f) => f.severity === 'pre-existing');
     root.replaceChildren(
@@ -186,11 +188,13 @@ export default async function view(ctx) {
   function riskBlock(m) {
     const r = m.review, [riskT] = RISK_RU[r.risk];
     const why = m.riskWhy.length ? h('details.rv-why', { open: r.risk === 'high' }, h('summary', `Почему риск ${riskT}`), h('ul.rv-list', m.riskWhy.map((x) => h('li', riskWhyRu(x))))) : null;
-    if (r.risk !== 'high' || IN_PROGRESS.has(r.state) || !r.headSha) return why;
+    const tooLarge = m.humanWhy.length > 0;
+    if ((r.risk !== 'high' && !tooLarge) || IN_PROGRESS.has(r.state) || r.state === 'reconsider' || !r.headSha) return why;
     const approved = r.approvedSha && r.approvedSha === r.headSha;
     const b = approved ? null : btn('Подтверждаю этот коммит', { kind: 'primary', icon: 'check', onclick: () => approve(m, b) });
     return h('div.stack.rv-approve', why,
-      approved ? h('div.row-flex', chip('вы подтвердили коммит ' + short(r.headSha), 'ok')) : h('p', 'Изменения затрагивают опасные места, поэтому нужен ваш взгляд.'),
+      tooLarge ? h('div.alert.warn', icon('alert'), h('span', reasonRu(m.humanWhy[0]) + '. Посмотрите изменения сами, прежде чем подтверждать.')) : null,
+      approved ? h('div.row-flex', chip('вы подтвердили коммит ' + short(r.headSha), 'ok')) : h('p', r.risk === 'high' ? 'Изменения затрагивают опасные места, поэтому нужен ваш взгляд.' : 'Проверяющие видели не всё, поэтому нужен ваш взгляд.'),
       b,
       h('p.t-meta', `Подтверждение привязано к коммиту ${short(r.headSha)}. Любой новый коммит его сбросит, и придётся подтвердить снова.`));
   }
@@ -255,7 +259,7 @@ export default async function view(ctx) {
 
 // ---- the card under a finished task run, and the task list --------------------------------------------------------------------------
 
-/** Latest review of a thread (any run on the same branch folder), or null. `runs` newest last. */
+/** Latest review of a thread, or null. `runs` newest last. The server answers with the reviews of the run's whole branch, so any run finds it. */
 export async function threadReview(runs) {
   const ids = runs.filter((r) => typeof r.id === 'string' && r.branch).map((r) => r.id).reverse().slice(0, 8);
   const lists = await Promise.all(ids.map((id) => api.get(`/runs/${id}/reviews`, true).catch(() => [])));

@@ -56,7 +56,7 @@ export function model(raw) {
   });
   const checks = arr(r.checks, 30).filter((c0) => c0 && typeof c0 === 'object' && !Array.isArray(c0)).map((c0) => { const c = obj(c0); return { name: str(c.name, 160) || '(проверка без имени)', ok: c.ok === true, tail: str(c.tail, 4000) }; });
   const lines = (v) => arr(v, 30).map((x) => str(x, 400).trim()).filter(Boolean);
-  return { review, findings, checks, warnings: lines(r.warnings), reasons: lines(r.reasons), riskWhy: lines(r.riskWhy) };
+  return { review, findings, checks, warnings: lines(r.warnings), reasons: lines(r.reasons), riskWhy: lines(r.riskWhy), humanWhy: lines(r.humanWhy) };
 }
 
 // ---- counts ----------------------------------------------------------------------------------------------------------------------------
@@ -138,6 +138,14 @@ export function reasonRu(t) {
   if (/^cannot read the diff/.test(s)) return 'Не удалось прочитать изменения';
   if ((m = /^reviewer failed: (.*)$/.exec(s))) return `Проверяющий не справился: ${m[1]}`;
   if ((m = /^review stopped: (.*)$/.exec(s))) return `Ревью остановилось: ${m[1]}`;
+  if (s === 'interrupted by a restart') return 'Ревью прервано перезапуском хаба: запустите его снова';
+  if ((m = /^too many findings to verify: (\d+) of (\d+)/.exec(s))) return `Слишком много находок: ${m[1]} из ${m[2]} не проверены. Запустите ревью снова, чтобы проверить остальные`;
+  if ((m = /^diff too large to review fully: a human must approve commit (\w+)/.exec(s))) return `Изменения слишком большие, проверяющие видели только начало: нужно ваше подтверждение коммита ${m[1]}`;
+  if (s === 'diff too large to review fully') return 'Изменения слишком большие, проверяющие видели только начало';
+  if (/^the task folder has uncommitted changes/.test(s)) return 'В папке задачи есть незакоммиченные изменения: их никто не проверял';
+  if (s === 'the task folder is gone') return 'Папки задачи больше нет';
+  if (/^cannot read the (branch head|state of the task folder)/.test(s)) return 'Не удалось прочитать состояние ветки';
+  if ((m = /^the screen shows commit (\w+), but the branch is at (\w+)/.exec(s))) return `На экране коммит ${m[1]}, а ветка уже на ${m[2]}: обновите страницу`;
   return s;
 }
 export function warnRu(t) {
@@ -168,6 +176,8 @@ export function errRu(e) {
   if (/nothing to fix/.test(s)) return 'Нечего исправлять: открытых важных находок нет';
   if (/still running/.test(s)) return 'Ревью ещё идёт';
   if (/still working in this branch/.test(s)) return 'Агент ещё работает в этой ветке';
+  if (/only an open finding/.test(s)) return 'Эта находка уже закрыта';
+  if (/'dismissed' needs a reason/.test(s)) return 'Чтобы снять важную находку, напишите причину';
   if (/no session id/.test(s)) return 'Нечего продолжать: у задачи нет сохранённого разговора';
   if (/read-only/.test(s)) return 'Эта ветка открыта только для чтения: разрешите правки в чате';
   if (/only task runs/.test(s)) return 'Исправлять и проверять можно только задачи в своей ветке';

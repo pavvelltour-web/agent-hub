@@ -15,7 +15,8 @@ export class ReviewError extends Error {
 }
 
 const NO_RESULT = 'no structured result';
-const MAX_DIFF = 200_000;
+/** Characters of (redacted) diff a reviewer sees. A longer diff is cut, so the gate treats it as not fully reviewed (`diffTooLarge`). */
+export const MAX_DIFF = 200_000;
 const MAX_CONTEXT = { brief: 20_000, review: 41_000, agents: 30_000 };
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
 const read = (name: string): string => readFileSync(new URL(`./prompts/${name}`, import.meta.url), 'utf8').trim();
@@ -39,6 +40,9 @@ function prepareDiff(raw: string): string {
 [diff truncated]
 ` : text;
 }
+
+/** True when reviewers would see only a prefix of this diff: the gate then cannot pass without a human. */
+export const diffTooLarge = (raw: string): boolean => redact(raw).length > MAX_DIFF;
 
 /** The hub (not the agent) runs the diff command: argument array, no shell. */
 function loadDiff(cmd: string[], cwd: string): string {
@@ -83,22 +87,47 @@ export function buildVerifyPrompt(f: RawFinding, diff: string | undefined): stri
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const tryParse = (s: string): unknown => { try { return JSON.parse(s); } catch { return undefined; } };
 
-/** The JSON object in a reviewer's answer: the whole text, a ``` fenced block, or the outermost {...}. `undefined` when there is none. */
-export function extractJson(text: string): Record<string, unknown> | undefined {
-  const t = text.trim();
-  const cands = [t, ...[...t.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => (m[1] ?? '').trim())];
-  const a = t.indexOf('{'), b = t.lastIndexOf('}');
-  if (a >= 0 && b > a) cands.push(t.slice(a, b + 1));
-  for (const c of cands) { const v = tryParse(c); if (isObj(v)) return v; }
+/**
+ * The reviewer's own JSON object: the whole text, else the LAST ``` fenced block, else the outermost {...} ending at the last `}`.
+ * `trailing` is true when nothing but whitespace follows it, i.e. it is the answer and not something quoted (from the diff) mid-text.
+ */
+function locateJson(text: string): { value: Record<string, unknown>; trailing: boolean } | undefined {
+  const t = String(text).trim();
+  const whole = tryParse(t);
+  if (isObj(whole)) return { value: whole, trailing: true };
+  const fences = [...t.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+  for (let i = fences.length - 1; i >= 0; i--) {
+    const m = fences[i] as RegExpMatchArray; const v = tryParse((m[1] ?? '').trim());
+    if (isObj(v)) return { value: v, trailing: !t.slice((m.index ?? 0) + m[0].length).trim() };
+  }
+  const b = t.lastIndexOf('}');
+  for (let a = t.indexOf('{'), tries = 0; a >= 0 && a < b && tries < 2000; a = t.indexOf('{', a + 1), tries++) {
+    const v = tryParse(t.slice(a, b + 1));
+    if (isObj(v)) return { value: v, trailing: !t.slice(b + 1).trim() };
+  }
   return undefined;
 }
 
-/** Hunter output → findings. Anything that is not a findings list is an error (never `[]`); single findings that lack file, line or evidence are dropped. */
+/** The JSON object in a reviewer's answer (see `locateJson`). `undefined` when there is none. */
+export function extractJson(text: string): Record<string, unknown> | undefined {
+  return locateJson(text)?.value;
+}
+
+/**
+ * Hunter output → findings. Anything that is not a findings list is an error (never `[]`). An empty list counts only when it is the
+ * answer itself (whole text or the last thing in it), never a `{"findings":[]}` quoted mid-text. Single findings that lack file, line or
+ * evidence are dropped, but an answer whose findings ALL fail is an error, and so is one with more findings than the schema allows.
+ */
 export function parseHunt(text: string, lens: Lens): RawFinding[] {
-  const top = extractJson(text);
+  const at = locateJson(text);
+  const top = at?.value;
   if (!top || !Array.isArray(top['findings'])) throw new ReviewError(NO_RESULT);
+  const items = top['findings'] as unknown[];
+  if (!items.length && !at?.trailing) throw new ReviewError(`${NO_RESULT}: an empty findings list that is not the answer itself`);
+  const max = HUNT_SCHEMA.properties?.['findings']?.maxItems ?? 30;
+  if (items.length > max) throw new ReviewError(`${items.length} findings in one answer, more than ${max}: not reviewed in full`);
   const out: RawFinding[] = [];
-  for (const item of (top['findings'] as unknown[]).slice(0, HUNT_SCHEMA.properties?.['findings']?.maxItems)) {
+  for (const item of items) {
     const v = validate(FINDING_SCHEMA, item);
     if (!v.ok) continue;
     const f = v.value as { category: RawFinding['category']; file: string; line: number; title: string; evidence: string; classOfBug: string };
@@ -106,6 +135,7 @@ export function parseHunt(text: string, lens: Lens): RawFinding[] {
     if (!file || !title || !evidence) continue;
     out.push({ lens, category: f.category, file, line: f.line, title, evidence, ...(classOfBug ? { classOfBug } : {}) });
   }
+  if (items.length && !out.length) throw new ReviewError(`${NO_RESULT}: every finding failed the schema`);
   return out;
 }
 
@@ -121,14 +151,19 @@ function parseVerify(text: string): { real: boolean; why: string } {
 
 interface Common { runs: RunManager; cwd: string; timeoutMs?: number }
 
-/** Start one read-only reviewer through the RunManager and return its last assistant text. Schema flags are internal `extraArgs`. */
+/**
+ * Start one read-only reviewer through the RunManager and return its last assistant text. Schema flags are internal `extraArgs`.
+ * The reviewer runs in a fresh EMPTY folder (removed after): the diff reaches it as text, and the branch's CLAUDE.md / AGENTS.md /
+ * .claude settings and hooks never load. `o.cwd` is only where the hub itself runs git.
+ */
 async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o: Common): Promise<string> {
   let dir: string | undefined;
+  const neutral = mkdtempSync(join(tmpdir(), 'hub-reviewer-'));
   try {
     let extraArgs: string[];
     if (pick.agent === 'claude') extraArgs = ['--json-schema', JSON.stringify(schema)];
     else { dir = mkdtempSync(join(tmpdir(), 'hub-review-')); const file = join(dir, 'schema.json'); writeFileSync(file, JSON.stringify(schema)); extraArgs = ['--output-schema', file]; }
-    const run = o.runs.start({ agent: pick.agent, prompt, projectRoot: o.cwd, model: pick.model, effort: pick.effort, permission: 'plan', extraArgs });
+    const run = o.runs.start({ agent: pick.agent, prompt, projectRoot: o.cwd, isolatedCwd: neutral, model: pick.model, effort: pick.effort, permission: 'plan', extraArgs });
     await waitForRun(o.runs, run.id, o.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const done = o.runs.get(run.id);
     if (done?.outcome !== 'done') throw new ReviewError(`reviewer run ${done?.outcome ?? 'lost'}${done?.error ? `: ${done.error}` : ''}`);
@@ -138,6 +173,7 @@ async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o
     return text;
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
+    try { rmSync(neutral, { recursive: true, force: true, maxRetries: 3 }); } catch { /* a reviewer that timed out may still hold it (Windows) */ }
   }
 }
 

@@ -12,7 +12,7 @@ import { waitForRun } from '../run/wait.ts';
 import { handle, type Ctx } from '../server/api.ts';
 import { startServer } from '../server/server.ts';
 import { answerFinding } from './store.ts';
-import { RECONSIDER_MESSAGE, answer, approve, blockingLines, canAccept, pickReviewers, reviewView, startFix, startReview } from './gate.ts';
+import { RECONSIDER_MESSAGE, answer, approve, blockingLines, canAccept, launchReview, pickReviewers, reviewView, startFix, startReview } from './gate.ts';
 import { addFindings, getReview, listFindings, listReviewsForRun } from './store.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -142,7 +142,7 @@ test('open security finding blocks even when everything else is answered; medium
   assert.equal(r.risk, 'medium');
   const f = listFindings(w.db, r.id)[0]!; assert.equal(f.severity, 'security');
   const c = canAccept(w.db, r.id, head); assert.equal(c.ok, false); assert.match(c.why.join(' '), /security/i);
-  answer(w.db, f.id, 'dismissed');
+  answer(w.db, f.id, 'dismissed', 'the path is a constant, checked by hand');
   assert.equal(canAccept(w.db, r.id, head).ok, true);
 });
 
@@ -159,7 +159,7 @@ test('high tier needs a human approval for the CURRENT sha; a new commit drops i
   assert.equal(r2.id, r.id); assert.equal(r2.round, 2);
   assert.equal(getReview(w.db, r.id)!.humanApproval, undefined, 'the approval was dropped by the new round');
   assert.equal(canAccept(w.db, r.id, h2).ok, false);
-  approve(w.db, r.id, h1, 'human');          // a stale approval can be stored, but it never matches the head
+  assert.throws(() => approve(w.db, r.id, h1, 'human'), /not the commit that was reviewed/);   // a stale approval is refused outright now
   assert.equal(canAccept(w.db, r.id, h2).ok, false);
   approve(w.db, r.id, h2, 'human');
   assert.equal(canAccept(w.db, r.id, h2).ok, true);
@@ -277,7 +277,7 @@ test('blockingLines: open Important/Security findings, one verbatim line each', 
   assert.equal(lines.length, 2);
   assert.ok(lines.includes('BLOCKING: src/a.ts:2 — Off-by-one in loop'));
   assert.ok(lines.every((l) => /^BLOCKING: \S+:\d+ — [^\n]+$/.test(l)));
-  answerFinding(w.db, listFindings(w.db, r.id)[0]!.id, 'dismissed');
+  answerFinding(w.db, listFindings(w.db, r.id)[0]!.id, 'dismissed', 'handled elsewhere');
   assert.equal(blockingLines(w.db, r.id).length, 1);
 });
 
@@ -383,7 +383,7 @@ test('fix route: resumes the task thread (same cwd and branch, inherited permiss
   assert.equal(seen[0]!.prompt, lines.join('\n'), 'the fixer prompt is the blocking lines and nothing else');
   assert.ok(!seen[0]!.prompt.includes('IGNORE'));
 
-  for (const f of listFindings(w.db, r.id)) answerFinding(w.db, f.id, 'dismissed');
+  for (const f of listFindings(w.db, r.id)) answerFinding(w.db, f.id, 'dismissed', 'handled elsewhere');
   assert.equal((await api('POST', `/api/reviews/${r.id}/fix`)).status, 400, 'no open Important/Security finding: refused');
 });
 
@@ -443,4 +443,240 @@ test('web: the outcome chips know "review" (На ревью)', () => {
 
 test('econ: a run that ended "review" counts as a finished, successful run', () => {
   assert.equal(runScore('review', null), runScore('done', null));
+});
+
+// ---- gate integrity (review of the gate) -------------------------------------------------------------------------------------------
+
+const ROUND1_LINE = 'for (let i = 0; i <= n; i++) {}';
+const pidOf = (w: World): number => (w.db.prepare('SELECT project_id FROM run WHERE id = ?').get(w.runId) as { project_id: number }).project_id;
+const baseOf = (w: World): string => (w.db.prepare('SELECT base_sha FROM run WHERE id = ?').get(w.runId) as { base_sha: string }).base_sha;
+/** Another finished run row in the same branch folder (a fixer or a resumed run). */
+function sameBranchRun(w: World, id: string): string {
+  w.db.prepare('INSERT INTO run (id, project_id, agent, prompt, cwd, branch, started_at, ended_at, outcome, base_sha, permission) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    .run(id, pidOf(w), 'claude', 'BLOCKING: fix', w.wt, 'hub/t/claude', '2026-10-26T11:00:00Z', '2026-10-26T11:05:00Z', 'review', baseOf(w), 'edit');
+  return id;
+}
+const apiOf = (w: World) => { const ctx: Ctx = { db: w.db, runs: w.runs, review: { available: ['claude'] } }; return (m: string, p: string, q: Record<string, string> = {}, body: Record<string, unknown> = {}) => handle(ctx, m, p, new URLSearchParams(q), body); };
+
+test('integrity 1: a branch .gitattributes "* -diff" cannot hide hunks: reviewers and triage still see the added lines', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  w.commit({ '.gitattributes': '* -diff\n', 'src/a.ts': A1 });
+  const r = await w.go();
+  const p = w.spawned().map((s) => s.prompt).join('\n');
+  assert.ok(p.includes('ROUND1_MARK') && p.includes('* -diff'), 'the hunks reach the reviewers');
+  assert.ok(!/Binary files/.test(p));
+  assert.equal(listFindings(w.db, r.id)[0]?.severity, 'important', 'the finding is on an added line, not pre-existing');
+  assert.equal(r.state, 'open');
+});
+
+test('integrity 1: a pure git mv still shows hunks (delete + add) to the reviewers', async () => {
+  const w = world(); w.commit({ 'src/a.ts': A1 }); await w.go();
+  const before = w.spawned().length;
+  git(w.wt, ['mv', 'src/a.ts', 'src/moved.ts']); git(w.wt, ['commit', '-q', '-m', 'move']);
+  const r2 = await w.go();
+  assert.equal(r2.round, 2);
+  const p = w.spawned().slice(before).map((s) => s.prompt).join('\n');
+  assert.ok(p.includes('src/moved.ts') && p.includes('ROUND1_MARK'), 'the moved content is in the round diff');
+});
+
+test('integrity 2: git mv of the file does not clear an open finding', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  w.script({}); git(w.wt, ['mv', 'src/a.ts', 'src/moved.ts']); git(w.wt, ['commit', '-q', '-m', 'move']);
+  await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open');
+  assert.equal(canAccept(w.db, r.id, w.head()).ok, false);
+});
+
+test('integrity 2: a whitespace / comment edit of the flagged line does not clear it', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  w.script({}); w.commit({ 'src/a.ts': A1.replace(ROUND1_LINE, '  for (let i=0;   i<=n; i++) {}   // fixed') });
+  await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open');
+});
+
+test('integrity 2: a security finding is never cleared automatically, even when its line is gone', async () => {
+  const w = world(); w.script({ hunt: { security: [fnd('src/a.ts', 3, 'Mark leaks')] } });
+  w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  w.script({}); w.commit({ 'src/a.ts': 'export const a = 1;\n' });
+  await w.go();
+  const f = listFindings(w.db, r.id)[0]!;
+  assert.equal(f.severity, 'security'); assert.equal(f.answer, 'open');
+  assert.equal(canAccept(w.db, r.id, w.head()).ok, false);
+});
+
+test('integrity 3: a rejected finding in another branch review does not suppress the same finding here', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  w.commit({ 'src/a.ts': A1 }); const r1 = await w.go();
+  answer(w.db, listFindings(w.db, r1.id)[0]!.id, 'rejected', 'not a bug');
+  const wt2 = join(dirname(w.wt), 't2-claude');
+  git(w.root, ['worktree', 'add', '-q', '-b', 'hub/t2/claude', wt2, baseOf(w)]);
+  writeFileSync(join(wt2, 'src', 'a.ts'), A1); git(wt2, ['add', '-A']); git(wt2, ['commit', '-q', '-m', 'w2']);
+  w.db.prepare('INSERT INTO run (id, project_id, agent, prompt, cwd, branch, started_at, ended_at, outcome, base_sha, permission) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+    .run('rother2', pidOf(w), 'claude', 'other task', wt2, 'hub/t2/claude', '2026-10-26T12:00:00Z', '2026-10-26T12:05:00Z', 'review', baseOf(w), 'edit');
+  const r2 = await startReview({ runId: 'rother2', effort: 'quick', runs: w.runs, db: w.db, available: ['claude'] });
+  assert.notEqual(r2.id, r1.id);
+  const fs = listFindings(w.db, r2.id);
+  assert.equal(fs.length, 1, 'reported again on the other branch'); assert.equal(fs[0]!.answer, 'open');
+  assert.equal(r2.state, 'open');
+});
+
+test('integrity 3: a fixed finding that comes back is reported again', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  w.script({}); w.commit({ 'src/a.ts': 'export const a = 1;\nexport const ROUND1_MARK = 1;\n' });
+  await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'fixed');
+  w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } }); w.commit({ 'src/a.ts': A1 });
+  const r3 = await w.go();
+  assert.equal(r3.round, 3);
+  assert.deepEqual(listFindings(w.db, r.id).map((f) => f.answer), ['fixed', 'open']);
+  assert.equal(canAccept(w.db, r.id, w.head()).ok, false);
+});
+
+test('integrity 4: another run of the same branch continues the same review; round 4 -> reconsider cannot be escaped', async () => {
+  const w = world();
+  for (let i = 1; i <= 3; i++) { w.commit({ [`src/f${i}.ts`]: `export const f${i} = ${i};\n` }); await w.go(); }
+  w.commit({ 'src/f4.ts': 'export const f4 = 4;\n' });
+  const fixer = sameBranchRun(w, 'rfixer1');
+  const r4 = await startReview({ runId: fixer, effort: 'quick', runs: w.runs, db: w.db, available: ['claude'] });
+  assert.equal(r4.state, 'reconsider');
+  assert.equal((w.db.prepare('SELECT COUNT(*) AS n FROM review').get() as { n: number }).n, 1, 'no fresh review at round 1');
+  const viaFixer = await apiOf(w)('GET', `/api/runs/${fixer}/reviews`);
+  assert.deepEqual((viaFixer.json as { id: string }[]).map((x) => x.id), [r4.id], 'any run of the branch finds the branch review');
+});
+
+test('integrity 5: can-accept reads HEAD and the tree itself: refuses a dirty tree and an unreviewed new commit whatever sha the client sends', async () => {
+  const w = world(); const h = w.commit({ 'docs/x.md': 'a\n' });
+  const r = await w.go(); assert.equal(r.state, 'passed');
+  const api = apiOf(w);
+  const ca = async (sha: string) => (await api('GET', `/api/reviews/${r.id}/can-accept`, { sha })).json as { ok: boolean; why: string[]; head: string };
+  assert.equal((await ca(h)).ok, true);
+  writeFileSync(join(w.wt, 'untracked.txt'), 'x');
+  const dirty = await ca(h);
+  assert.equal(dirty.ok, false); assert.match(dirty.why.join(' '), /uncommitted/);
+  rmSync(join(w.wt, 'untracked.txt'));
+  const h2 = w.commit({ 'docs/y.md': 'b\n' });
+  for (const sha of [h, h2]) {
+    const v = await ca(sha);
+    assert.equal(v.ok, false, `client sha ${sha.slice(0, 7)}`); assert.equal(v.head, h2); assert.match(v.why.join(' '), /no review yet for commit/);
+  }
+});
+
+test('integrity 6: in round 2 a bug on a line added in round 1 is important, not pre-existing', async () => {
+  const w = world(); w.commit({ 'src/a.ts': A1 });
+  assert.equal((await w.go()).state, 'passed');
+  w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  w.commit({ 'src/b.ts': 'export const ROUND2_MARK = 2;\n' });
+  const r2 = await w.go();
+  assert.equal(r2.round, 2);
+  assert.equal(listFindings(w.db, r2.id)[0]!.severity, 'important'); assert.equal(r2.state, 'open');
+});
+
+test('integrity 7: findings beyond MAX_VERIFIED close the gate with the dropped count; security findings are verified first', async () => {
+  const w = world();
+  const many = Array.from({ length: 30 }, (_, i) => fnd('src/a.ts', 2, `Bug ${i}`));
+  w.script({ hunt: { correctness: many, security: [fnd('src/a.ts', 3, 'Sec one'), fnd('src/a.ts', 3, 'Sec two')] } });
+  w.commit({ 'src/a.ts': A1 });
+  const r = await w.go();
+  assert.equal(r.state, 'open');
+  const v = reviewView(w.db, r.id);
+  assert.match(v.reasons.join(' '), /too many findings to verify: 2 of 32/);
+  assert.deepEqual(v.findings.filter((f) => f.severity === 'security').map((f) => f.title).sort(), ['Sec one', 'Sec two']);
+  for (const f of listFindings(w.db, r.id)) answer(w.db, f.id, 'rejected', 'checked by hand');
+  assert.equal(getReview(w.db, r.id)!.state, 'open', 'never passed while findings are unchecked');
+  assert.equal(canAccept(w.db, r.id, w.head()).ok, false);
+});
+
+test('integrity 8: a diff larger than the reviewers can see needs a human approval, and keeps needing it in later rounds', async () => {
+  const w = world();
+  const big = Array.from({ length: 9000 }, (_, i) => `export const value${i} = ${i};`).join('\n') + '\n';
+  const h1 = w.commit({ 'src/big.ts': big });
+  const r = await w.go();
+  assert.equal(r.state, 'needs-human');
+  assert.deepEqual(reviewView(w.db, r.id).humanWhy, ['diff too large to review fully']);
+  const c = canAccept(w.db, r.id, h1); assert.equal(c.ok, false); assert.match(c.why.join(' '), /too large/);
+  approve(w.db, r.id, h1, 'human');
+  assert.equal(canAccept(w.db, r.id, h1).ok, true);
+  const h2 = w.commit({ 'src/small.ts': 'export const s = 1;\n' });
+  const r2 = await w.go();
+  assert.equal(r2.state, 'needs-human', 'the earlier unseen part still needs a human');
+  assert.equal(canAccept(w.db, r.id, h2).ok, false);
+});
+
+test('integrity (a): after a passed round 3, re-checking with no new commit keeps it passed and keeps the approval', async () => {
+  const w = world();
+  for (let i = 1; i <= 2; i++) { w.commit({ [`docs/f${i}.md`]: `f${i}\n` }); await w.go(); }
+  const h3 = w.commit({ '.github/workflows/x.yml': 'name: x\n' });
+  const r3 = await w.go(); assert.equal(r3.round, 3); assert.equal(r3.state, 'needs-human');
+  approve(w.db, r3.id, h3, 'human');
+  assert.equal(getReview(w.db, r3.id)!.state, 'passed');
+  const again = await w.go();
+  assert.equal(again.state, 'passed'); assert.equal(again.humanApproval?.sha, h3);
+  assert.equal(canAccept(w.db, r3.id, h3).ok, true);
+});
+
+test('integrity (b): approve is refused while a round runs and for a head whose round did not finish', async () => {
+  const w = world(); w.commit({ '.github/workflows/x.yml': 'name: x\n' });
+  const r = await w.go(); assert.equal(r.state, 'needs-human');
+  const h2 = w.commit({ '.github/workflows/y.yml': 'name: y\n' });
+  const { review, done } = launchReview({ runId: w.runId, effort: 'quick', runs: w.runs, db: w.db, available: ['claude'] });
+  assert.equal(review.headSha, h2);
+  assert.throws(() => approve(w.db, r.id, h2, 'human'), /still running/);
+  await done;
+  approve(w.db, r.id, h2, 'human');
+  assert.equal(canAccept(w.db, r.id, h2).ok, true);
+  // a round that stopped early (red checks) leaves the new head unreviewed: no approval for it, nor for the old head
+  const wr = world({ base: { 'hub.json': JSON.stringify({ review: { checks: [['node', '-e', 'process.exit(require("fs").existsSync("red") ? 1 : 0)']] } }) } });
+  const g1 = wr.commit({ '.github/workflows/x.yml': 'name: x\n' }); const rr = await wr.go(); assert.equal(rr.state, 'needs-human');
+  const g2 = wr.commit({ red: 'x\n' }); assert.equal((await wr.go()).state, 'open');
+  assert.throws(() => approve(wr.db, rr.id, g2, 'human'), /not the commit that was reviewed/);
+  assert.throws(() => approve(wr.db, rr.id, g1, 'human'), /not the commit that was reviewed/);
+});
+
+test('integrity (c): a review is refused while a run is still working in the branch folder; nothing is checkpointed', async () => {
+  const w = world(); w.commit({ 'docs/x.md': 'a\n' });
+  w.db.prepare('INSERT INTO run (id, project_id, agent, prompt, cwd, branch, started_at, permission) VALUES (?,?,?,?,?,?,?,?)').run('rbusy1', pidOf(w), 'claude', 'fixing', w.wt, 'hub/t/claude', '2026-10-26T13:00:00Z', 'edit');
+  writeFileSync(join(w.wt, 'half.txt'), 'half done');
+  await assert.rejects(w.go(), /still working/);
+  assert.ok(git(w.wt, ['status', '--porcelain']).includes('half.txt'), 'the half-done file was not committed');
+  assert.equal(w.spawned().length, 0);
+});
+
+test('integrity (d): dismissed needs a reason for Important; a finding already fixed cannot be answered again', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  const f = listFindings(w.db, r.id)[0]!;
+  assert.throws(() => answer(w.db, f.id, 'dismissed'), /reason/);
+  w.script({}); w.commit({ 'src/a.ts': 'export const a = 1;\n' }); await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'fixed');
+  assert.throws(() => answer(w.db, f.id, 'rejected', 'not a bug'), /only an open finding/);
+  assert.equal((await apiOf(w)('POST', `/api/findings/${f.id}/answer`, {}, { answer: 'intentional', reason: 'x' })).status, 400);
+});
+
+test('integrity (g): reviewers run in an empty temp folder, never the branch folder, and it is removed', async () => {
+  const w = world(); w.commit({ 'CLAUDE.md': 'BRANCH RULES', 'src/a.ts': A1 });
+  await w.go();
+  const seen = w.spawned() as unknown as { cwd: string; cwdFiles: string[] }[];
+  assert.ok(seen.length >= 2);
+  for (const s of seen) { assert.notEqual(s.cwd.toLowerCase(), w.wt.toLowerCase()); assert.deepEqual(s.cwdFiles, []); assert.equal(existsSync(s.cwd), false); }
+});
+
+test('integrity (h): a hub restart opens a review left mid-round with a reason; it can be run again', async () => {
+  const w = world(); w.commit({ 'docs/x.md': 'a\n' });
+  const r = await w.go(); assert.equal(r.state, 'passed');
+  const h2 = w.commit({ 'docs/y.md': 'b\n' });
+  w.db.prepare("UPDATE review SET state = 'hunting', head_sha = ?, round = 2 WHERE id = ?").run(h2, r.id);   // a round 2 was running when the hub died
+  new RunManager(w.db, { exe: { claude: fakeExe, codex: fakeExe }, summarize: false, home: join(tmp, 'home-restart') });
+  assert.equal(getReview(w.db, r.id)!.state, 'open');
+  assert.deepEqual(reviewView(w.db, r.id).reasons, ['interrupted by a restart']);
+  assert.equal(canAccept(w.db, r.id, h2).ok, false);
+  const again = await w.go();
+  assert.equal(again.id, r.id); assert.equal(again.round, 2); assert.equal(again.state, 'passed');
+});
+
+test('web: the review screen offers a restart for an interrupted review and the human approval for a too-large diff', () => {
+  const src = readFileSync(join(here, '..', '..', 'web', 'js', 'views', 'review.js'), 'utf8');
+  assert.match(src, /interrupted by a restart/); assert.match(src, /humanWhy/);
 });

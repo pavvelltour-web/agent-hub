@@ -9,11 +9,11 @@ import type { Db } from '../history/store.ts';
 import { redact } from '../lib/redact.ts';
 import { checkpoint, git } from '../run/git.ts';
 import type { RunManager, RunRow } from '../run/runner.ts';
-import { ReviewError, hunt, verifyMany } from './agents.ts';
+import { ReviewError, diffTooLarge, hunt, verifyMany } from './agents.ts';
 import { defaultChecks, dependencyFindings, gateChecks, readReviewConfig, type CheckResult } from './checks.ts';
 import { humanPathsFromReviewMd, loadReviewMd } from './reviewmd.ts';
 import { riskTier } from './risk.ts';
-import { addFindings, answerFinding, clearHumanApproval, createReview, getReview, listFindings, listReviewsForRun, markCleared, postedFingerprints, setHumanApproval, updateReview } from './store.ts';
+import { addFindings, answerFinding, clearHumanApproval, createReview, getReview, listFindings, listReviewsForBranch, listReviewsForRun, markCleared, repeatFingerprints, setHumanApproval, updateReview } from './store.ts';
 import { diffLinesFromUnified, triage } from './triage.ts';
 import { fingerprint } from './types.ts';
 import type { Answer, Effort, Finding, Lens, RawFinding, Review, ReviewerPick, Severity, VerifiedFinding } from './types.ts';
@@ -23,7 +23,17 @@ export const ROUND_CAP = 3;
 export const MAX_NITS = 5;
 export const MAX_VERIFIED = 30;            // raw findings sent to verifiers per round: a runaway hunter must not decide the spend
 export const RUN_SLOTS = 3;                // reviewer processes at once (the RunManager allows 4: one stays free for the user)
+export const TOO_LARGE = 'diff too large to review fully';
 const HEX40 = /^[0-9a-f]{40}$/;
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+/**
+ * Every diff the gate reads or hands to reviewers. Attributes come from the empty tree, so a branch `.gitattributes` (`* -diff`, a
+ * textconv or external driver) cannot turn hunks into "Binary files differ"; `--text` shows every file as text and `--no-renames`
+ * shows a move as delete + add, so a `git mv` still has hunks. Prefixes and relative mode are fixed against user config.
+ */
+export const diffArgs = (from: string, to: string): string[] =>
+  ['--no-pager', `--attr-source=${EMPTY_TREE}`, 'diff', '--text', '--no-renames', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative', '--src-prefix=a/', '--dst-prefix=b/', `${from}..${to}`];
 
 /** A refusal that the HTTP layer can show as-is. */
 export class GateError extends Error {
@@ -72,13 +82,14 @@ export function usableAgents(): { available: AgentId[]; warnings: string[] } {
 
 // ---- small helpers -------------------------------------------------------------------------------------------------------------------
 
-interface Info { completed: number; lastReviewedSha?: string; reasons: string[]; warnings: string[]; checks: CheckResult[]; riskWhy: string[] }
+/** `tooLarge` is sticky: once reviewers saw only part of a diff, every later head of the branch needs a human approval. */
+interface Info { completed: number; lastReviewedSha?: string; reasons: string[]; warnings: string[]; checks: CheckResult[]; riskWhy: string[]; tooLarge: boolean }
 
 const getInfo = (db: Db, id: string): Info => {
   const row = db.prepare('SELECT info_json FROM review WHERE id = ?').get(id) as { info_json: string | null } | undefined;
   let j: Partial<Info> = {};
   try { j = row?.info_json ? (JSON.parse(row.info_json) as Partial<Info>) : {}; } catch { /* unreadable: start clean */ }
-  return { completed: Number(j.completed) || 0, ...(typeof j.lastReviewedSha === 'string' ? { lastReviewedSha: j.lastReviewedSha } : {}), reasons: Array.isArray(j.reasons) ? j.reasons.map(String) : [], warnings: Array.isArray(j.warnings) ? j.warnings.map(String) : [], checks: Array.isArray(j.checks) ? j.checks : [], riskWhy: Array.isArray(j.riskWhy) ? j.riskWhy.map(String) : [] };
+  return { completed: Number(j.completed) || 0, ...(typeof j.lastReviewedSha === 'string' ? { lastReviewedSha: j.lastReviewedSha } : {}), reasons: Array.isArray(j.reasons) ? j.reasons.map(String) : [], warnings: Array.isArray(j.warnings) ? j.warnings.map(String) : [], checks: Array.isArray(j.checks) ? j.checks : [], riskWhy: Array.isArray(j.riskWhy) ? j.riskWhy.map(String) : [], tooLarge: j.tooLarge === true };
 };
 const putInfo = (db: Db, id: string, info: Info): void => { db.prepare('UPDATE review SET info_json = ? WHERE id = ?').run(JSON.stringify(info), id); };
 
@@ -92,6 +103,28 @@ const running = new Set<string>();
 function gitText(cwd: string, args: string[]): { ok: boolean; out: string } {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 });
   return { ok: r.status === 0, out: r.stdout ?? '' };
+}
+
+/** A line as the clearing rule compares it: no whitespace, one quote style, a trailing `//` or `#` comment dropped. Cosmetic edits keep it equal. */
+export function normLine(s: string): string {
+  const m = /(?:\/\/|#)[^'"`]*$/.exec(s);
+  const code = m && m.index > 0 && s.slice(0, m.index).trim() ? s.slice(0, m.index) : s;
+  return code.replace(/['`]/g, '"').replace(/[\s;]+/g, '');
+}
+
+/**
+ * Is a flagged line still anywhere in the tracked files of `sha`? Searched with `git grep` for its longest identifier, then compared
+ * normalised, so moving the file (`git mv`) or a whitespace / quote / comment edit does not count as a fix. `undefined` = cannot tell.
+ */
+function stillPresent(cwd: string, sha: string, stored: string): boolean | undefined {
+  const target = normLine(stored);
+  if (!HEX40.test(sha) || target.length < 3) return undefined;
+  const word = (stored.match(/[A-Za-z_$][\w$]+/g) ?? []).reduce((a, b) => (b.length > a.length ? b : a), '');
+  if (word.length < 2) return undefined;
+  const r = spawnSync('git', ['--no-pager', `--attr-source=${EMPTY_TREE}`, 'grep', '-h', '--text', '-F', '--no-color', '-e', word, sha, '--'], { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 });
+  if (r.status === 1) return false;
+  if (r.status !== 0) return undefined;
+  return (r.stdout ?? '').split(/\r?\n/).some((l) => normLine(l) === target);
 }
 
 /** Text of `file` in commit `sha`: `null` = not in that commit (deleted, moved), `undefined` = cannot tell. Argument arrays only; model-supplied paths are checked first. */
@@ -127,8 +160,9 @@ function settle(db: Db, id: string): Review {
   const r = getReview(db, id);
   if (!r) throw new GateError(404, 'review not found');
   if (r.state === 'reconsider' || IN_PROGRESS.has(r.state)) return r;
-  const state: Review['state'] = getInfo(db, id).reasons.length || blockers(db, id).length ? 'open'
-    : r.risk === 'high' && r.humanApproval?.sha !== r.headSha ? 'needs-human' : 'passed';
+  const info = getInfo(db, id);
+  const state: Review['state'] = info.reasons.length || blockers(db, id).length ? 'open'
+    : (r.risk === 'high' || info.tooLarge) && r.humanApproval?.sha !== r.headSha ? 'needs-human' : 'passed';
   return state === r.state ? r : updateReview(db, id, { state });
 }
 
@@ -138,22 +172,35 @@ export function answer(db: Db, findingId: string, a: Exclude<Answer, 'open'>, re
   return f;
 }
 
-/** Only a human can approve, and only a commit: the approval is for that sha alone (see canAccept) and any new round drops it. */
+/**
+ * Only a human can approve, and only a commit whose round has FINISHED: the review is not running or in `reconsider`, and its last
+ * completed round covered exactly this head. The approval is for that sha alone (see canAccept) and any new round drops it.
+ */
 export function approve(db: Db, reviewId: string, sha: string, by: 'human'): Review {
   if (by !== 'human') throw new Error('only a human can approve a review');
   if (typeof sha !== 'string' || !/^[0-9a-f]{7,40}$/i.test(sha)) throw new Error('approval needs a commit sha');
-  if (!getReview(db, reviewId)) throw new GateError(404, 'review not found');
-  setHumanApproval(db, reviewId, sha.toLowerCase());
+  const r = getReview(db, reviewId);
+  if (!r) throw new GateError(404, 'review not found');
+  if (IN_PROGRESS.has(r.state)) throw new GateError(409, 'the review is still running');
+  if (r.state === 'reconsider') throw new GateError(409, RECONSIDER_MESSAGE);
+  if (sha.toLowerCase() !== r.headSha.toLowerCase() || getInfo(db, reviewId).lastReviewedSha !== r.headSha) throw new GateError(409, 'this is not the commit that was reviewed: run the next review round first');
+  setHumanApproval(db, reviewId, r.headSha.toLowerCase());
   return settle(db, reviewId);
 }
 
+/**
+ * The gate's verdict for a GIVEN head sha. Callers outside tests use `canAcceptNow`, which reads the head and the tree state from git
+ * itself; a sha from a client is never the input here.
+ */
 export function canAccept(db: Db, reviewId: string, headSha: string): { ok: boolean; why: string[] } {
   const r = getReview(db, reviewId);
   if (!r) return { ok: false, why: ['no review yet'] };
   const head = String(headSha).toLowerCase();
   const why: string[] = [];
+  const info = getInfo(db, reviewId);
   if (r.headSha.toLowerCase() !== head) why.push(`no review yet for commit ${short(head)}: the last review covers ${short(r.headSha)}`);
-  why.push(...getInfo(db, reviewId).reasons);
+  why.push(...info.reasons);
+  if (info.tooLarge && r.humanApproval?.sha.toLowerCase() !== head) why.push(`${TOO_LARGE}: a human must approve commit ${short(head)}`);
   if (IN_PROGRESS.has(r.state)) why.push('the review is still running');
   if (r.state === 'reconsider' && !why.includes(RECONSIDER_MESSAGE)) why.push(RECONSIDER_MESSAGE);
   const open = blockers(db, reviewId);
@@ -163,6 +210,23 @@ export function canAccept(db: Db, reviewId: string, headSha: string): { ok: bool
   if (r.risk === 'high' && r.humanApproval?.sha.toLowerCase() !== head) why.push(`high-risk change: a human must approve commit ${short(head)}`);
   if (!why.length && r.state === 'open') why.push('the review is open');
   return { ok: why.length === 0, why };
+}
+
+const runCwd = (db: Db, runId: string): string | undefined => (db.prepare('SELECT cwd FROM run WHERE id = ?').get(runId) as { cwd: string | null } | undefined)?.cwd ?? undefined;
+
+/** The verdict for the branch as it is NOW: HEAD and the clean-tree check come from git in the task folder, never from a client. */
+export function canAcceptNow(db: Db, reviewId: string): { ok: boolean; why: string[]; head: string | null } {
+  const r = getReview(db, reviewId);
+  if (!r) return { ok: false, why: ['no review yet'], head: null };
+  const cwd = runCwd(db, r.runId);
+  if (!cwd || !existsSync(cwd)) return { ok: false, why: ['the task folder is gone'], head: null };
+  const head = gitText(cwd, ['rev-parse', '--verify', 'HEAD']).out.trim().toLowerCase();
+  if (!HEX40.test(head)) return { ok: false, why: ['cannot read the branch head'], head: null };
+  const v = canAccept(db, reviewId, head);
+  const st = gitText(cwd, ['status', '--porcelain', '--untracked-files=all']);
+  if (!st.ok) v.why.unshift('cannot read the state of the task folder');
+  else if (st.out.trim()) v.why.unshift('the task folder has uncommitted changes: they are not reviewed');
+  return { ok: v.why.length === 0, why: v.why, head };
 }
 
 /** The open Important / Security findings in the exact line format the fixer receives. */
@@ -191,26 +255,31 @@ function hunkOf(cwd: string, sha: string, file: string, line: number, cache: Map
 }
 
 export type FindingView = Finding & { hunk: Hunk | null };
-export function reviewView(db: Db, id: string): { review: Review; findings: FindingView[]; checks: CheckResult[]; warnings: string[]; reasons: string[]; riskWhy: string[] } {
+/** `humanWhy`: why a human approval of the head is needed besides the risk tier (a diff too large to review fully). */
+export function reviewView(db: Db, id: string): { review: Review; findings: FindingView[]; checks: CheckResult[]; warnings: string[]; reasons: string[]; riskWhy: string[]; humanWhy: string[] } {
   const review = getReview(db, id);
   if (!review) throw new GateError(404, 'review not found');
   const info = getInfo(db, id);
-  const cwd = (db.prepare('SELECT cwd FROM run WHERE id = ?').get(review.runId) as { cwd: string | null } | undefined)?.cwd;
+  const cwd = runCwd(db, review.runId);
   const cache = new Map<string, string[] | null>();
   const findings = listFindings(db, id).sort((a, b) => SEV[a.severity] - SEV[b.severity] || a.round - b.round)
     .map((f) => ({ ...f, hunk: cwd && existsSync(cwd) ? hunkOf(cwd, review.headSha, f.file, f.line, cache) : null }));
-  return { review, findings, checks: info.checks, warnings: info.warnings, reasons: info.reasons, riskWhy: info.riskWhy };
+  return { review, findings, checks: info.checks, warnings: info.warnings, reasons: info.reasons, riskWhy: info.riskWhy, humanWhy: info.tooLarge ? [TOO_LARGE] : [] };
 }
-/** The unified diff a review covers (base..head in the task's folder), read with the gate's own git helper. `null` when it cannot be read. */
+/** The unified diff a review covers (base..head in the task's folder), read with the gate's own git helper and flags. `null` when it cannot be read. */
 export function reviewDiffText(db: Db, reviewId: string): string | null {
   const r = getReview(db, reviewId);
   if (!r || !HEX40.test(r.baseSha) || !HEX40.test(r.headSha)) return null;
-  const cwd = (db.prepare('SELECT cwd FROM run WHERE id = ?').get(r.runId) as { cwd: string | null } | undefined)?.cwd;
+  const cwd = runCwd(db, r.runId);
   if (!cwd || !existsSync(cwd)) return null;
-  const d = gitText(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', `${r.baseSha}..${r.headSha}`]);
+  const d = gitText(cwd, diffArgs(r.baseSha, r.headSha));
   return d.ok && d.out.trim() ? d.out : null;
 }
-export const reviewsOfRun = (db: Db, runId: string): Review[] => listReviewsForRun(db, runId);
+/** Reviews of the run's branch (any run of it: task, fixer, resumed); a run without a task branch has only its own. */
+export function reviewsOfRun(db: Db, runId: string): Review[] {
+  const run = db.prepare('SELECT project_id, cwd, branch FROM run WHERE id = ?').get(runId) as { project_id: number | null; cwd: string | null; branch: string | null } | undefined;
+  return run?.project_id != null && run.cwd && run.branch ? listReviewsForBranch(db, run.project_id, run.branch, run.cwd) : listReviewsForRun(db, runId);
+}
 
 /**
  * Interim fixer entry point (the cascade does not exist yet): resumes the task thread on its own branch with the open Important/Security
@@ -256,8 +325,10 @@ function begin(o: GateOpts): { review: Review; fresh: boolean } {
   if (!run.branch?.startsWith('hub/') || !run.cwd || !existsSync(run.cwd) || run.project_id == null) throw new GateError(400, 'only task runs on a hub/… branch can be reviewed');
   const root = (o.db.prepare('SELECT root FROM project WHERE id = ?').get(run.project_id) as { root: string } | undefined)?.root;
   if (!root) throw new GateError(404, 'project not found');
-  const prior = listReviewsForRun(o.db, o.runId).at(-1);
+  // The review belongs to the branch (project + branch + folder), not to one run: a fixer or resumed run continues it, rounds and all.
+  const prior = listReviewsForBranch(o.db, run.project_id, run.branch, run.cwd).at(-1);
   if (prior && running.has(prior.id)) return { review: prior, fresh: false };
+  if (o.db.prepare('SELECT 1 FROM run WHERE cwd = ? AND outcome IS NULL LIMIT 1').get(run.cwd)) throw new GateError(409, 'the agent is still working in this branch');
 
   // Work the agent left uncommitted becomes a checkpoint commit on its own branch: a review is of a commit, never of a moving tree.
   const cp = checkpoint(run.cwd, 'checkpoint before review');
@@ -269,17 +340,18 @@ function begin(o: GateOpts): { review: Review; fresh: boolean } {
 
   if (!prior) {
     const review = createReview(o.db, { runId: o.runId, projectId: run.project_id, baseSha: base, headSha: head, effort, risk: 'low', round: 1, state: 'checks' });
-    putInfo(o.db, review.id, { completed: 0, reasons: [], warnings: [], checks: [], riskWhy: [] });
+    putInfo(o.db, review.id, { completed: 0, reasons: [], warnings: [], checks: [], riskWhy: [], tooLarge: false });
     running.add(review.id);
     return { review, fresh: true };
   }
   const info = getInfo(o.db, prior.id);
+  // "Nothing new" first: re-checking a passed round-3 review without a new commit must not turn it into `reconsider` or drop the approval.
+  if (!info.reasons.length && !IN_PROGRESS.has(prior.state) && info.lastReviewedSha === head) return { review: settle(o.db, prior.id), fresh: false };
   if (info.completed >= ROUND_CAP) {              // round 4 is refused: the approach is wrong, not the last patch
     clearHumanApproval(o.db, prior.id);
     putInfo(o.db, prior.id, { ...info, reasons: [RECONSIDER_MESSAGE] });
     return { review: updateReview(o.db, prior.id, { headSha: head, state: 'reconsider' }), fresh: false };
   }
-  if (!info.reasons.length && !IN_PROGRESS.has(prior.state) && info.lastReviewedSha === head) return { review: settle(o.db, prior.id), fresh: false };   // nothing new to review
   clearHumanApproval(o.db, prior.id);
   const review = updateReview(o.db, prior.id, { headSha: head, effort, round: info.completed + 1, state: 'checks' });
   putInfo(o.db, prior.id, { ...info, reasons: [], warnings: [], checks: [] });
@@ -313,19 +385,23 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     };
     const lineText = (file: string, line: number): string => linesOf(file)?.[line - 1] ?? '';
 
-    // A later commit that no longer contains a flagged line answers that finding.
+    // A later commit whose tracked files no longer hold a flagged line (normalised, anywhere in the tree) answers that finding.
+    // A security finding is never cleared this way: it needs a human answer.
     for (const f of listFindings(db, review.id, { answer: 'open' })) {
+      if (f.severity === 'security') continue;
       const stored = (db.prepare('SELECT line_text FROM finding WHERE id = ?').get(f.id) as { line_text: string | null }).line_text;
       if (!stored || stored.length < 3) continue;
-      const text = fileAt(cwd, head, f.file);
-      if (text === undefined) continue;
-      if (text === null || !text.split(/\r?\n/).some((l) => squash(l) === stored)) markCleared(db, f.id, head);
+      if (stillPresent(cwd, head, stored) === false) markCleared(db, f.id, head);
     }
 
-    const diffArgs = ['--no-pager', 'diff', '--no-color', '--no-ext-diff', '--no-textconv', `${from}..${head}`];
-    const diff = gitText(cwd, diffArgs.slice(1));
+    const roundArgs = diffArgs(from, head);
+    const diff = gitText(cwd, roundArgs);
     if (!diff.ok) return finish(close('cannot read the diff'));
     if (!diff.out.trim()) return finish(close(`nothing to review: no changes since ${short(from)}`));
+    // "Pre-existing" means not added anywhere in base..head; the round's diff only decides what the reviewers look at.
+    const whole = from === review.baseSha ? diff : gitText(cwd, diffArgs(review.baseSha, head));
+    if (!whole.ok) return finish(close('cannot read the diff'));
+    const tooLarge = diffTooLarge(diff.out);
 
     // Every path the branch changed (not only this round): scopes the folder REVIEW.md files and decides the risk tier.
     const names = gitText(cwd, ['diff', '--name-only', '--no-renames', '-z', `${review.baseSha}..${head}`]);
@@ -345,11 +421,12 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     // 1 Hunt
     updateReview(db, review.id, { state: 'hunting' });
     const read = (name: string): string => { try { return readFileSync(join(root, name), 'utf8'); } catch { return ''; } };
-    const common = { diffCmd: ['git', ...diffArgs], brief: run.prompt ?? '', agentsMd: read('AGENTS.md'), reviewMd: loadReviewMd(root, changed), runs: o.runs, cwd, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) };
-    const found = (await pool([...picks.hunters, picks.security].map((h) => () => hunt({ ...common, lens: h.lens, pick: h.pick })), RUN_SLOTS)).flat();
+    const common = { diffCmd: ['git', ...roundArgs], brief: run.prompt ?? '', agentsMd: read('AGENTS.md'), reviewMd: loadReviewMd(root, changed), runs: o.runs, cwd, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) };
+    // The security pass goes first, so its findings are first in line for verification.
+    const found = (await pool([picks.security, ...picks.hunters].map((h) => () => hunt({ ...common, lens: h.lens, pick: h.pick })), RUN_SLOTS)).flat();
 
-    // 2 Verify: only bugs and risks, each once, never what an earlier round already posted.
-    const posted = postedFingerprints(db, review.projectId);
+    // 2 Verify: only bugs and risks, each once, never what this review already posted (unless it was fixed and came back).
+    const posted = repeatFingerprints(db, review.id);
     const seen = new Set<string>(); const todo: RawFinding[] = [];
     for (const f of found) {
       if (f.category !== 'bug' && f.category !== 'risk') continue;
@@ -361,11 +438,12 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     }
     updateReview(db, review.id, { state: 'verifying' });
     const k = Math.max(1, picks.verifiers.length);
+    const dropped = Math.max(0, todo.length - MAX_VERIFIED);   // never silent: the round cannot pass while findings are unchecked
     const verified = (await pool(todo.slice(0, MAX_VERIFIED).map((f) => () => verifyMany(f, { picks: picks.verifiers, diffCmd: common.diffCmd, runs: o.runs, cwd, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) })), Math.max(1, Math.floor(RUN_SLOTS / k)))).filter((v): v is VerifiedFinding => v !== null);
     for (const d of dependencyFindings(diff.out, cwd)) verified.push({ ...d, votes: { real: 1, notReal: 0 } });
 
     // 3 Filter and 4 Security tagging (triage), then store.
-    const kept = triage(verified, { diffLines: diffLinesFromUnified(diff.out), maxNits: MAX_NITS, posted, reviewId: review.id, round, lineText });
+    const kept = triage(verified, { diffLines: diffLinesFromUnified(whole.out), maxNits: MAX_NITS, posted, reviewId: review.id, round, lineText, root: cwd });
     const stored = addFindings(db, review.id, round, kept.map((f) => ({ ...f, category: 'bug' as const })));
     stored.forEach((s, i) => { const f = kept[i] as Finding; db.prepare('UPDATE finding SET line_text = ? WHERE id = ?').run(squash(lineText(f.file, f.line)).slice(0, 2000) || null, s.id); });
 
@@ -374,7 +452,11 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     const tier = names.ok ? riskTier(changed, { humanPaths }) : { tier: 'high' as const, why: ['changed paths unreadable'] };
     updateReview(db, review.id, { risk: tier.tier });
 
-    putInfo(db, review.id, { ...info, completed: info.completed + 1, lastReviewedSha: head, reasons: [], riskWhy: tier.why.map((w) => oneLine(w, 300)).slice(0, 20) });
+    // Unchecked findings keep the gate open and the next round starts from the same commit, so nothing is skipped. A diff that was too
+    // large for the reviewers to see in full makes this branch need a human approval from now on.
+    const reasons = dropped ? [`too many findings to verify: ${dropped} of ${todo.length} were not checked; run the review again to check the rest`] : [];
+    const { lastReviewedSha: _prev, ...rest } = info;
+    putInfo(db, review.id, { ...rest, completed: info.completed + 1, ...(dropped ? (info.lastReviewedSha ? { lastReviewedSha: info.lastReviewedSha } : {}) : { lastReviewedSha: head }), reasons, riskWhy: tier.why.map((w) => oneLine(w, 300)).slice(0, 20), tooLarge: info.tooLarge || tooLarge });
     updateReview(db, review.id, { state: 'open' });     // 6-7: settle() decides between open / needs-human / passed
     return finish(undefined);
   } catch (e) {

@@ -30,7 +30,7 @@ import { isSecretPath } from '../lib/paths.ts';
 import { checkSparse } from '../run/git.ts';
 import { RunManager, type StartReq } from '../run/runner.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
-import { GateError, answer as answerFindingGate, approve as approveReview, canAccept, launchReview, reviewDiffText, reviewView, reviewsOfRun, startFix } from '../review/gate.ts';
+import { GateError, answer as answerFindingGate, approve as approveReview, canAcceptNow, launchReview, reviewDiffText, reviewView, reviewsOfRun, startFix } from '../review/gate.ts';
 import { MAX_DIFF_BYTES, caseFromFinding, caseSummary, readBaseline, saveCase } from '../review/eval.ts';
 import { getReview } from '../review/store.ts';
 import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
@@ -381,12 +381,15 @@ const ROUTES: [string, RegExp, Handler][] = [
   }],
   // Interim fixer entry point: resumes the task thread with the open Important/Security BLOCKING lines as the whole prompt. No body is read: nothing from the client reaches the prompt.
   ['POST', /^\/api\/reviews\/(\w+)\/fix$/, (c, { params }) => ok({ run: startFix(c.db, c.runs, reviewId(c, params[0])) })],
+  // The verdict is for the branch as git has it NOW (HEAD + clean tree, read by the server). The client's `sha` (the commit the screen
+  // shows) is only compared, never used as the head.
   ['GET', /^\/api\/reviews\/(\w+)\/can-accept$/, (c, { params, q }) => {
     const id = reviewId(c, params[0]);
-    const sha = q.get('sha') ?? '';
+    const sha = (q.get('sha') ?? '').toLowerCase();
     if (!SHA.test(sha)) return bad(400, 'sha: 7-40 hex characters');
-    const r = getReview(c.db, id) as NonNullable<ReturnType<typeof getReview>>;
-    return ok(canAccept(c.db, id, r.headSha.startsWith(sha.toLowerCase()) ? r.headSha : sha.toLowerCase()));
+    const v = canAcceptNow(c.db, id);
+    if (v.head && !v.head.startsWith(sha)) v.why.push(`the screen shows commit ${sha.slice(0, 10)}, but the branch is at ${v.head.slice(0, 10)}: reload`);
+    return ok({ ok: v.why.length === 0, why: v.why, head: v.head });
   }],
 
   // ---- reviewer quality: the last saved baseline and the case counts (never a diff); an incident becomes a case. The diff of a review comes from the review's own commits, never from a path in the request.
