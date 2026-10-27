@@ -78,3 +78,38 @@ test('GET /api/logs rows carry the run\'s model and project so the journal can f
   const end = r.json.find((x: { runId?: string; source: string }) => x.runId === run.id && x.source === 'end');
   assert.ok(end); assert.equal(end.model, runs.get(run.id)!.model); assert.equal(end.projectId, runs.get(run.id)!.projectId);
 });
+
+// ── 7.2: the context gauge's endpoint ─────────────────────────────────────────────────────────────────────────────────────────────────────
+const { reloadPrices } = await import('../econ/prices.ts');
+const { writeFileSync: wf, rmSync: rm } = await import('node:fs');
+const hubHome = process.env['AGENT_HUB_HOME'] as string;
+
+test('GET /api/runs/:id/context: latest per-call size, the first call as baseline, parts that add up, no window unless the price table names one', async () => {
+  wf(join(root, 'AGENTS.md'), 'rule line\n'.repeat(400));   // 4000 bytes: about 1000 tokens, read by SIZE only
+  const r = await api(`/api/runs/${run.id}/context`);
+  assert.equal(r.status, 200);
+  assert.deepEqual([r.json.used, r.json.firstCall, r.json.turns, r.json.window, r.json.level, r.json.handoffAt, r.json.amberAt], [1110, 915, 3, null, 'ok', 250_000, 200_000], 'the bundled price table names no window: it stays unknown');
+  const b = r.json.breakdown;
+  assert.equal(b.system + b.rules + b.skills + b.conversation, b.used); assert.equal(b.used, 1110); assert.equal(b.window, null);
+  assert.equal(b.conversation, 1110 - 915); assert.equal(r.json.estimated, true); assert.ok(r.json.rulesTokens >= 1000 && r.json.rulesTokens <= 1010, `rules ≈ size/4, got ${r.json.rulesTokens}`);
+  assert.equal(r.json.cache.ttlSec, 300); assert.ok(r.json.cache.ageSec >= 0 && r.json.cache.ageSec < 60);
+  assert.ok(!JSON.stringify(r.json).includes('rule line'), 'the text of a rules file is never read');
+});
+
+test('context: a window from the price table is passed on; red from 250K; a run with no measured calls says so; bad ids and unknown runs are refused', async () => {
+  wf(join(hubHome, 'prices.json'), JSON.stringify({ version: 1, models: { 'claude-sonnet-5-5': { tiers: [{ input: 3, cacheRead: 0.3, output: 15 }], source: 'test', date: '2026-10-27', window: 1_000_000 } } }));
+  reloadPrices(hubHome);
+  try {
+    assert.equal((await api(`/api/runs/${run.id}/context`)).json.window, 1_000_000);
+    db.prepare("INSERT INTO run (id, agent, model, started_at, outcome) VALUES ('rbig1', 'claude', 'claude-sonnet-5-5', ?, 'done')").run(new Date().toISOString());
+    for (const [seq, c] of [[1, 30_000], [2, 120_000], [3, 255_000]] as const) db.prepare("INSERT INTO run_event (run_id, seq, ts, kind, data) VALUES ('rbig1', ?, ?, 'turn', ?)").run(seq, new Date(Date.now() - 400_000).toISOString(), JSON.stringify({ kind: 'turn', newIn: 1, cachedIn: c - 1, out: 1, context: c }));
+    const big = (await api('/api/runs/rbig1/context')).json;
+    assert.deepEqual([big.used, big.level, big.breakdown.turnsLeft], [255_000, 'red', 0]);
+    assert.ok(big.cache.ageSec >= 399, 'the last call was 400 s ago: the cache has gone cold');
+  } finally { rm(join(hubHome, 'prices.json'), { force: true }); reloadPrices(hubHome); }
+  db.prepare("INSERT INTO run (id, agent, model, started_at, outcome) VALUES ('rcodex2', 'codex', 'gpt-6.1-sol', ?, 'done')").run(new Date().toISOString());
+  const cx = (await api('/api/runs/rcodex2/context')).json;
+  assert.deepEqual([cx.used, cx.level, cx.breakdown, cx.cache, cx.turns], [null, null, null, null, 0]);
+  assert.equal((await api('/api/runs/NOTAID/context')).status, 400); assert.equal((await api('/api/runs/rzzzzzz/context')).status, 404);
+  assert.equal((await raw(`/api/runs/${run.id}/context`, null)).status, 401);
+});

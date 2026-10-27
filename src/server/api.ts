@@ -40,6 +40,7 @@ import { defaultLadder, readCascadeFor, readVerify, runCascade, validArgv, type 
 import { approveVerify } from '../review/checks.ts';
 import { RunManager, type RunRow, type StartReq } from '../run/runner.ts';
 import { buildTrace, pageTurns, readTraceEvents, traceJsonl } from '../run/trace.ts';
+import { AMBER_AT, CACHE_TTL_SEC, HANDOFF_AT, contextBreakdown, contextLevel, modelWindow, readContext, rulesTokens } from '../econ/context.ts';
 import { approveStage, stageStatus } from '../stages/engine.ts';
 import { GateError, answer as answerFindingGate, approve as approveReview, approveReviewChecks, canAcceptNow, launchReview, reviewChecks, reviewDiffText, reviewView, reviewsOfRun, startFix, usableAgents } from '../review/gate.ts';
 import { MAX_DIFF_BYTES, SEED_CASES_DIR, caseFromFinding, caseSummary, incidentCasesDir, readBaseline, saveCase } from '../review/eval.ts';
@@ -104,6 +105,17 @@ function traceOf(c: Ctx, id: string): { run: RunRow; trace: ReturnType<typeof bu
   if (!run) throw new HttpError(404, 'run not found');
   const { events, truncated } = readTraceEvents(c.db, id);
   return { run, trace: buildTrace(events, { model: run.model ?? '', ...(run.effort ? { effort: run.effort } : {}) }), truncated };
+}
+/** Skills-list size per project and agent: scanning the skill folders is not free, and the gauge asks every few seconds. An estimate, so a minute old is fine. */
+const skillsCache = new Map<string, { at: number; tokens: number }>();
+function skillsTokens(root: string, agent: AgentId): number {
+  const key = `${root}|${agent}`, hit = skillsCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.tokens;
+  let tokens = 0;
+  try { tokens = auditLoading(root).totals[agent]?.now ?? 0; } catch { /* a project folder that cannot be read has no estimate */ }
+  if (skillsCache.size >= 50) skillsCache.clear();
+  skillsCache.set(key, { at: Date.now(), tokens });
+  return tokens;
 }
 const RUN_ID = /^r[0-9a-z]{2,40}$/, REVIEW_ID = /^rv[0-9a-z]{2,40}$/, FINDING_ID = /^fd[0-9a-z]{2,40}$/, SHA = /^[0-9a-f]{7,40}$/i;
 function reviewId(c: Ctx, raw: string | undefined): string {
@@ -506,6 +518,21 @@ const ROUTES: [string, RegExp, Handler][] = [
   ['GET', /^\/api\/runs\/(\w+)\/trace\.jsonl$/, (c, { params }) => {
     const { run, trace } = traceOf(c, params[0] as string);
     return { status: 200, text: traceJsonl(trace), type: 'application/x-ndjson; charset=utf-8', headers: { 'content-disposition': `attachment; filename="trace-${run.id}.jsonl"` } };
+  }],
+  // Phase 7.2 (ADR-024): the gauge. Numbers from the stored per-call rows; rules and skills are ESTIMATES (file sizes and the skill-list audit), the window is null unless the price table names one.
+  ['GET', /^\/api\/runs\/(\w+)\/context$/, (c, { params }) => {
+    const id = params[0] as string;
+    if (!RUN_ID.test(id)) return bad(400, 'bad run id');
+    const run = c.runs.get(id), t = readContext(c.db, id);
+    if (!run || !t) return bad(404, 'run not found');
+    const window = modelWindow(run.model);
+    const base = { runId: run.id, agent: run.agent, live: c.runs.isLive(run.id), model: run.model ? clip(run.model, 100) : null, turns: t.turns, window, handoffAt: HANDOFF_AT, amberAt: AMBER_AT, used: t.used, firstCall: t.firstCall, estimated: true };
+    if (t.used === null || t.firstCall === null) return ok({ ...base, level: null, breakdown: null, rulesTokens: 0, skillsTokens: 0, cache: null });
+    const projectRoot = (c.db.prepare('SELECT root FROM project WHERE id = ?').get(run.projectId) as { root: string } | undefined)?.root;
+    const rules = rulesTokens(run.cwd && existsSync(run.cwd) ? run.cwd : projectRoot ?? ''), skills = projectRoot ? skillsTokens(projectRoot, run.agent as AgentId) : 0;
+    const age = t.lastTs ? Math.max(0, Math.round((Date.now() - Date.parse(t.lastTs)) / 1000)) : null;
+    return ok({ ...base, level: contextLevel(t.used), breakdown: contextBreakdown({ firstCall: t.firstCall, rulesTokens: rules, skillsTokens: skills, lastContext: t.used, window, turns: t.turns }), rulesTokens: rules, skillsTokens: skills,
+      cache: run.agent === 'claude' && age !== null && Number.isFinite(age) ? { ageSec: age, ttlSec: CACHE_TTL_SEC } : null });
   }],
   ['GET', /^\/api\/runs\/(\w+)\/cascade$/, (c, { params }) => (RUN_ID.test(params[0] as string) ? ok({ cascade: readCascadeFor(c.runs.home, params[0] as string) ?? null }) : bad(400, 'bad run id'))],
   // The cascade's verify command runs code of the task folder with the user's rights: same digest-pinned approval as review checks (ADR-017). Human HTTP path only.

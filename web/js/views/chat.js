@@ -4,6 +4,7 @@ import { renderSafe, renderRun as trRun } from '../transcript.js';
 import { EFFORT, go, outcomeChip, pageHead, projectSelect, TASKS, threadsOf, workModePicker } from './common.js';
 import { reviewCard } from './review.js';
 import { cascadeCard } from './cascade.js';
+import { contextGauge } from './context-gauge.js';
 
 const PERMS = [['plan', 'Только читать'], ['edit', 'Можно править файлы'], ['full', 'Без подтверждений']];
 
@@ -36,6 +37,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
   const list = h('div.list');
   const transcript = h('div.transcript', { 'aria-live': 'polite' });
   const head = h('div.chat-head');
+  const gauge = contextGauge();
   const ta = h('textarea.textarea', { rows: 1, placeholder: 'Что сделать? Enter отправляет, Shift+Enter переносит строку', 'aria-label': 'Сообщение', 'data-autofocus': true });
   const sendBtn = h('button.btn.btn-primary.btn-icon', { type: 'button', 'aria-label': 'Отправить' }, icon('send'));
   const opts = h('div.opts');
@@ -65,7 +67,9 @@ export async function chatPanel({ projectId, runId, q, global }) {
       global && !current ? h('div.field', { style: { flexDirection: 'row', alignItems: 'center', gap: '8px' } }, icon('folder', 'sm'), projectSelect(projects, pid, (v) => { pid = v; })) : null,
       current ? h('div.row-flex', agentBadge(lastAgent), chip(fmt.model(current.last.model), 'line'), current.last.effort ? chip(current.last.effort, 'line') : null, current.last.branch ? chip(current.last.branch, 'info') : null) : h('span.t-meta', 'Новый чат'),
       h('div.grow'), current ? h('a.btn.btn-glass', { href: '#/trace/' + current.last.id, title: 'Шаги, токены и вызовы инструментов последнего запуска' }, icon('logs', 'sm'), 'Подробно') : null,
-      current ? btn('Что происходило', { kind: 'glass', icon: 'logs', class: 'btn-sm', onclick: showLog }) : null, ...['claude', 'codex'].map((id) => { const l = limitOf(id); const p = l && !l.stale ? l.usedPercent : null; return h('span.t-meta.row-flex', { style: { gap: '6px' } }, avatar(id), p == null ? 'лимит не известен' : `осталось ${Math.max(0, 100 - Math.round(p))}%`); }));
+      current ? btn('Что происходило', { kind: 'glass', icon: 'logs', class: 'btn-sm', onclick: showLog }) : null, ...['claude', 'codex'].map((id) => { const l = limitOf(id); const p = l && !l.stale ? l.usedPercent : null; return h('span.t-meta.row-flex', { style: { gap: '6px' } }, avatar(id), p == null ? 'лимит не известен' : `осталось ${Math.max(0, 100 - Math.round(p))}%`); }),
+      gauge.node);
+    gauge.show(current?.last.id ?? null);   // the gauge of the thread's newest run; a new chat has none
   }
   /** Full event log of the current thread: every event with time, kind and short content. Downloadable. */
   async function showLog() {
@@ -208,7 +212,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
     history.replaceState(null, '', location.hash.replace(/\/chat(\/\w+)?/, '/chat/' + t.last.id));
   }
   function attach(run, after, c) {
-    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderSafe(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); await refresh(); drawCascadeCard(); drawReviewCard(); });
+    const close = stream(run.id, after, (e) => { const s = stick(); transcript.querySelector('.typing-row')?.remove(); renderSafe(transcript, e, c); if (s) toBottom(); }, async () => { live = null; setBusy(false); gauge.refresh(); await refresh(); drawCascadeCard(); drawReviewCard(); });
     live = { runId: run.id, close }; setBusy(true);
   }
   function stopLive() { live?.close(); live = null; setBusy(false); }
@@ -270,5 +274,5 @@ export async function chatPanel({ projectId, runId, q, global }) {
   const start = runId ? threads.find((t) => t.runs.some((r) => r.id === runId)) : null;
   if (start) await open(start);
   else { transcript.replaceChildren(emptyState()); if (q?.get('prompt')) { ta.value = q.get('prompt'); autosize(); if (q.get('send')) setTimeout(send, 50); } }
-  return { node, cleanup: () => { stopLive(); closers.forEach((c) => c()); } };
+  return { node, cleanup: () => { stopLive(); gauge.stop(); closers.forEach((c) => c()); } };
 }

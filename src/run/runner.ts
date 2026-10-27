@@ -16,6 +16,7 @@ import { handoffPrompt, writeCard, type Card, type HandoffInput } from './handof
 import { readRunnerHooks, runHooks } from './hooks-run.ts';
 import { modelSummary, type Summary } from './summarize.ts';
 import { sanitizeEvent } from '../adapters/event-utils.ts';
+import { HANDOFF_AT } from '../econ/context.ts';
 
 export interface StartReq {
   agent: AgentId; prompt: string; projectRoot: string; task?: string; model?: string; effort?: string; permission?: Permission;
@@ -33,7 +34,7 @@ const COLS = 'id, agent, model, effort, prompt, cwd, branch, started_at AS start
 const MAX_CONCURRENT = 4;
 const MAX_KEEP = 400;
 /** ADR-018: above this many prompt tokens in ONE model call a task run is stopped and continued in a fresh session from its handoff card. */
-export const CONTEXT_LIMIT = 250_000;
+export const CONTEXT_LIMIT = HANDOFF_AT;
 /** A task gets at most this many sessions in a row stopped for context size (the original and two fresh ones); then the user continues by hand. */
 const CONTEXT_CHAIN_MAX = 3;
 /** ADR-024: at most this many `turn` rows (one per model call) are stored per run; a hostile or runaway CLI cannot grow the log with them. */

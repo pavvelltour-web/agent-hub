@@ -12,13 +12,17 @@ import { HUB_HOME } from '../core/registry.ts';
 export interface Price { input: number; cacheRead: number; output: number }
 /** One price band; `promptTokensUpTo` (inclusive) closes a band, the last band has none. */
 export interface Tier extends Price { promptTokensUpTo?: number }
-export interface PriceEntry { id: string; label?: string; tiers: Tier[]; source: string; date: string; dateKind?: 'checked' | 'recorded' | 'user'; url?: string }
+export interface PriceEntry { id: string; label?: string; tiers: Tier[]; source: string; date: string; dateKind?: 'checked' | 'recorded' | 'user'; url?: string;
+  /** Context window in tokens, when the row names one (the context gauge, ADR-024). Absent = unknown; the bundled table names none. */
+  window?: number }
 /** A row that was dropped, and why (shown to the user: the reason is plain Russian). */
 export interface RejectedRow { id: string; reason: string }
 export interface PriceTable { models: Map<string, PriceEntry>; overridden: Set<string>; rejected: number; rejectedRows: RejectedRow[]; /** Set when the override file exists but cannot be used as a whole (unreadable, too big, too many rows). */ overrideProblem?: string }
 
 export const DEFAULT_PRICES_PATH = fileURLToPath(new URL('../../registry/prices.json', import.meta.url));
 const MAX_BYTES = 64 * 1024, MAX_ROWS = 200, MAX_PER_MTOK = 10_000;
+/** A window is a whole number of tokens between a thousand and a hundred million; anything else is ignored (the row keeps its price, the window stays unknown). */
+const validWindow = (x: unknown): x is number => typeof x === 'number' && Number.isInteger(x) && x >= 1000 && x <= 100_000_000;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -50,7 +54,7 @@ export function parsePrices(raw: unknown, fallback?: { source: string; date: str
     const date = typeof r['date'] === 'string' && ISO.test(r['date']) ? r['date'] : fallback?.date, source = text(r['source'], 400) ?? fallback?.source;
     if (!source || !date) { rejectedRows.push({ id, reason: 'нет источника или даты' }); continue; }
     const url = typeof r['url'] === 'string' && /^https?:\/\/\S{1,300}$/.test(r['url']) ? r['url'] : undefined, label = text(r['label'], 80);
-    models.set(id, { id, ...(label ? { label } : {}), tiers, source, date, ...(r['dateKind'] === 'checked' || r['dateKind'] === 'recorded' || r['dateKind'] === 'user' ? { dateKind: r['dateKind'] } : {}), ...(url ? { url } : {}) });
+    models.set(id, { id, ...(label ? { label } : {}), ...(validWindow(r['window']) ? { window: r['window'] } : {}), tiers, source, date, ...(r['dateKind'] === 'checked' || r['dateKind'] === 'recorded' || r['dateKind'] === 'user' ? { dateKind: r['dateKind'] } : {}), ...(url ? { url } : {}) });
   }
   return { models, rejected: rejectedRows.length, rejectedRows };
 }
@@ -73,7 +77,7 @@ function readFile(path: string, user = false): Read {
 export function loadPriceTable(home: string = HUB_HOME, bundled: string = DEFAULT_PRICES_PATH): PriceTable {
   const base = readFile(bundled), over = readFile(join(home, 'prices.json'), true);
   const models = new Map(base.models), overridden = new Set<string>();
-  for (const [id, e] of over.models) { const label = e.label ?? base.models.get(id)?.label; models.set(id, { ...e, ...(label ? { label } : {}) }); overridden.add(id); }
+  for (const [id, e] of over.models) { const label = e.label ?? base.models.get(id)?.label, window = e.window ?? base.models.get(id)?.window; models.set(id, { ...e, ...(label ? { label } : {}), ...(window ? { window } : {}) }); overridden.add(id); }
   return { models, overridden, rejected: base.rejected + over.rejected, rejectedRows: [...base.rejectedRows, ...over.rejectedRows], ...(over.problem ? { overrideProblem: over.problem } : {}) };
 }
 
@@ -102,7 +106,8 @@ export function saveOverride(home: string, id: string, price: Price | null): Pri
   if (!cur.missing) { const j = JSON.parse(readFileSync(path, 'utf8')) as unknown; if (isObj(j) && isObj(j['models'])) existing = j['models']; }
   const models: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(existing)) if (k !== id && !badId(k)) models[k] = v;
-  if (price) models[id] = { tiers: [{ input: price.input, cacheRead: price.cacheRead, output: price.output }], source: 'вписано вами', date: new Date().toISOString().slice(0, 10), dateKind: 'user' };
+  const keepWindow = isObj(existing[id]) && validWindow(existing[id]['window']) ? { window: existing[id]['window'] } : {};   // a window the user wrote survives a price change
+  if (price) models[id] = { tiers: [{ input: price.input, cacheRead: price.cacheRead, output: price.output }], source: 'вписано вами', date: new Date().toISOString().slice(0, 10), dateKind: 'user', ...keepWindow };
   if (Object.keys(models).length > MAX_ROWS) throw new Error(`в файле с ценами не может быть больше ${MAX_ROWS} строк`);
   const body = JSON.stringify({ version: 1, models }, null, 2) + '\n';
   if (Buffer.byteLength(body) > MAX_BYTES) throw new Error(`файл с ценами стал бы больше ${MAX_BYTES / 1024} КБ`);
