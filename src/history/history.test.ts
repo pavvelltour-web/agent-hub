@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -9,6 +9,8 @@ import { syncClaude } from './claude.ts';
 import { syncCodex } from './codex.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'hub-hist-'));
+const extraTmp: string[] = [tmp];
+after(() => { for (const d of extraTmp) rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 const L = (o: unknown): string => JSON.stringify(o) + '\n';
 
 // ----- Claude fixture -----
@@ -242,7 +244,7 @@ test('history: Codex exec_command (cmd argument) is shown as a shell command', a
 });
 
 test('history pager: a tool line with an object name / numeric id yields safe strings', async () => {
-  const d = mkdtempSync(join(tmpdir(), 'hub-hist-'));
+  const d = mkdtempSync(join(tmpdir(), 'hub-hist-')); extraTmp.push(d);
   const f = join(d, 's.jsonl');
   writeFileSync(f, JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 123, name: { innerHTML: '<a href=x>x</a>' }, input: {} }] } }) + '\n');
   const r = await readClaudeEvents(f, { offset: 0, limit: 10 });
@@ -252,7 +254,7 @@ test('history pager: a tool line with an object name / numeric id yields safe st
 
 test('index sync: an object tool name, object arguments/input or object token counts cannot abort the sync', async () => {
   const X = { toString: 1 };
-  const t2 = mkdtempSync(join(tmpdir(), 'hub-hist-bad-'));
+  const t2 = mkdtempSync(join(tmpdir(), 'hub-hist-bad-')); extraTmp.push(t2);
   const cd = join(t2, '.claude'); mkdirSync(join(cd, 'projects', 'p'), { recursive: true });
   writeFileSync(join(cd, 'projects', 'p', 'bad-1.jsonl'),
     L({ type: 'user', sessionId: 'bad-1', cwd, timestamp: '2026-10-20T10:00:00Z', message: { role: 'user', content: 'hello' } }) +
