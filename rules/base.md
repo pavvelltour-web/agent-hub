@@ -7,7 +7,7 @@ Keep only non-standard conventions here; never describe the repository layout (t
 ## Start here
 1. Read `brief.md` (goal, users, what is out of scope). If it is missing, ask the user for the goal before building anything. The user's words are the contract: a requirement is removed only by the user, in their words; the plan may be corrected, the brief may not.
 2. Read `specs/` or `tasks.md` for the task you were given. Do only that task, in one fresh context.
-3. Ask the graph first: `graphify query "<question>" --budget 800`. Open only the files and line ranges it names. Never list or read the whole repository.
+3. If `graphify-out/` exists: Ask the graph first: `graphify query "<question>" --budget 800`. Open only the files and line ranges it names. Never list or read the whole repository. No graph yet: search by name, narrowly.
 4. Read a phase's rules when the phase starts, not before: anything read early stays in context for the rest of the run.
 
 ## Hard rules

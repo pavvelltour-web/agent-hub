@@ -7,8 +7,10 @@ import type { StartReq } from '../run/runner.ts';
 import { REPO_ROOT } from './registry.ts';
 
 export interface WorkMode {
-  id: string; title: string; hint: string; permission: Permission; cls: TaskClass; worktree: boolean; skills: string[];
-  /** MCP servers (hub-library names) this mode may use. When set, a run starts only those (`--strict-mcp-config`); when absent MCP is left as the user configured it. */
+  id: string; title: string; hint: string; permission: Permission; cls: TaskClass; worktree: boolean;
+  /** Skills are on or off for a run, not filtered per skill: `[]` starts it with skills off (`--disable-slash-commands`); ANY non-empty list keeps them on. `["*"]` is the explicit "all"; names (autopilot) say which one the mode relies on. */
+  skills: string[];
+  /** MCP servers (hub-library names) this mode may use. When set (even `[]`), a run starts only those and nothing else (`--strict-mcp-config`); when absent MCP is left as the user configured it. */
   mcp?: string[];
   review: 'none' | 'on-stuck' | 'phase';
   autopilot?: { mode: 'full' | 'semi' | 'interview' | 'manual'; depth: 'strict' | 'normal' | 'deep' };
@@ -29,7 +31,7 @@ export function parseWorkMode(raw: unknown): WorkMode {
   if (!PERMS.includes(m.permission as string)) bad('bad permission');
   if (!CLASSES.includes(m.cls as string)) bad('bad class');
   if (typeof m.worktree !== 'boolean') bad('worktree must be true or false');
-  if (!Array.isArray(m.skills) || m.skills.some((s) => typeof s !== 'string' || !NAME.test(s))) bad('bad skills');
+  if (!Array.isArray(m.skills) || m.skills.some((s) => typeof s !== 'string' || !NAME.test(s) && s !== '*') || (m.skills.includes('*') && m.skills.length > 1)) bad('bad skills');   // "*" is the one wildcard and stands alone
   if (m.mcp !== undefined && (!Array.isArray(m.mcp) || m.mcp.some((s) => typeof s !== 'string' || !NAME.test(s)))) bad('bad mcp');
   if (!REVIEWS.includes(m.review as string)) bad('bad review');
   if (m.autopilot && (!AP_MODES.includes(m.autopilot.mode) || !AP_DEPTHS.includes(m.autopilot.depth))) bad('bad autopilot settings');

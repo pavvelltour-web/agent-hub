@@ -11,7 +11,7 @@ import { addLimit, projectId, tx, type Db } from '../history/store.ts';
 import { HUB_HOME } from '../core/registry.ts';
 import { redact } from '../lib/redact.ts';
 import { createWorktree, isGitRepo, pushGuardEnv } from './git.ts';
-import { leanPlan } from './lean.ts';
+import { leanPlan, sweepStaleMcp } from './lean.ts';
 import { handoffPrompt, writeCard, type Card, type HandoffInput } from './handoff.ts';
 import { readRunnerHooks, runHooks } from './hooks-run.ts';
 import { modelSummary, type Summary } from './summarize.ts';
@@ -38,7 +38,7 @@ const CONTEXT_CHAIN_MAX = 3;
 /** `summarize`: false = deterministic handoff summary only; a function replaces the model call (tests). Default: try the cheap model, fall back. */
 export interface RunManagerOpts { exe?: Partial<Record<AgentId, { cmd: string; prefix: string[] }>>; env?: NodeJS.ProcessEnv; summarize?: boolean | ((inp: HandoffInput) => Promise<Summary | undefined>); home?: string;
   /** Tests: where work modes and MCP server definitions come from (defaults: the repo's `modes/` and the hub library). */
-  lean?: { modesDir?: string; catalog?: RegistryEntry[] };
+  lean?: { modesDir?: string; catalog?: RegistryEntry[]; profile?: string };
   /** Prompt-token size that counts as a large context (default `CONTEXT_LIMIT`; 0 switches the watch off). */
   contextLimit?: number }
 
@@ -64,6 +64,7 @@ export class RunManager {
   readonly home: string;
   constructor(db: Db, opts: RunManagerOpts = {}) {
     this.db = db; this.opts = opts; this.home = opts.home ?? HUB_HOME;
+    sweepStaleMcp(join(this.home, 'tmp'));   // temp MCP files a crash left behind (names only, but not ours to keep)
     // A crashed server leaves rows without an end: mark them so the UI never shows a ghost "running" run.
     db.prepare("UPDATE run SET outcome = 'interrupted', ended_at = ? WHERE outcome IS NULL").run(new Date().toISOString());
     // Review rounds are NOT touched here: a `hub run` / `hub chat` process on the same database must not open a round the panel is running.
@@ -155,11 +156,20 @@ export class RunManager {
     note(runHooks('sessionStart', hooks.sessionStart, cwd, { ...env, HUB_RUN_ID: id, HUB_AGENT: req.agent }));
     const exe = this.opts.exe?.[req.agent];
     // Tool set for this run: skills and MCP servers follow the work mode (a mode that lists none starts none). The temp MCP file lives in the hub's own folder.
-    let mode; try { mode = reviewer || !workMode ? undefined : loadWorkModes(this.opts.lean?.modesDir).find((m) => m.id === workMode); } catch { mode = undefined; }
-    const lean = reviewer ? undefined : leanPlan(req.agent, mode, { projectRoot: req.projectRoot, cwd, mcpNeeded: mode?.mcp ?? [], ...(req.cls ? { cls: req.cls } : {}), tmpDir: join(home, 'tmp'), ...(this.opts.lean?.catalog ? { catalog: this.opts.lean.catalog } : {}) });
+    let mode: ReturnType<typeof loadWorkModes>[number] | undefined, modeWarn: string | undefined;
+    if (!reviewer && workMode) {
+      const label = JSON.stringify(workMode.slice(0, 64));
+      try { mode = loadWorkModes(this.opts.lean?.modesDir).find((m) => m.id === workMode); if (!mode) modeWarn = `work mode ${label} not found: the tool set follows the task class`; }
+      catch { modeWarn = `work mode ${label}: a mode file is unreadable or malformed, so the tool set follows the task class`; }
+    }
+    if (modeWarn) emit({ kind: 'warn', message: modeWarn });
+    const lean = reviewer ? undefined : leanPlan(req.agent, mode, { projectRoot: req.projectRoot, cwd, mcpNeeded: mode?.mcp ?? [], ...(req.cls ? { cls: req.cls } : {}), tmpDir: join(home, 'tmp'), ...(this.opts.lean?.catalog ? { catalog: this.opts.lean.catalog } : {}), ...(this.opts.lean?.profile ? { profile: this.opts.lean.profile } : {}) });
     lean?.notes.forEach((message) => emit({ kind: 'warn', message }));
-    const handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: lean?.args ?? [], ...(req.extraArgs?.length ? { extraArgs: req.extraArgs } : {}) }, emit,
-      { env, ...(exe ? { exe } : {}) });
+    let handle: RunHandle;
+    try {
+      handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: lean?.args ?? [], ...(req.extraArgs?.length ? { extraArgs: req.extraArgs } : {}) }, emit,
+        { env, ...(exe ? { exe } : {}) });
+    } catch (e) { lean?.cleanup(); throw e; }   // a start that throws must not leave the temp MCP file behind
     const entry = { handle, stopped: false };
     this.live.set(id, entry);
     /** Commit a checkpoint, write the handoff card (reason as given) and record it on the run. false = the card could not be written. */

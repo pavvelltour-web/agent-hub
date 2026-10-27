@@ -99,17 +99,26 @@ export function scanLocalSkills(project?: string): RegistryEntry[] {
   return [...seen.values()];
 }
 
-/** Shipped catalog (registry/entries/*.json) plus personal one (~/.agent-hub/registry/*.json). */
-export function loadCatalog(): RegistryEntry[] {
+const readCatalogDir = (dir: string): RegistryEntry[] => {
   const out: RegistryEntry[] = [];
-  for (const dir of [join(REPO_ROOT, 'registry', 'entries'), join(HUB_HOME, 'registry')]) {
-    if (!existsSync(dir)) continue;
-    for (const f of readdirSync(dir).filter((x) => x.endsWith('.json'))) {
-      const j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as RegistryEntry | RegistryEntry[];
-      out.push(...(Array.isArray(j) ? j : [j]));
-    }
+  if (!existsSync(dir)) return out;
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.json'))) {
+    const j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as RegistryEntry | RegistryEntry[];
+    out.push(...(Array.isArray(j) ? j : [j]));
   }
   return out;
+};
+
+/** Ids of the shipped catalog (registry/entries/*.json): the only entries whose `sourceVerified` the hub itself vouches for. */
+export const shippedCatalogIds = (): string[] => readCatalogDir(join(REPO_ROOT, 'registry', 'entries')).map((e) => e.id);
+
+/**
+ * Shipped catalog (registry/entries/*.json) plus the personal one (~/.agent-hub/registry/*.json). On an id collision the SHIPPED entry wins,
+ * for the panel and for a run alike: a file in the hub home cannot redefine what a shipped server or skill starts.
+ */
+export function loadCatalog(): RegistryEntry[] {
+  const shipped = readCatalogDir(join(REPO_ROOT, 'registry', 'entries')), ids = new Set(shipped.map((e) => e.id));
+  return [...shipped, ...readCatalogDir(join(HUB_HOME, 'registry')).filter((e) => !ids.has(e.id))];
 }
 
 /** Local skills win over catalog entries with the same id (they have a real source path). */

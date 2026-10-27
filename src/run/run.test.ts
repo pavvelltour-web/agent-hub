@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -334,7 +334,7 @@ test('RunManager lean tool sets: MCP-naming mode starts strict and the temp file
     m('chat', { mcp: ['shadcn'] }); m('task', { skills: ['x'], mcp: ['ghost'] });
     const catalog = [{ id: 'mcp/shadcn', kind: 'mcp', title: 's', description: '', source: { type: 'local' }, tags: [], stages: [], projectTypes: ['*'], compat: { claude: 'native', codex: 'native' }, tokenCost: 0, risk: { executesCode: true, network: false, writesOutside: false }, sourceVerified: true, mcp: { command: 'npx', args: ['shadcn@latest', 'mcp'], env: ['SHADCN_TOKEN'] } }] as never;
     process.env['SHADCN_TOKEN'] = 'sk-SHOULDNEVERAPPEAR1234567890';
-    const rm = new RunManager(openDb(':memory:'), { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-ok', FAKE_ARGV_FILE: cap }, summarize: false, home, lean: { modesDir: modes, catalog } });
+    const rm = new RunManager(openDb(':memory:'), { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-ok', FAKE_ARGV_FILE: cap }, summarize: false, home, lean: { modesDir: modes, catalog, profile: tmpdir() } });
     const go = async (req: object): Promise<string> => { const r = rm.start({ agent: 'claude', prompt: 'hi', projectRoot: root, ...req } as never); await waitEnd(rm, r.id); return r.id; };
     const calls = (): { argv: string[]; mcp: string | null }[] => readFileSync(cap, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { argv: string[]; mcp: string | null });
 
@@ -347,8 +347,8 @@ test('RunManager lean tool sets: MCP-naming mode starts strict and the temp file
 
     const id2 = await go({ workMode: 'task' });
     const b = calls()[1]!;
-    assert.ok(!b.argv.includes('--strict-mcp-config') && !b.argv.includes('--disable-slash-commands'), b.argv.join(' '));
-    assert.ok(rm.events(id2).some((e) => e.kind === 'warn' && /MCP: "ghost"/.test((e.data as { message: string }).message)), 'the user is told MCP was left alone');
+    assert.ok(b.argv.includes('--strict-mcp-config') && !b.argv.includes('--mcp-config') && !b.argv.includes('--disable-slash-commands'), b.argv.join(' '));
+    assert.ok(rm.events(id2).some((e) => e.kind === 'warn' && /MCP: "ghost"/.test((e.data as { message: string }).message)), 'the user is told no MCP started');
 
     await go({ cls: 'mechanical' });
     assert.deepEqual(calls()[2]!.argv.filter((x) => x.startsWith('--') && /slash|mcp/.test(x)), ['--disable-slash-commands'], 'no mode: the task class decides, as before');
@@ -356,6 +356,35 @@ test('RunManager lean tool sets: MCP-naming mode starts strict and the temp file
     await go({ workMode: 'chat', isolatedCwd: root });
     assert.ok(!calls()[3]!.argv.some((x) => /slash|mcp/.test(x)), 'a review-gate reviewer is never touched');
   } finally { delete process.env['SHADCN_TOKEN']; rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); rmSync(modes, { recursive: true, force: true }); }
+});
+
+test('RunManager lean: a missing or malformed work mode warns; a throwing start removes the temp MCP file; old temp files are swept at start', async () => {
+  const root = repo(), home = mkdtempSync(join(tmpdir(), 'hub-leanhome-')), modes = mkdtempSync(join(tmpdir(), 'hub-leanmodes-'));
+  try {
+    const catalog = [{ id: 'mcp/shadcn', kind: 'mcp', title: 's', description: '', source: { type: 'local' }, tags: [], stages: [], projectTypes: ['*'], compat: { claude: 'native', codex: 'native' }, tokenCost: 0, risk: { executesCode: true, network: false, writesOutside: false }, sourceVerified: true, mcp: { command: 'npx', args: ['shadcn@latest', 'mcp'] } }] as never;
+    writeFileSync(join(modes, 'chat.json'), JSON.stringify({ id: 'chat', title: 'c', hint: 'h', permission: 'edit', cls: 'implement', worktree: false, skills: [], review: 'none', mcp: ['shadcn'] }));
+    mkdirSync(join(home, 'tmp'), { recursive: true });
+    const old = join(home, 'tmp', 'mcp-0123456789abcdef.json'); writeFileSync(old, '{}'); const t = new Date(Date.now() - 3 * 86_400_000); utimesSync(old, t, t);
+    const keep = join(home, 'tmp', 'notes.txt'); writeFileSync(keep, 'x'); utimesSync(keep, t, t);
+    const rm = new RunManager(openDb(':memory:'), { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'claude-ok' }, summarize: false, home, lean: { modesDir: modes, catalog, profile: tmpdir() } });
+    assert.ok(!existsSync(old) && existsSync(keep), 'a day-old temp MCP file is swept, other files are not');
+    const warns = (id: string): string[] => rm.events(id).filter((e) => e.kind === 'warn').map((e) => (e.data as { message: string }).message);
+
+    const r1 = rm.start({ agent: 'claude', prompt: 'hi', projectRoot: root, workMode: 'no-such-mode' }); await waitEnd(rm, r1.id);
+    assert.ok(warns(r1.id).some((m) => /work mode "no-such-mode"/.test(m) && /not found/.test(m)), warns(r1.id).join(' | '));
+    const r2 = rm.start({ agent: 'claude', prompt: 'hi', projectRoot: root, workMode: 'chat' }); await waitEnd(rm, r2.id);
+    assert.ok(!warns(r2.id).some((m) => /work mode/.test(m)), 'a valid mode is silent');
+    writeFileSync(join(modes, 'chat.json'), '{ not json');
+    const r3 = rm.start({ agent: 'claude', prompt: 'hi', projectRoot: root, workMode: 'chat' }); await waitEnd(rm, r3.id);
+    assert.ok(warns(r3.id).some((m) => /work mode "chat"/.test(m) && /unreadable|malformed/.test(m)), warns(r3.id).join(' | '));
+    const r4 = rm.start({ agent: 'claude', prompt: 'hi', projectRoot: root }); await waitEnd(rm, r4.id);
+    assert.ok(!warns(r4.id).some((m) => /work mode/.test(m)), 'no mode requested: nothing to warn about');
+
+    writeFileSync(join(modes, 'chat.json'), JSON.stringify({ id: 'chat', title: 'c', hint: 'h', permission: 'edit', cls: 'implement', worktree: false, skills: [], review: 'none', mcp: ['shadcn'] }));
+    rm.adapters.claude = { ...rm.adapters.claude, args: () => { throw new Error('boom'); } };
+    assert.throws(() => rm.start({ agent: 'claude', prompt: 'hi', projectRoot: root, workMode: 'chat' }), /boom/);
+    assert.deepEqual(readdirSync(join(home, 'tmp')).filter((f) => f.startsWith('mcp-')), [], 'the temp MCP file does not outlive a start that threw');
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); rmSync(modes, { recursive: true, force: true }); }
 });
 
 // ── fresh context at the right size (ADR-018) ─────────────────────────────────────────────────────────────────────────────────────────────
