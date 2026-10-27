@@ -28,6 +28,8 @@ import { syncClaude } from '../history/claude.ts';
 import { syncCodex } from '../history/codex.ts';
 import { listProjects, listSessions, openDb, search } from '../history/store.ts';
 import { RunManager } from '../run/runner.ts';
+import { AutoScheduler } from '../run/autouse.ts';
+import { realAutoDeps, startAutoLoop } from '../run/autouse-wire.ts';
 import { approveRunnerHooks, readRunnerHooks } from '../run/hooks-run.ts';
 import { startServer } from '../server/server.ts';
 import { SEED_CASES_DIR, caseSummary, compareEval, evalReviewer, incidentCasesDir, loadCases, readBaseline, writeBaseline } from '../review/eval.ts';
@@ -349,8 +351,11 @@ async function cmdUi(a: Args): Promise<void> {
   const fakeAgent = join(REPO_ROOT, 'src', 'adapters', 'fake-agent.mjs');
   const fakeExe = { cmd: process.execPath, prefix: [fakeAgent] };
   if (a.flags['demo']) { process.env['FAKE_DEMO'] = '1'; out('DEMO MODE: agents are scripted fakes (no limits are spent). Put “лимит” or “!limit” in a message to see a limit stop and handoff.'); }
-  const s = await startServer({ db, runs: new RunManager(db, a.flags['demo'] ? { exe: { claude: fakeExe, codex: fakeExe } } : {}) }, { ...(flag(a, 'port') ? { port: Number(flag(a, 'port')) } : {}), ...(flag(a, 'token') ? { token: flag(a, 'token') as string } : {}) });
+  const runs = new RunManager(db, a.flags['demo'] ? { exe: { claude: fakeExe, codex: fakeExe } } : {});
+  const s = await startServer({ db, runs }, { ...(flag(a, 'port') ? { port: Number(flag(a, 'port')) } : {}), ...(flag(a, 'token') ? { token: flag(a, 'token') as string } : {}) });
   out(`agent hub is running on loopback only.\nOpen: ${s.url}\n(the link contains a one-time token; stop with Ctrl+C)`);
+  // 7.4 (ADR-025): the leftover-limit scheduler. It does nothing until the user switches a project on and approves a job in the panel; one pass a minute, only while this panel runs.
+  { const agents = detectAgents(); startAutoLoop(new AutoScheduler(realAutoDeps({ db, runs, auth: (id) => (agents[id].installed ? authStatus(id, agents[id]) : undefined) })), { home: runs.home, refresh: async () => { await syncClaude(db); await syncCodex(db); } }); }
   void (async () => { try { await syncClaude(db); await syncCodex(db); } catch { /* the UI also has a manual sync button */ } })();
   if (a.flags['no-open'] !== true) {
     if (process.platform === 'win32') spawn('rundll32', ['url.dll,FileProtocolHandler', s.url], { detached: true, stdio: 'ignore' }).unref();

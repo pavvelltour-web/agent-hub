@@ -63,7 +63,10 @@ export async function startServer(ctx: Ctx, o: { port?: number; token?: string; 
           for await (const ch of req) { n += (ch as Buffer).length; if (n > MAX_BODY) return send(res, 413, JSON.stringify({ error: 'body too large' })); chunks.push(ch as Buffer); }
           try { body = chunks.length ? (JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>) : {}; } catch { return send(res, 400, JSON.stringify({ error: 'invalid JSON' })); }
         }
-        const r = await handle(ctx, method, url.pathname, url.searchParams, body);
+        // A route that must carry a deliberate click in the panel (switching on an automatic start, for example) reads `meta.userAction`: a same-origin Origin header AND the custom header the panel's own fetch adds, which another origin cannot send without CORS.
+        const origin = req.headers.origin;
+        const meta = { userAction: method !== 'GET' && !!origin && hostOk(origin.replace(/^https?:\/\//, '')) && req.headers['x-hub-user-action'] === 'click' };
+        const r = await handle(ctx, method, url.pathname, url.searchParams, body, meta);
         if (r.text !== undefined) return send(res, r.status, r.text, r.type ?? 'text/plain; charset=utf-8', r.headers ?? {});
         return send(res, r.status, JSON.stringify(r.json ?? {}));
       }

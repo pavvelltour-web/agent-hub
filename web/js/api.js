@@ -2,7 +2,7 @@ import { toast } from './ui.js';
 
 async function call(method, path, body, quiet) {
   let r;
-  try { r = await fetch('/api' + path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined }); }
+  try { r = await fetch('/api' + path, { method, headers: body ? { 'content-type': 'application/json', 'x-hub-user-action': 'click' } : {}, body: body ? JSON.stringify(body) : undefined }); }
   catch { if (!quiet) toast('Нет связи с сервером hub. Он запущен?', 'err'); throw new Error('network'); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { const msg = j.error || 'Ошибка ' + r.status; if (!quiet) toast(msg, 'err'); const e = new Error(msg); e.status = r.status; e.body = j; throw e; }

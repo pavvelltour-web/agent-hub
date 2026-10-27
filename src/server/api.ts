@@ -56,7 +56,9 @@ export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, 
 /** `text` (with `type`) answers with a plain-text body instead of JSON, e.g. a download; `headers` are added to the safe defaults the server sets. */
 export interface Res { status: number; json?: unknown; text?: string; type?: string; headers?: Record<string, string> }
 export type Body = Record<string, unknown>;
-export type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
+/** `userAction`: the request carried a same-origin Origin and the panel's own `x-hub-user-action` header (set by server.ts). */
+export interface Meta { userAction: boolean }
+export type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body; meta?: Meta }) => Res | Promise<Res>;
 
 const pricesJson = (t: PriceTable): Res => ok({ models: [...t.models.values()].map((e) => ({ ...e, overridden: t.overridden.has(e.id) })), rejected: t.rejected, rejectedRows: t.rejectedRows, ...(t.overrideProblem ? { overrideProblem: t.overrideProblem } : {}) });
 const ok = (json: unknown): Res => ({ status: 200, json });
@@ -675,12 +677,12 @@ const ROUTES: [string, RegExp, Handler][] = [
   ...phase7Routes,
 ];
 
-export async function handle(c: Ctx, method: string, pathname: string, q: URLSearchParams, body: Body): Promise<Res> {
+export async function handle(c: Ctx, method: string, pathname: string, q: URLSearchParams, body: Body, meta?: Meta): Promise<Res> {
   for (const [m, re, h] of ROUTES) {
     if (m !== method) continue;
     const mt = re.exec(pathname);
     if (!mt) continue;
-    try { return await h(c, { params: mt.slice(1), q, body }); }
+    try { return await h(c, { params: mt.slice(1), q, body, ...(meta ? { meta } : {}) }); }
     catch (e) { return e instanceof HttpError || e instanceof GateError ? bad(e.status, e.message) : bad(500, 'internal error'); }
   }
   return bad(404, 'no such endpoint');

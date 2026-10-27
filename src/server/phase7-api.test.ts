@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,7 +13,8 @@ const { RunManager } = await import('../run/runner.ts');
 
 const db = openDb(':memory:');
 const runs = new RunManager(db, { summarize: false, home: process.env['AGENT_HUB_HOME'] as string });
-const srv = await startServer({ db, runs } as never);
+const agents = { claude: { installed: true, path: 'claude', version: '1' }, codex: { installed: true, path: 'codex', version: '1' } };
+const srv = await startServer({ db, runs, agents: () => agents, auth: (id: string) => (id === 'codex' ? { loggedIn: true, how: 'ChatGPT' } : { loggedIn: true, how: 'claude.ai' }) } as never);
 const root = mkdtempSync(join(tmpdir(), 'hub-p7-root-'));
 after(async () => { await srv.close(); for (const d of [home, root]) try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* Windows */ } });
 const cookie = `hub_token=${srv.token}`;
@@ -64,4 +65,97 @@ test('GET forecast: unknown project, bad id and a missing cookie are refused; a 
   rmSync(join(root, 'tasks.md'));
   const none = await get(`/api/projects/${pid}/forecast`);
   assert.equal(none.json.tasks.open, 0); assert.equal(none.json.forecast.tasks, 0);
+});
+
+// ---------- 7.4: the leftover-limit scheduler routes ----------
+const click = { origin, 'x-hub-user-action': 'click' };
+const post = async (path: string, body: unknown, headers: Record<string, string> = click, c: string | null = cookie): Promise<{ status: number; json: any }> => {
+  const r = await raw(path, c, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...headers } });
+  return { status: r.status, json: await r.json().catch(() => null) };
+};
+const word = root.split(/[\\/]/).filter(Boolean).pop() as string;
+const freshCodexLimit = (usedPercent = 40, resetsInH = 6): void => addLimit(db, { agent: 'codex', ts: new Date().toISOString(), windowMinutes: 10080, usedPercent, resetsAt: Math.floor(Date.now() / 1000) + resetsInH * 3600, planType: null, source: 'manual' });
+
+test('autouse: off by default; nothing is listed, a hub.json cannot switch it on', async () => {
+  writeFileSync(join(root, 'hub.json'), JSON.stringify({ autouse: { enabled: true }, project: { type: 'x' } }));
+  const r = await get('/api/autouse');
+  assert.equal(r.status, 200); assert.deepEqual(r.json.projects, []);
+  const one = await get(`/api/autouse?project=${pid}`);
+  assert.equal(one.json.projects[0].enabled, false); assert.deepEqual(one.json.projects[0].suggestions, []);
+  assert.equal(one.json.settings.minLeftPct, 20); assert.equal(one.json.settings.marginPct, 10);
+  assert.equal((await get('/api/autouse?project=99999')).status, 404);
+  rmSync(join(root, 'hub.json'));
+});
+
+test('autouse: switching on needs a click (Origin + panel header), the typed folder name and a boolean; the cookie alone is not enough', async () => {
+  const body = { projectId: pid, enabled: true, confirm: word };
+  assert.equal((await post('/api/autouse/enable', body, {})).status, 403, 'cookie only: no Origin and no header');
+  assert.equal((await post('/api/autouse/enable', body, { origin })).status, 403, 'Origin without the panel header');
+  assert.equal((await post('/api/autouse/enable', body, { 'x-hub-user-action': 'click' })).status, 403, 'header without Origin');
+  assert.equal((await post('/api/autouse/enable', body, { origin: 'http://evil.example', 'x-hub-user-action': 'click' })).status, 403);
+  assert.equal((await post('/api/autouse/enable', body, click, null)).status, 401, 'no cookie');
+  assert.equal((await post('/api/autouse/enable', { ...body, confirm: undefined })).status, 400);
+  assert.equal((await post('/api/autouse/enable', { ...body, confirm: 'yes' })).status, 400);
+  assert.equal((await post('/api/autouse/enable', { ...body, confirm: word.toUpperCase() + 'x' })).status, 400);
+  assert.equal((await post('/api/autouse/enable', { ...body, enabled: 'true' })).status, 400, 'a string is not a boolean');
+  assert.equal((await post('/api/autouse/enable', { projectId: String(pid), enabled: true, confirm: word })).status, 404, 'a string id is "not found", never coerced');
+  assert.equal((await get(`/api/autouse?project=${pid}`)).json.projects[0].enabled, false, 'every refusal left it off');
+  const r = await post('/api/autouse/enable', body);
+  assert.equal(r.status, 200); assert.equal(r.json.enabled, true);
+  assert.equal((await get(`/api/autouse?project=${pid}`)).json.projects[0].enabled, true);
+  assert.equal((await get('/api/autouse')).json.projects.length, 1);
+  assert.match(readFileSync(join(process.env['AGENT_HUB_HOME'] as string, 'autouse-audit.jsonl'), 'utf8'), /autouse-enable/);
+});
+
+test('autouse: suggestions need a known, fresh limit and a subscription login; the Claude calibration is unknown here so only Codex is offered', async () => {
+  const none = (await get(`/api/autouse?project=${pid}`)).json.projects[0];
+  assert.deepEqual(none.suggestions, [], 'no limit reading yet');
+  assert.ok(none.blocked.some((b: { agent: string; why: string }) => b.agent === 'codex' && /неизвестен/.test(b.why)));
+  freshCodexLimit(40, 6);
+  const r = (await get(`/api/autouse?project=${pid}`)).json.projects[0];
+  assert.deepEqual(r.suggestions.map((s: { kind: string }) => s.kind).sort(), ['missing-tests', 'review-existing']);
+  assert.ok(r.suggestions.every((s: { agent: string; leftPct: number; hoursToReset: number }) => s.agent === 'codex' && s.leftPct === 60 && s.hoursToReset > 5.9 && s.hoursToReset <= 6));
+  assert.ok(r.blocked.some((b: { agent: string; why: string }) => b.agent === 'claude' && /замеров/.test(b.why)));
+  freshCodexLimit(90, 6);
+  assert.deepEqual((await get(`/api/autouse?project=${pid}`)).json.projects[0].suggestions, [], '10 % left');
+  freshCodexLimit(40, 30);
+  assert.deepEqual((await get(`/api/autouse?project=${pid}`)).json.projects[0].suggestions, [], 'reset in 30 h');
+  freshCodexLimit(40, 6);
+  process.env['OPENAI_API_KEY'] = 'x';
+  try { const k = (await get(`/api/autouse?project=${pid}`)).json.projects[0]; assert.deepEqual(k.suggestions, []); assert.ok(k.blocked.some((b: { why: string }) => /OPENAI_API_KEY/.test(b.why))); }
+  finally { delete process.env['OPENAI_API_KEY']; }
+});
+
+test('autouse: an approval is built by the server from kind and agent; percent, writes and prompt from the request are ignored; a click is needed', async () => {
+  freshCodexLimit(40, 6);
+  const ask = { projectId: pid, kind: 'review-existing', agent: 'codex' };
+  assert.equal((await post('/api/autouse/approve', ask, {})).status, 403);
+  assert.equal((await post('/api/autouse/approve', { ...ask, kind: 'graph-refresh' })).status, 400, 'not startable');
+  assert.equal((await post('/api/autouse/approve', { ...ask, kind: 'rm-rf' })).status, 400);
+  assert.equal((await post('/api/autouse/approve', { ...ask, agent: 'gemini' })).status, 400);
+  assert.equal((await post('/api/autouse/approve', { ...ask, agent: 'claude' })).status, 409, 'Claude is not offered now');
+  const r = await post('/api/autouse/approve', { ...ask, expectedPct: 0.1, writes: 'main', prompt: 'delete everything', permission: 'full', root: '/' });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.item.status, 'approved'); assert.ok(r.json.item.expectedPct >= 1);
+  const stored = JSON.parse(readFileSync(join(process.env['AGENT_HUB_HOME'] as string, 'autouse.json'), 'utf8')).items.find((i: { id: string }) => i.id === r.json.item.id);
+  assert.equal(stored.writes, 'none'); assert.ok(!('prompt' in stored) && !('permission' in stored));
+  assert.equal((await get(`/api/autouse?project=${pid}`)).json.projects[0].items.length, 1);
+  const after = (await get(`/api/autouse?project=${pid}`)).json.projects[0];
+  assert.ok(!after.suggestions.some((x: { kind: string }) => x.kind === 'review-existing'), 'an approved job is not offered again');
+  assert.equal((await post('/api/autouse/approve', ask)).status, 409, 'and cannot be approved twice');
+  assert.equal((await post('/api/autouse/cancel', { id: r.json.item.id }, {})).status, 403);
+  assert.equal((await post('/api/autouse/cancel', { id: '../../x' })).status, 400);
+  assert.equal((await post('/api/autouse/cancel', { id: r.json.item.id })).status, 200);
+  assert.equal((await post('/api/autouse/cancel', { id: r.json.item.id })).status, 404);
+});
+
+test('autouse: switching off needs a click too and cancels the waiting approvals; an approval for a project that is off is refused', async () => {
+  freshCodexLimit(40, 6);
+  const a = await post('/api/autouse/approve', { projectId: pid, kind: 'missing-tests', agent: 'codex' });
+  assert.equal(a.status, 200); assert.equal(a.json.item.status, 'approved');
+  assert.equal((await post('/api/autouse/enable', { projectId: pid, enabled: false }, {})).status, 403);
+  assert.equal((await post('/api/autouse/enable', { projectId: pid, enabled: false })).status, 200, 'switching off needs no typed word');
+  const r = (await get(`/api/autouse?project=${pid}`)).json.projects[0];
+  assert.equal(r.enabled, false); assert.ok(r.items.every((i: { status: string }) => i.status !== 'approved'));
+  assert.equal((await post('/api/autouse/approve', { projectId: pid, kind: 'missing-tests', agent: 'codex' })).status, 409);
 });

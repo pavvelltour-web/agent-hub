@@ -1,9 +1,11 @@
 import { api } from '../api.js';
 import { agentBadge, agentName, btn, chip, closeBtn, copy, dialog, empty, field, fmt, h, icon, pills, sectionHead, toast } from '../ui.js';
+import { autoModel } from '../autouse-model.js';
+import { autoToday } from './autouse.js';
 import { addProjectDialog, agentCard, EFFORT, go, limitLine, linkProject, modelName, openFolder, pageHead, pctText, runRow, sessionRow, shortModel, TASKS, workModePicker } from './common.js';
 
 export default async function view() {
-  const [runs, models, sessions, projects, state] = await Promise.all([api.get('/runs?limit=60'), api.get('/models'), api.get('/sessions?limit=6'), api.get('/projects'), api.get('/state')]);
+  const [runs, models, sessions, projects, state, auto] = await Promise.all([api.get('/runs?limit=60'), api.get('/models'), api.get('/sessions?limit=6'), api.get('/projects'), api.get('/state'), api.get('/autouse', true).then(autoModel, () => null)]);
   const handedOff = new Set(runs.filter((r) => r.handoffOf).map((r) => r.handoffOf));
   const needs = runs.filter((r) => r.outcome === 'limit' && !handedOff.has(r.id));
   const failed = runs.filter((r) => r.outcome === 'failed' && !r.live && Date.now() - Date.parse(r.startedAt) < 86400000).slice(0, 3);
@@ -17,6 +19,7 @@ export default async function view() {
   drawAgents(state);
 
   const left = h('div.stack',
+    autoToday(auto),
     waiting.length ? h('section.group', sectionHead('Ждут вашего решения', chip(String(waiting.length), 'soft')), h('div.list', waiting.map((r) => runRow(r)))) : null,
     live.length ? h('section.group', sectionHead('Работают сейчас', chip(String(live.length), 'info')), h('div.list', live.map((r) => runRow(r)))) : null,
     h('section.group', sectionHead('Продолжить', h('a.btn.btn-text.btn-sm', { href: '#/history' }, 'Вся история')),
