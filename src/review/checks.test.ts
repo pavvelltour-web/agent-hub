@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { HubConfig } from '../core/types.ts';
 import { spawnSync } from 'node:child_process';
-import { NO_CHECKS_WARNING, approveChecks, defaultChecks, dependencyFindings, gateChecks, planChecks, readReviewConfig, runCheck, runChecks, scanDiffForSecrets } from './checks.ts';
+import { NO_CHECKS_WARNING, MAX_PLAN_BYTES, approveChecks, defaultChecks, dependencyFindings, exportCommit, gateChecks, nodeFiles, planChecks, readReviewConfig, runCheck, runChecks, scanDiffForSecrets } from './checks.ts';
+import { checkEnv, minimalEnv } from '../run/git.ts';
 import type { CheckResult } from './checks.ts';
 
 const NODE = 'node';
@@ -318,7 +319,9 @@ test('planChecks: default npm checks come from the BRANCH HEAD package.json, wit
     const plan = planChecks(p.root, p.wt, h1, p.home);
     assert.deepEqual(plan.checks, [['npm', 'test'], ['npm', 'run', 'typecheck']]);
     assert.equal(plan.source, 'package.json');
-    assert.deepEqual(plan.scripts, { pretest: 'node prep.js', test: 'node --test', typecheck: 'tsc' }, 'the scripts the checks map to, npm pre hook included');
+    // stricter (repair C, B3): the screen gets ALL scripts (exactly what the digest covers), plus which of them run
+    assert.deepEqual(plan.scripts, { test: 'node --test', pretest: 'node prep.js', typecheck: 'tsc', build: 'x' }, 'every script the digest covers is shown');
+    assert.deepEqual(plan.runs, ['pretest', 'test', 'typecheck'], 'the scripts the checks map to, npm pre hook included');
     assert.equal(plan.approved, false, 'nothing runs before the user approves');
     assert.match(plan.digest, /^[0-9a-f]{64}$/);
     assert.match(plan.note, /с вашими правами/);
@@ -330,6 +333,12 @@ test('planChecks: default npm checks come from the BRANCH HEAD package.json, wit
     assert.equal(planChecks(p.root, p.wt, h2, p.home).approved, true, 'an unrelated change keeps the approval');
     writeFileSync(join(p.wt, 'package.json'), JSON.stringify({ scripts: { test: 'node evil.js', typecheck: 'tsc' } }));
     assert.equal(planChecks(p.root, p.wt, h2, p.home).approved, true, 'read from the commit, not from the folder');
+    // stricter (repair C, B4): and what RUNS is the commit too, never the folder's edit
+    const copy = exportCommit(p.wt, h2, p.home, p.root);
+    try {
+      assert.equal(readFileSync(join(copy.dir, 'package.json'), 'utf8'), JSON.stringify({ scripts: { test: 'node --test', pretest: 'node prep.js', typecheck: 'tsc', build: 'x' } }), 'the checks run the committed package.json');
+      assert.ok(!copy.dir.toLowerCase().startsWith(p.wt.toLowerCase()), 'not in the task folder');
+    } finally { assert.equal(copy.done(), null); }
     const h3 = p.commit({ 'package.json': JSON.stringify({ scripts: { test: 'node evil.js', pretest: 'node prep.js', typecheck: 'tsc', build: 'x' } }) });
     const changed = planChecks(p.root, p.wt, h3, p.home);
     assert.equal(changed.approved, false, 'a changed test script in the branch needs a new approval');
@@ -351,6 +360,79 @@ test('planChecks: the security script and node <file> checks are hashed from the
     assert.equal(planChecks(p.root, p.wt, h2, p.home).approved, false, 'a changed security script needs a new approval');
     const h3 = p.commit({ 'hub.json': JSON.stringify({ review: { checks: [] } }) });
     assert.deepEqual(planChecks(p.root, p.wt, h3, p.home).checks.map((c) => c.join(' ')), ['node verify.mjs', 'node -e 0', 'node scripts/security.mjs'], 'the branch hub.json does not change the list: the root one does');
+  });
+});
+
+test('planChecks (B3): a list too large to show in full is never approvable; the server refuses the approval', async () => {
+  await withTmp((dir) => {
+    const p = project(dir, { 'package.json': JSON.stringify({ scripts: { test: 'node --test', huge: 'echo ' + 'x'.repeat(MAX_PLAN_BYTES) } }) });
+    const h = p.commit({ 'b.txt': 'b\n' });
+    const plan = planChecks(p.root, p.wt, h, p.home);
+    assert.equal(plan.tooLarge, true); assert.equal(plan.approved, false);
+    assert.throws(() => approveChecks(p.root, p.wt, h, plan.digest, p.home), /слишком большой/);
+    assert.equal(planChecks(p.root, p.wt, h, p.home).approved, false);
+  });
+});
+
+test('nodeFiles (F9): the script, file arguments and -r/--require/--import/--loader/--env-file paths are hashed; option values and packages are not', () => {
+  assert.deepEqual(nodeFiles(['--import', 'tsx', 'x.ts']), ['x.ts']);
+  assert.deepEqual(nodeFiles(['-r', './a.js', 'b.js', 'data.json']), ['a.js', 'b.js', 'data.json']);
+  assert.deepEqual(nodeFiles(['--require=./pre.cjs', '--env-file', '.env.test.json', '--conditions', 'dev.js', 'main.mjs']), ['pre.cjs', '.env.test.json', 'main.mjs']);
+  assert.deepEqual(nodeFiles(['--test', 'src/**/*.test.ts']), [], 'globs are not files');
+  assert.deepEqual(nodeFiles(['-e', 'require("./x.js")']), [], 'inline code is in the argv itself');
+  assert.deepEqual(nodeFiles(['--loader', 'ts-node/esm', 'scripts\\security.mjs']), ['scripts/security.mjs']);
+});
+
+test('planChecks (F9): `npm run x` inside scripts is followed (pre/post, 3 levels) and the node files those scripts start are in the digest', async () => {
+  await withTmp((dir) => {
+    const scripts = { test: 'npm run build && node scripts/t.mjs', prebuild: 'node pre.js', build: 'npm run gen', gen: 'node -r ./hook.cjs gen.js', unrelated: 'node other.js' };
+    const p = project(dir, { 'package.json': JSON.stringify({ scripts }), 'scripts/t.mjs': '1\n', 'pre.js': '1\n', 'gen.js': '1\n', 'hook.cjs': '1\n', 'other.js': '1\n' });
+    const h = p.commit({ 'b.txt': 'b\n' });
+    const plan = planChecks(p.root, p.wt, h, p.home);
+    assert.deepEqual(plan.runs, ['test', 'prebuild', 'build', 'gen']);
+    assert.deepEqual(Object.keys(plan.files).sort(), ['.npmrc', 'gen.js', 'hook.cjs', 'pre.js', 'scripts/t.mjs']);
+    approveChecks(p.root, p.wt, h, plan.digest, p.home);
+    const h2 = p.commit({ 'hook.cjs': 'changed\n' });
+    assert.equal(planChecks(p.root, p.wt, h2, p.home).approved, false, 'a changed file three scripts deep needs a new approval');
+    approveChecks(p.root, p.wt, h2, planChecks(p.root, p.wt, h2, p.home).digest, p.home);
+    const h3 = p.commit({ 'other.js': 'changed\n' });
+    assert.equal(planChecks(p.root, p.wt, h3, p.home).approved, true, 'a file no reached script starts does not');
+  });
+});
+
+test('exportCommit (B4): the copy is the commit\'s bytes; skip-worktree edits, ignored files and the branch node_modules stay out; the root node_modules is linked and survives removal', async () => {
+  await withTmp((dir) => {
+    const p = project(dir, { 'check.js': 'console.log("committed")\n', '.gitignore': '.npmrc\nnode_modules/\n', '.gitattributes': '* text eol=crlf\n' });
+    const h = p.commit({ 'b.txt': 'b\n' });
+    g(p.wt, 'update-index', '--skip-worktree', 'check.js');
+    writeFileSync(join(p.wt, 'check.js'), 'console.log("evil")\n');
+    writeFileSync(join(p.wt, '.npmrc'), 'script-shell=evil.exe\n');
+    mkdirSync(join(p.wt, 'node_modules', 'planted'), { recursive: true });
+    mkdirSync(join(p.root, 'node_modules', 'real'), { recursive: true }); writeFileSync(join(p.root, 'node_modules', 'real', 'index.js'), 'ok');
+    const copy = exportCommit(p.wt, h, p.home, p.root);
+    try {
+      assert.equal(readFileSync(join(copy.dir, 'check.js'), 'utf8'), 'console.log("committed")\n', 'exact blob bytes (no eol conversion, no skip-worktree edit)');
+      assert.equal(existsSync(join(copy.dir, '.npmrc')), false, 'no ignored file of the task folder');
+      assert.equal(existsSync(join(copy.dir, 'node_modules', 'planted')), false, 'not the branch node_modules');
+      assert.equal(existsSync(join(copy.dir, 'node_modules', 'real', 'index.js')), true, 'the root node_modules is linked');
+      assert.equal(g(p.wt, 'status', '--porcelain'), '', 'the task folder index is untouched');
+    } finally { assert.equal(copy.done(), null); }
+    assert.equal(existsSync(join(p.root, 'node_modules', 'real', 'index.js')), true, 'removing the copy never deletes through the link');
+    assert.deepEqual(readdirSync(join(p.home, 'check-runs')), []);
+  });
+});
+
+test('checkEnv (F10): an allowlist: tokens, API keys, NODE_OPTIONS and npm_config_* never reach a check; node and npm still start', async () => {
+  await withTmp(async (dir) => {
+    const secrets = { GITHUB_TOKEN: 'gh-x', NPM_TOKEN: 'npm-x', OPENAI_API_KEY: 'sk-x', ANTHROPIC_API_KEY: 'a-x', AWS_SECRET_ACCESS_KEY: 'aws-x', NODE_OPTIONS: '--require ./evil.js', npm_config_script_shell: 'evil.exe', HUB_SESSION_TOKEN: 'h-x' };
+    const env = checkEnv(join(dir, 'home'), { ...process.env, ...secrets });
+    for (const k of Object.keys(secrets)) assert.equal(env[k], undefined, k);
+    assert.ok(Object.keys(env).some((k) => k.toUpperCase() === 'PATH')); assert.equal(env['CI'], '1'); assert.equal(env['GIT_CONFIG_KEY_0'], 'core.hooksPath');
+    const [r] = await runChecks(dir, [js('console.log(Object.keys(process.env).filter((k) => /token|api_key|secret|node_options|npm_config/i.test(k)).join(",") || "none")')], { env });
+    assert.equal(r?.ok, true); assert.match(r!.tail, /^none$/m);
+    const npm = await runCheck(dir, ['npm', '--version'], 60_000, env);
+    assert.equal(npm.ok, true, npm.tail);
+    assert.deepEqual(Object.keys(minimalEnv({ Path: 'p', SystemRoot: 's', FOO: 'x' })).sort(), ['CI', 'Path', 'SystemRoot']);
   });
 });
 

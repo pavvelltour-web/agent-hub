@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { HUB_HOME } from '../core/registry.ts';
 import { isSafeName } from '../lib/paths.ts';
 
 export interface GitResult { ok: boolean; out: string; err: string }
@@ -79,12 +80,43 @@ export const NOT_HUB_DIR = ['--', '.', ':(exclude).hub'];
 
 /**
  * Checkpoint uncommitted work on the agent's own branch. The hub's own `.hub/` (handoff cards, audit) is never committed, even if the agent
- * staged it. Repo hooks are NOT skipped; if the commit is refused the card says so.
+ * staged it. No repository hook runs (`core.hooksPath` = an empty folder, `--no-verify`): hooks such as husky's are files of the branch, i.e.
+ * the agent's code, and must not run before anyone looked at them. Git runs with the allowlisted env (`minimalEnv`) unless `o.env` is given.
  */
-export function checkpoint(cwd: string, message: string): { committed: boolean; sha: string; note?: string } {
-  git(cwd, ['add', '-A', ...NOT_HUB_DIR]);
-  git(cwd, ['reset', '-q', '--', '.hub']);
-  if (git(cwd, ['diff', '--cached', '--quiet']).ok) return { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out };
-  const c = git(cwd, ['-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', 'commit', '-m', message]);
+export function checkpoint(cwd: string, message: string, o: { home?: string; env?: NodeJS.ProcessEnv } = {}): { committed: boolean; sha: string; note?: string } {
+  const env = o.env ?? minimalEnv();
+  const noHooks = ['-c', `core.hooksPath=${noHooksDir(o.home ?? HUB_HOME)}`];
+  git(cwd, [...noHooks, 'add', '-A', ...NOT_HUB_DIR], env);
+  git(cwd, [...noHooks, 'reset', '-q', '--', '.hub'], env);
+  if (git(cwd, ['diff', '--cached', '--quiet'], env).ok) return { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out };
+  const c = git(cwd, [...noHooks, '-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', 'commit', '--no-verify', '-m', message], env);
   return c.ok ? { committed: true, sha: git(cwd, ['rev-parse', 'HEAD']).out } : { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out, note: `commit refused: ${c.err.split('\n')[0] ?? ''}` };
+}
+
+/**
+ * Variables code from a branch (review checks, a checkpoint commit) may see: what node, npm, git and tsc need to start on Windows and POSIX.
+ * An allowlist, so tokens and keys (GITHUB_TOKEN, NPM_TOKEN, cloud and model API keys), NODE_OPTIONS and npm_config_* never reach it.
+ */
+const ALLOWED_ENV = new Set([
+  'PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
+  'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'SHELL', 'USER', 'USERNAME', 'LOGNAME', 'TZ',
+]);
+
+/** The allowlisted part of `base`, plus `CI=1` (no prompts). Names match case-insensitively (Windows spells them `Path`, `SystemRoot`). */
+export function minimalEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(base)) if (v !== undefined && ALLOWED_ENV.has(k.toUpperCase())) out[k] = v;
+  out['CI'] = '1';
+  return out;
+}
+
+/** Env for review checks: the allowlist + `git push` blocked (push-guard hook under `home`). */
+export const checkEnv = (home: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => pushGuardEnv(home, minimalEnv(base));
+
+/** An empty hooks folder under `home`: `-c core.hooksPath=<it>` makes git run no repository hook (husky's files are branch files). */
+export function noHooksDir(home: string): string {
+  const d = join(home, 'no-hooks');
+  mkdirSync(d, { recursive: true });
+  return d.replace(/\\/g, '/');
 }

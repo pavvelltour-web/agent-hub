@@ -1,10 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import type { HubConfig } from '../core/types.ts';
 import { isSecretPath, safeJoin } from '../lib/paths.ts';
 import { redact } from '../lib/redact.ts';
+import { minimalEnv, noHooksDir } from '../run/git.ts';
 import { unifiedLines } from './triage.ts';
 import type { RawFinding } from './types.ts';
 
@@ -257,43 +258,88 @@ export function defaultChecks(cwd: string): string[][] {
 // ---------- what the checks will run, and the user's approval of exactly that ----------
 
 export const NO_CHECKS_WARNING = 'Нет проверок: тесты/типизация не запускались';
-export const BRANCH_CODE_NOTE = 'Проверки запускают код ветки (скрипты package.json, scripts/security.mjs, node_modules) с вашими правами, вне песочницы агента. Агент мог его изменить.';
+export const BRANCH_CODE_NOTE = 'Проверки запускают код ветки (скрипты package.json, scripts/security.mjs и файлы, которые они вызывают) с вашими правами, вне песочницы агента; запуск идёт в чистой копии этого коммита, node_modules берётся из корня проекта. Агент мог этот код изменить.';
+export const TOO_LARGE_REASON = 'Список проверок слишком большой для показа (больше 64 КБ): одобрить его нельзя';
+/** Everything the digest covers must fit on the approval screen in full; above this the server refuses to build an approvable plan. */
+export const MAX_PLAN_BYTES = 64 * 1024;
 const HEX40 = /^[0-9a-f]{40}$/;
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const NPM_LIKE = /^(?:npm|npx|pnpm|yarn|bun)(?:\.cmd|\.exe)?$/i;
-const NODE_FILE = /\.(?:m?js|cjs|ts|mts|cts)$/i;
+const NODE_FILE = /\.(?:m?js|cjs|ts|mts|cts|json)$/i;
 const SECURITY: string[] = ['node', 'scripts/security.mjs'];
 const isSecurityCheck = (c: string[]): boolean => c.join(' ') === SECURITY.join(' ');
-const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
+const sha256 = (s: string | Buffer): string => createHash('sha256').update(s).digest('hex');
 
 export interface CheckPlan {
   /** argv lists, in run order. */
   checks: string[][];
   /** Where the list came from: hub.json `review.checks`, else the package.json scripts, else only the security script. */
   source: 'hub.json' | 'package.json' | 'scripts/security.mjs' | 'none';
-  /** The package.json scripts (with npm's pre/post) that the npm-like checks run, as the branch head has them. */
+  /** The WHOLE `scripts` object of the branch-head package.json when an npm-like check runs (exactly what the digest covers), else {}. */
   scripts: Record<string, string>;
-  /** sha256 of each file a `node <file>` check runs (and `.npmrc` for npm-like checks), from the branch head; null = not in the commit. */
+  /** Script names the checks reach (npm pre/post and `npm run x` inside scripts, 3 levels deep), in order. */
+  runs: string[];
+  /** sha256 of the bytes of each file the checks start with node (argv and reached scripts), and `.npmrc` for npm-like checks; null = not in the commit. */
   files: Record<string, string | null>;
-  /** sha256 over checks + the whole `scripts` object + files: what the user approves. */
+  /** sha256 over checks + scripts + files: what the user approves. */
   digest: string;
   approved: boolean;
   /** No check besides the security script: tests and type check did not run. */
   noTests: boolean;
+  /** What the digest covers is larger than MAX_PLAN_BYTES: it cannot be shown in full, so it cannot be approved. */
+  tooLarge: boolean;
   note: string;
 }
 
-type Reader = (rel: string) => string | null;
-/** Files as commit `sha` of `tree` has them (a blob only, no textconv); without a sha, from disk under `tree`. */
+type Reader = (rel: string) => Buffer | null;
+const safeRel = (rel: string): boolean => !!rel && !rel.startsWith('-') && !rel.includes('\0') && !isAbsolute(rel) && !/^[A-Za-z]:/.test(rel) && !rel.split(/[\\/]/).includes('..');
+/** Bytes of a file as commit `sha` of `tree` has them (a blob only, no textconv); without a sha, from disk under `tree`. */
 function treeReader(tree: string, sha: string): Reader {
   if (HEX40.test(sha)) {
     return (rel) => {
-      if (!rel || rel.startsWith('-') || rel.includes('\0') || isAbsolute(rel) || /^[A-Za-z]:/.test(rel) || rel.split(/[\\/]/).includes('..')) return null;
-      const r = spawnSync('git', ['--no-pager', 'cat-file', 'blob', `${sha}:${rel.replace(/\\/g, '/')}`], { cwd: tree, encoding: 'utf8', windowsHide: true, maxBuffer: 4 * MAX_JSON, timeout: 30_000 });
-      return r.status === 0 && typeof r.stdout === 'string' && r.stdout.length <= MAX_JSON ? r.stdout : null;
+      if (!safeRel(rel)) return null;
+      const r = spawnSync('git', ['--no-pager', 'cat-file', 'blob', `${sha}:${rel.replace(/\\/g, '/').replace(/^\.\//, '')}`], { cwd: tree, windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout: 60_000 });
+      return r.status === 0 && Buffer.isBuffer(r.stdout) ? r.stdout : null;
     };
   }
-  return (rel) => { try { const p = safeJoin(tree, rel); return statSync(p).size > MAX_JSON ? null : readFileSync(p, 'utf8'); } catch { return null; } };
+  return (rel) => { try { return readFileSync(safeJoin(tree, rel)); } catch { return null; } };
 }
+const textOf = (b: Buffer | null): string | null => (b === null || b.length > MAX_JSON ? null : b.toString('utf8'));
+
+/** A node argument that names a file (not a package such as `tsx`, not a glob). */
+const fileLike = (v: string | undefined): v is string => !!v && !/[*?]/.test(v) && (/^\.{1,2}[\\/]/.test(v) || (NODE_FILE.test(v) && !v.startsWith('-')));
+const NODE_INLINE = new Set(['-e', '--eval', '-p', '--print']);
+const NODE_FILE_OPTS = new Set(['-r', '--require', '--import', '--loader', '--experimental-loader', '--env-file', '--env-file-if-exists']);
+const NODE_VALUE_OPTS = new Set([...NODE_FILE_OPTS, '-C', '--conditions', '--input-type', '--title', '--stack-size', '--test-reporter', '--test-reporter-destination', '--test-name-pattern', '--test-concurrency']);
+/** Every file a `node …` argv starts: the script, its file arguments, and the values of -r/--require/--import/--loader/--env-file that are paths. */
+export function nodeFiles(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (NODE_INLINE.has(a)) { i++; continue; }                         // inline code is in the argv itself
+    const eq = /^(--[\w-]+)=(.*)$/.exec(a);
+    if (eq) { if (NODE_FILE_OPTS.has(eq[1]!) && fileLike(eq[2])) out.push(eq[2]!); continue; }
+    if (NODE_VALUE_OPTS.has(a)) { const v = args[++i]; if (NODE_FILE_OPTS.has(a) && fileLike(v)) out.push(v); continue; }
+    if (a.startsWith('-')) continue;
+    if (fileLike(a)) out.push(a);
+  }
+  return [...new Set(out.map((f) => f.replace(/\\/g, '/').replace(/^\.\//, '')))];
+}
+
+/** Script names a script body calls: `npm run x`, `npm test`, `pnpm x`, `yarn run x`, ... */
+function scriptCalls(body: string): string[] {
+  const out: string[] = [];
+  for (const m of body.matchAll(/(?:^|[\s;&|(])(npm|pnpm|yarn|bun)(?:\.cmd)?\s+(run(?:-script)?\s+)?([A-Za-z0-9:._@/-]+)/g)) {
+    const [, tool, run, name] = m as unknown as [string, string, string | undefined, string];
+    if (run) out.push(name);
+    else if (tool === 'npm') { if (['test', 't', 'tst'].includes(name)) out.push('test'); else if (['start', 'stop', 'restart'].includes(name)) out.push(name); }
+    else out.push(name);
+  }
+  return out;
+}
+/** `node …` commands inside a script body, as argv lists (simple split on && || ; | and whitespace, quotes dropped). */
+const nodeCommands = (body: string): string[][] =>
+  body.split(/&&|\|\||[;|&]/).map((seg) => seg.trim().split(/\s+/).map((w) => w.replace(/^["']|["']$/g, ''))).filter((w) => /^node(?:\.exe)?$/i.test(w[0] ?? ''));
 
 /** Script names an npm-like check runs (npm's own pre/post hooks are added by the caller). */
 function scriptNames(argv: string[]): string[] {
@@ -324,7 +370,7 @@ export function planChecks(root: string, tree: string, sha: string, home: string
   const read = treeReader(tree, sha);
   const configured = readReviewConfig(root).checks;
   const checks: string[][] = configured ? configured.map((c) => [...c]) : [];
-  let pkg: unknown; try { const t = read('package.json'); pkg = t === null ? undefined : JSON.parse(t); } catch { pkg = undefined; }
+  let pkg: unknown; try { const t = textOf(read('package.json')); pkg = t === null ? undefined : JSON.parse(t); } catch { pkg = undefined; }
   const all = isObj(pkg) && isObj(pkg['scripts']) ? Object.fromEntries(Object.entries(pkg['scripts']).filter((e): e is [string, string] => typeof e[1] === 'string')) : {};
   if (!configured) {
     if (typeof all['test'] === 'string') checks.push(['npm', 'test']);
@@ -332,19 +378,60 @@ export function planChecks(root: string, tree: string, sha: string, home: string
   }
   if (read(SECURITY[1]!) !== null && !checks.some(isSecurityCheck)) checks.push([...SECURITY]);
   const npmLike = checks.some((c) => NPM_LIKE.test(basename(c[0] ?? '')));
-  const scripts: Record<string, string> = {};
-  for (const c of checks) for (const n of scriptNames(c)) for (const k of [`pre${n}`, n, `post${n}`]) if (typeof all[k] === 'string') scripts[k] = all[k];
+  // scripts the checks reach: npm's pre/post, and `npm run x` inside a script, 3 levels deep
+  const runs: string[] = [];
+  const visit = (n: string, depth: number): void => {
+    if (depth > 3) return;
+    for (const k of [`pre${n}`, n, `post${n}`]) {
+      if (typeof all[k] !== 'string' || runs.includes(k)) continue;
+      runs.push(k);
+      for (const m of scriptCalls(all[k])) visit(m, depth + 1);
+    }
+  };
+  for (const c of checks) for (const n of scriptNames(c)) visit(n, 1);
+  // every file node starts: from the argv lists and from the reached scripts
   const files: Record<string, string | null> = {};
-  for (const c of checks) {
-    if (c[0] !== 'node') continue;
-    const f = c.slice(1).find((a) => !a.startsWith('-'));
-    if (c.slice(1).some((a) => a === '-e' || a === '--eval' || a === '-p' || a === '--print') || !f || !NODE_FILE.test(f)) continue;
-    const t = read(f); files[f.replace(/\\/g, '/')] = t === null ? null : sha256(t);
-  }
-  if (npmLike) { const t = read('.npmrc'); files['.npmrc'] = t === null ? null : sha256(t); }
-  const digest = sha256(JSON.stringify({ v: 1, checks, scripts: npmLike ? all : {}, files }));
+  const node = [...checks.filter((c) => /^node(?:\.exe)?$/i.test(c[0] ?? '')), ...runs.flatMap((k) => nodeCommands(all[k] ?? ''))];
+  for (const c of node) for (const f of nodeFiles(c.slice(1))) { const b = read(f); files[f] = b === null ? null : sha256(b); }
+  if (npmLike) { const b = read('.npmrc'); files['.npmrc'] = b === null ? null : sha256(b); }
+  const scripts = npmLike ? all : {};
+  const shown = JSON.stringify({ checks, scripts, files });
+  const digest = sha256(JSON.stringify({ v: 2, checks, scripts, files }));
+  const tooLarge = Buffer.byteLength(shown) > MAX_PLAN_BYTES;
   const source = configured ? 'hub.json' : npmLike ? 'package.json' : checks.length ? 'scripts/security.mjs' : 'none';
-  return { checks, source, scripts, files, digest, approved: !checks.length || (approvals(home)[rootKey(root)] ?? []).includes(digest), noTests: !checks.some((c) => !isSecurityCheck(c)), note: BRANCH_CODE_NOTE };
+  return { checks, source, scripts, runs, files, digest, approved: !checks.length || (!tooLarge && (approvals(home)[rootKey(root)] ?? []).includes(digest)), noTests: !checks.some((c) => !isSecurityCheck(c)), tooLarge, note: BRANCH_CODE_NOTE };
+}
+
+/**
+ * A clean copy of commit `sha` (of the repository at `tree`) under `<home>/check-runs/`, where the checks run: exactly the blob bytes the digest
+ * was computed from. Nothing of the task folder comes along: no ignored files (an ignored `.npmrc`), no skip-worktree / assume-unchanged edits,
+ * no branch `node_modules`. The copy uses its own index, no repository hooks, no attributes of the branch (no eol conversion or filters) and
+ * plain files instead of symlinks. `node_modules` is linked (junction) from the PROJECT ROOT when the root has one, so `tsc` and test runners
+ * resolve; it is the user's own install, not the branch's. `done()` removes the copy and returns a warning when that fails.
+ */
+export function exportCommit(tree: string, sha: string, home: string, root: string): { dir: string; done: () => string | null } {
+  if (!HEX40.test(sha)) throw new Error('cannot copy the commit for the checks: bad sha');
+  const base = join(home, 'check-runs'); mkdirSync(base, { recursive: true });
+  const dir = mkdtempSync(join(base, 'c-'));
+  const work = join(dir, 'tree');
+  let link: string | null = null;
+  const done = (): string | null => {
+    try { if (link) unlinkSync(link); } catch { try { if (link) rmdirSync(link); } catch { return `could not remove the node_modules link in ${dir}: remove the folder by hand (do NOT delete inside node_modules)`; } }
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); return null; } catch (e) { return `could not remove the checks folder ${dir}: ${(e as Error).message}`; }
+  };
+  try {
+    const env = { ...minimalEnv(), GIT_INDEX_FILE: join(dir, 'index') };
+    const g = (args: string[]): void => {
+      const r = spawnSync('git', [`--attr-source=${EMPTY_TREE}`, '-c', `core.hooksPath=${noHooksDir(home)}`, '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-c', 'core.symlinks=false', '-c', 'core.fsmonitor=false', ...args], { cwd: tree, env, encoding: 'utf8', windowsHide: true, timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+      if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr ?? '').split('\n')[0]}`);
+    };
+    g(['read-tree', sha]);
+    g(['checkout-index', '-a', '-f', `--prefix=${work.replace(/\\/g, '/')}/`]);
+    mkdirSync(work, { recursive: true });
+    const nm = join(root, 'node_modules');
+    if (existsSync(nm) && !existsSync(join(work, 'node_modules'))) { link = join(work, 'node_modules'); symlinkSync(nm, link, 'junction'); }
+    return { dir: work, done };
+  } catch (e) { done(); throw e; }
 }
 
 /** The reason a review stops when its checks are not approved. */
@@ -356,6 +443,7 @@ export const notApprovedReason = (p: Pick<CheckPlan, 'source'>): string => `Пр
  */
 export function approveChecks(root: string, tree: string, sha: string, digest: string, home: string): CheckPlan {
   const plan = planChecks(root, tree, sha, home);
+  if (plan.tooLarge) throw new Error('слишком большой список проверок: его нельзя показать целиком, поэтому нельзя и одобрить');
   if (typeof digest !== 'string' || digest !== plan.digest) throw new Error('the checks changed since they were shown: look at them again');
   const all = approvals(home); const key = rootKey(root);
   all[key] = [digest, ...(all[key] ?? []).filter((d) => d !== digest)].slice(0, 20);

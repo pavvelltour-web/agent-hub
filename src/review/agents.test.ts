@@ -267,3 +267,16 @@ test('hunt and verify accept the diff as text (no git, no command): redacted and
   await assert.rejects(hunt({ lens: 'correctness', pick: claude(), diffText: '  \n', agentsMd: 'a', runs, cwd }), ReviewError, 'an empty diff is nothing to review');
   await assert.rejects(hunt({ lens: 'correctness', pick: claude(), agentsMd: 'a', runs, cwd } as never), ReviewError, 'neither a command nor text');
 });
+
+test('parseHunt (F4): an empty findings list never wipes out a real one; lists are joined and the contradiction is reported', () => {
+  const real = { category: 'bug', file: 'src/a.ts', line: 3, title: 'Off-by-one', evidence: 'i <= n', classOfBug: 'bounds' };
+  const warns: string[] = [];
+  const text = `My review:\n\`\`\`json\n${JSON.stringify({ summary: '1', findings: [real] })}\n\`\`\`\nThe diff also contains this fixture:\n{"summary":"none","findings":[]}`;
+  const out = parseHunt(text, 'correctness', (s) => warns.push(s));
+  assert.equal(out.length, 1); assert.equal(out[0]!.title, 'Off-by-one');
+  assert.equal(warns.length, 1); assert.match(warns[0]!, /empty and non-empty/);
+  const fenced = parseHunt(`${JSON.stringify({ summary: '1', findings: [real] })}\n\`\`\`json\n{"summary":"none","findings":[]}\n\`\`\``, 'correctness');
+  assert.equal(fenced.length, 1, 'an empty list in a last fenced block does not win either');
+  const two = parseHunt(`${JSON.stringify({ findings: [real] })} and ${JSON.stringify({ findings: [{ ...real, line: 9, title: 'Second' }, real] })}`, 'correctness');
+  assert.deepEqual(two.map((f) => f.title), ['Off-by-one', 'Second'], 'joined, each finding once');
+});

@@ -101,12 +101,24 @@ function reviewMdFiles(root: string, changedPaths: string[]): { rel: string | nu
 }
 
 /**
- * "Пути, где нужен человек" of the root REVIEW.md plus those of the nearest folder REVIEW.md of every changed path. A folder file's globs are
- * relative to its folder (`x.ts` there means any `x.ts` under that folder). Read from `root` (the project, never the branch).
+ * "Пути, где нужен человек" of the root REVIEW.md plus those of EVERY folder REVIEW.md above a changed path (a child folder with its own file
+ * does not hide its parents' lists). A folder file's globs are relative to its folder (`x.ts` there means any `x.ts` under that folder).
+ * Read from `root` (the project, never the branch).
  */
 export function humanPathsForChanges(root: string, changedPaths: string[]): string[] {
+  let realRoot: string;
+  try { realRoot = realpathSync(root); } catch { return []; }
+  const files: { rel: string | null; text: string }[] = [];
+  const seen = new Set<string>();
+  const take = (file: string, rel: string | null): void => { const r = readInside(realRoot, file); if (r && !seen.has(r.real.toLowerCase())) { seen.add(r.real.toLowerCase()); files.push({ rel, text: r.text }); } };
+  take(join(realRoot, 'REVIEW.md'), null);
+  for (const p of Array.isArray(changedPaths) ? changedPaths : []) {
+    const parts = segments(p);
+    if (!parts) continue;
+    for (let d = 1; d < parts.length; d++) { const rel = parts.slice(0, d).join('/'); if (!isSecretPath(rel)) take(join(realRoot, ...parts.slice(0, d), 'REVIEW.md'), rel); }
+  }
   const out: string[] = [];
-  for (const f of reviewMdFiles(root, changedPaths)) {
+  for (const f of files) {
     for (const g of humanPathsFromReviewMd(f.text)) {
       const scoped = f.rel === null ? g : g.includes('/') ? `${f.rel}/${g.replace(/^\.\//, '')}` : `${f.rel}/**/${g}`;
       if (!out.includes(scoped)) out.push(scoped);

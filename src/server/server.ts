@@ -5,12 +5,14 @@ import { extname, join } from 'node:path';
 import { REPO_ROOT } from '../core/registry.ts';
 import { safeJoin } from '../lib/paths.ts';
 import { handle, type Ctx } from './api.ts';
+import { sweepReviewerDirs } from '../review/agents.ts';
+import { markInterruptedReviews } from '../review/store.ts';
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8' };
 const MAX_BODY = 1_000_000;
 const CSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
-export interface Started { server: Server; port: number; token: string; url: string; close: () => Promise<void> }
+export interface Started { server: Server; port: number; token: string; url: string; close: () => Promise<void>; warnings: string[] }
 
 const eqToken = (a: string, b: string): boolean => { const x = Buffer.from(a), y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
 const cookieOf = (req: IncomingMessage, name: string): string | undefined => req.headers.cookie?.split(/;\s*/).map((p) => p.split('=')).find(([k]) => k === name)?.[1];
@@ -20,6 +22,11 @@ const cookieOf = (req: IncomingMessage, name: string): string | undefined => req
  * cookie, set by visiting `/?t=<token>` once; state-changing requests also need a same-origin Origin; JSON bodies capped; static files confined to web/.
  */
 export async function startServer(ctx: Ctx, o: { port?: number; token?: string; webDir?: string } = {}): Promise<Started> {
+  // This process runs the review rounds: one left mid-round by a crash is open again ("interrupted by a restart"); old reviewer folders go.
+  markInterruptedReviews(ctx.db);
+  const warnings = sweepReviewerDirs(ctx.runs.home);
+  for (const w of warnings) process.stderr.write(`agent-hub: ${w}
+`);
   const token = o.token ?? randomBytes(24).toString('base64url');
   const webDir = o.webDir ?? join(REPO_ROOT, 'web');
   let port = 0;
@@ -72,7 +79,7 @@ export async function startServer(ctx: Ctx, o: { port?: number; token?: string; 
 
   await new Promise<void>((r) => server.listen(o.port ?? 0, '127.0.0.1', r));
   port = (server.address() as { port: number }).port;
-  return { server, port, token, url: `http://127.0.0.1:${port}/?t=${token}`, close: () => new Promise((r) => { server.closeAllConnections(); server.close(() => r()); }) };
+  return { server, port, token, url: `http://127.0.0.1:${port}/?t=${token}`, close: () => new Promise((r) => { server.closeAllConnections(); server.close(() => r()); }), warnings };
 }
 
 function stream(ctx: Ctx, runId: string, after: number, req: IncomingMessage, res: ServerResponse): void {

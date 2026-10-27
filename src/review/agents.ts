@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { reviewersDir } from '../history/store.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { redact } from '../lib/redact.ts';
@@ -114,18 +115,42 @@ export function extractJson(text: string): Record<string, unknown> | undefined {
 }
 
 /**
- * Hunter output → findings. Anything that is not a findings list is an error (never `[]`). An empty list counts only when it is the
- * answer itself (whole text or the last thing in it), never a `{"findings":[]}` quoted mid-text. Single findings that lack file, line or
- * evidence are dropped, but an answer whose findings ALL fail is an error, and so is one with more findings than the schema allows.
+ * Every top-level `{...}` of a text that parses as a JSON object, with whether only whitespace or a closing fence follows it. A string-aware
+ * brace scanner (strings are tracked only inside braces, so prose apostrophes do not matter); linear, at most 200 objects.
  */
-export function parseHunt(text: string, lens: Lens): RawFinding[] {
-  const at = locateJson(text);
-  const top = at?.value;
-  if (!top || !Array.isArray(top['findings'])) throw new ReviewError(NO_RESULT);
-  const items = top['findings'] as unknown[];
-  if (!items.length && !at?.trailing) throw new ReviewError(`${NO_RESULT}: an empty findings list that is not the answer itself`);
+function jsonObjects(text: string): { value: Record<string, unknown>; trailing: boolean }[] {
+  const t = String(text); const out: { value: Record<string, unknown>; trailing: boolean }[] = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < t.length && out.length < 200; i++) {
+    const c = t[i];
+    if (depth > 0 && inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+    if (depth > 0 && c === '"') { inStr = true; continue; }
+    if (c === '{') { if (depth++ === 0) start = i; }
+    else if (c === '}' && depth > 0 && --depth === 0) {
+      const v = tryParse(t.slice(start, i + 1));
+      if (isObj(v)) out.push({ value: v, trailing: /^\s*(?:```\s*)?$/.test(t.slice(i + 1)) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Hunter output → findings. Anything that is not a findings list is an error (never `[]`). Every findings object in the answer counts and
+ * their findings are joined: an empty list never wipes out a non-empty one (a `{"findings":[]}` quoted from the diff after the real answer
+ * cannot hide it); empty and non-empty lists together are reported through `warn`. An empty list alone counts only when it is the answer
+ * itself (the last thing in the text). Single findings that lack file, line or evidence are dropped, but an answer whose findings ALL fail is
+ * an error, and so is a list with more findings than the schema allows.
+ */
+export function parseHunt(text: string, lens: Lens, warn?: (s: string) => void): RawFinding[] {
+  const lists = jsonObjects(text).filter((o) => Array.isArray(o.value['findings']));
+  if (!lists.length) throw new ReviewError(NO_RESULT);
   const max = HUNT_SCHEMA.properties?.['findings']?.maxItems ?? 30;
-  if (items.length > max) throw new ReviewError(`${items.length} findings in one answer, more than ${max}: not reviewed in full`);
+  for (const l of lists) { const n = (l.value['findings'] as unknown[]).length; if (n > max) throw new ReviewError(`${n} findings in one answer, more than ${max}: not reviewed in full`); }
+  const full = lists.filter((l) => (l.value['findings'] as unknown[]).length > 0);
+  if (!full.length && !lists.at(-1)?.trailing) throw new ReviewError(`${NO_RESULT}: an empty findings list that is not the answer itself`);
+  if (full.length && full.length < lists.length) warn?.(`${lens} reviewer: its answer holds both empty and non-empty findings lists; the findings of all lists were kept`);
+  const seen = new Set<string>(); const items: unknown[] = [];
+  for (const l of full) for (const it of l.value['findings'] as unknown[]) { const k = JSON.stringify(it); if (!seen.has(k)) { seen.add(k); items.push(it); } }
   const out: RawFinding[] = [];
   for (const item of items) {
     const v = validate(FINDING_SCHEMA, item);
@@ -149,16 +174,17 @@ function parseVerify(text: string): { real: boolean; why: string } {
 
 // ---- running a reviewer -------------------------------------------------------------------------------------------------------------------
 
-interface Common { runs: RunManager; cwd: string; timeoutMs?: number }
+interface Common { runs: RunManager; cwd: string; timeoutMs?: number; warn?: (s: string) => void }
 
 /**
  * Start one read-only reviewer through the RunManager and return its last assistant text. Schema flags are internal `extraArgs`.
- * The reviewer runs in a fresh EMPTY folder (removed after): the diff reaches it as text, and the branch's CLAUDE.md / AGENTS.md /
+ * The reviewer runs in a fresh EMPTY folder under `<hub home>/reviewers/` (removed after; history ignores it): the diff reaches it as text, and the branch's CLAUDE.md / AGENTS.md /
  * .claude settings and hooks never load. `o.cwd` is only where the hub itself runs git.
  */
 async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o: Common): Promise<string> {
   let dir: string | undefined;
-  const neutral = mkdtempSync(join(tmpdir(), 'hub-reviewer-'));
+  mkdirSync(reviewersDir(o.runs.home), { recursive: true });
+  const neutral = mkdtempSync(join(reviewersDir(o.runs.home), 'rv-'));
   try {
     let extraArgs: string[];
     if (pick.agent === 'claude') extraArgs = ['--json-schema', JSON.stringify(schema)];
@@ -173,14 +199,15 @@ async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o
     return text;
   } finally {
     if (dir) rmSync(dir, { recursive: true, force: true });
-    try { rmSync(neutral, { recursive: true, force: true, maxRetries: 3 }); } catch { /* a reviewer that timed out may still hold it (Windows) */ }
+    try { rmSync(neutral, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+    catch (e) { o.warn?.(`could not remove the reviewer folder ${neutral} (${(e as Error).message}); it is removed at the next start of the panel`); }
   }
 }
 
 export async function hunt(o: { lens: Lens; pick: ReviewerPick; diffCmd?: string[]; diffText?: string; brief?: string; reviewMd?: string; agentsMd: string } & Common): Promise<RawFinding[]> {
   const diff = diffOf(o);
   const text = await runReviewer(o.pick, buildHuntPrompt({ lens: o.lens, diff, ...(o.brief !== undefined ? { brief: o.brief } : {}), ...(o.reviewMd !== undefined ? { reviewMd: o.reviewMd } : {}), agentsMd: o.agentsMd }), HUNT_SCHEMA, o);
-  return parseHunt(text, o.lens);
+  return parseHunt(text, o.lens, o.warn);
 }
 
 /** `diffCmd` / `diffText` are optional: without either the verifier reads the file named in the finding itself. */
@@ -196,4 +223,22 @@ export async function verifyMany(f: RawFinding, o: { picks: ReviewerPick[]; diff
   const answers = await Promise.all(picks.map((pick) => verify(f, { ...rest, pick })));
   const real = answers.filter((a) => a.real).length, notReal = answers.length - real;
   return real * 2 > answers.length ? { ...f, votes: { real, notReal } } : null;
+}
+
+/**
+ * Removes reviewer folders older than `maxAgeMs` (left by a crash or a reviewer that still held files). Called when the panel starts.
+ * Returns one line per folder that could not be removed: the caller shows them, nothing fails silently.
+ */
+export function sweepReviewerDirs(home: string, maxAgeMs = 3_600_000, now = Date.now()): string[] {
+  const base = reviewersDir(home); const failed: string[] = [];
+  let names: string[] = [];
+  try { names = readdirSync(base); } catch { return []; }
+  for (const n of names) {
+    const p = join(base, n);
+    try {
+      if (now - statSync(p).mtimeMs < maxAgeMs) continue;
+      rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    } catch (e) { failed.push(`could not remove the old reviewer folder ${p}: ${(e as Error).message}`); }
+  }
+  return failed;
 }

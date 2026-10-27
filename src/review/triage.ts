@@ -44,15 +44,20 @@ function indexDiff(keys: Set<string>): Map<string, { file: string; lines: number
   return m;
 }
 
-/** The diff's spelling of a finding's file (an `a/` / `b/` prefix is dropped only when that names a changed file) and whether its line is added, give or take LINE_SLACK. */
-function matchDiff(idx: Map<string, { file: string; lines: number[] }>, file: string, line: number): { file: string; inDiff: boolean } {
+/**
+ * The diff's spelling of a finding's file (an `a/` / `b/` prefix is dropped only when that names a changed file), whether its line is added
+ * give or take LINE_SLACK, and the ADDED line it matched (the nearest one; the hunter's own number when nothing matched). The slack is for
+ * matching only: the stored line and its text are the matched added line, so clearing follows the right line.
+ */
+function matchDiff(idx: Map<string, { file: string; lines: number[] }>, file: string, line: number): { file: string; inDiff: boolean; line: number } {
   let found: { file: string; lines: number[] } | undefined;
   for (const cand of [file, file.replace(/^[ab]\//, '')]) {
     const e = idx.get(fold(cand)); if (!e) continue;
-    if (e.lines.some((l) => Math.abs(l - line) <= LINE_SLACK)) return { file: e.file, inDiff: true };
+    const near = e.lines.filter((l) => Math.abs(l - line) <= LINE_SLACK).sort((a, b) => Math.abs(a - line) - Math.abs(b - line) || a - b)[0];
+    if (near !== undefined) return { file: e.file, inDiff: true, line: near };
     found ??= e;
   }
-  return { file: found?.file ?? file, inDiff: false };
+  return { file: found?.file ?? file, inDiff: false, line };
 }
 
 const DROPPED = new Set(['style', 'cleanup', 'diagnostic']);
@@ -83,7 +88,7 @@ export function triage(found: VerifiedFinding[], o: TriageOpts): Finding[] {
     if (!Number.isSafeInteger(raw.line) || raw.line < 1) continue;
     const rel = relFile(raw.file, o.root);
     if (!rel) continue;
-    const { file, inDiff } = matchDiff(idx, rel, raw.line);
+    const { file, inDiff, line } = matchDiff(idx, rel, raw.line);
     const lens = clip(raw.lens, 64);
     const votes = { real: count(raw.votes?.real), notReal: count(raw.votes?.notReal) };
     const severity: Severity = !inDiff ? 'pre-existing'
@@ -92,12 +97,12 @@ export function triage(found: VerifiedFinding[], o: TriageOpts): Finding[] {
       : 'important';
     const title = clip(raw.title, 300), classOfBug = clip(raw.classOfBug, 200);
     let text = '';
-    try { text = String(o.lineText(file, raw.line) ?? ''); } catch { /* unreadable line: fingerprint on the rest */ }
+    try { text = String(o.lineText(file, line) ?? ''); } catch { /* unreadable line: fingerprint on the rest */ }
     const fp = fingerprint({ file, title, ...(classOfBug ? { classOfBug } : {}) }, text.slice(0, 2000));
     if (seen.has(fp)) continue;
     seen.add(fp);
     kept.push({
-      id: `fd-${fp.slice(0, 16)}`, fingerprint: fp, reviewId: o.reviewId, round: o.round, severity, lens, file, line: raw.line,
+      id: `fd-${fp.slice(0, 16)}`, fingerprint: fp, reviewId: o.reviewId, round: o.round, severity, lens, file, line,
       title, evidence: clip(raw.evidence, 4000), ...(classOfBug ? { classOfBug } : {}), votes, answer: 'open',
     });
   }

@@ -213,3 +213,16 @@ test('unifiedLines: yields every hunk line with its op, file and new-file number
     { file: 'f', op: ' ', line: 3, text: 'tail' },
   ]);
 });
+
+test('triage (F3): a line within the slack stores the MATCHED added line and its text, not the hunter\'s neighbour line', () => {
+  const seen: number[] = [];
+  const [f] = triage([vf({ line: 12 })], { ...ctx(['src/a.ts:10', 'src/a.ts:20']), lineText: (_f: string, l: number) => { seen.push(l); return `text of ${l}`; } });
+  assert.ok(f);
+  assert.equal(f.severity, 'important');
+  assert.equal(f.line, 10, 'the stored line is the added line it matched');
+  assert.deepEqual(seen, [10], 'the fingerprint uses the matched line text');
+  const [p] = triage([vf({ line: 40 })], ctx(['src/a.ts:10']));
+  assert.equal(p?.severity, 'pre-existing'); assert.equal(p?.line, 40, 'no match: the hunter line stays');
+  const [n] = triage([vf({ line: 12 })], ctx(['src/a.ts:11', 'src/a.ts:14']));
+  assert.equal(n?.line, 11, 'the nearest added line wins');
+});

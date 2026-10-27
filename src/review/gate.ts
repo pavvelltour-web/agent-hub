@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { authStatus } from '../adapters/auth.ts';
@@ -7,10 +7,10 @@ import type { AgentId } from '../core/types.ts';
 import { MODEL_ID } from '../econ/router.ts';
 import type { Db } from '../history/store.ts';
 import { redact } from '../lib/redact.ts';
-import { NOT_HUB_DIR, checkpoint, git, pushGuardEnv } from '../run/git.ts';
-import { agentEnv, type RunManager, type RunRow } from '../run/runner.ts';
+import { NOT_HUB_DIR, checkEnv, checkpoint, git } from '../run/git.ts';
+import type { RunManager, RunRow } from '../run/runner.ts';
 import { ReviewError, diffTooLarge, hunt, verifyMany } from './agents.ts';
-import { NO_CHECKS_WARNING, approveChecks, dependencyFindings, gateChecks, notApprovedReason, planChecks, readReviewConfig, type CheckPlan, type CheckResult } from './checks.ts';
+import { NO_CHECKS_WARNING, TOO_LARGE_REASON, approveChecks, dependencyFindings, exportCommit, gateChecks, notApprovedReason, planChecks, readReviewConfig, type CheckPlan, type CheckResult } from './checks.ts';
 import { humanPathsForChanges, loadReviewMd } from './reviewmd.ts';
 import { riskTier } from './risk.ts';
 import { addFindings, answerFinding, clearHumanApproval, createReview, getReview, listFindings, listReviewsForBranch, listReviewsForRun, markCleared, repeatFingerprints, setHumanApproval, updateReview } from './store.ts';
@@ -105,26 +105,53 @@ function gitText(cwd: string, args: string[]): { ok: boolean; out: string } {
   return { ok: r.status === 0, out: r.stdout ?? '' };
 }
 
+/** git with an argument array, asynchronously (a review round must not block the server's event loop). Output capped at 64 MB, 60 s timeout. */
+function gitAsync(cwd: string, args: string[]): Promise<{ status: number | null; out: string }> {
+  return new Promise((resolve) => {
+    let out = '', size = 0, done = false;
+    const finish = (status: number | null): void => { if (!done) { done = true; clearTimeout(t); resolve({ status, out }); } };
+    let child;
+    try { child = spawn('git', args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return resolve({ status: null, out: '' }); }
+    const t = setTimeout(() => { child.kill(); finish(null); }, 60_000);
+    child.stdout.setEncoding('utf8').on('data', (c: string) => { size += c.length; if (size > 64 * 1024 * 1024) { child.kill(); finish(null); } else out += c; });
+    child.on('error', () => finish(null));
+    child.on('close', (code) => finish(code));
+  });
+}
+
+const NORM_MAX = 2000;
+/**
+ * The code part of a line, as the clearing rule sees it: a trailing `//` or `#` comment (one after the last quote) is dropped, unless the line is
+ * only a comment. Linear time, and lines are capped at NORM_MAX characters first (hostile lines can be huge).
+ */
+function codePart(s0: string): string {
+  const s = s0.slice(0, NORM_MAX);
+  const from = Math.max(s.lastIndexOf("'"), s.lastIndexOf('"'), s.lastIndexOf('`')) + 1;
+  const marks = [s.indexOf('//', from), s.indexOf('#', from)].filter((i) => i >= 0);
+  const at = marks.length ? Math.min(...marks) : -1;
+  return at > 0 && s.slice(0, at).trim() ? s.slice(0, at) : s;
+}
 /** A line as the clearing rule compares it: no whitespace, one quote style, a trailing `//` or `#` comment dropped. Cosmetic edits keep it equal. */
 export function normLine(s: string): string {
-  const m = /(?:\/\/|#)[^'"`]*$/.exec(s);
-  const code = m && m.index > 0 && s.slice(0, m.index).trim() ? s.slice(0, m.index) : s;
-  return code.replace(/['`]/g, '"').replace(/[\s;]+/g, '');
+  return codePart(s).replace(/['`]/g, '"').replace(/[\s;]+/g, '');
 }
 
 /**
- * Is a flagged line still anywhere in the tracked files of `sha`? Searched with `git grep` for its longest identifier, then compared
- * normalised, so moving the file (`git mv`) or a whitespace / quote / comment edit does not count as a fix. `undefined` = cannot tell.
+ * Is a flagged line still anywhere in the tracked files of `sha`? Searched with `git grep` for the longest identifier of its CODE part (so a
+ * removed or reworded trailing comment cannot hide it), then compared normalised, so moving the file (`git mv`) or a whitespace / quote /
+ * comment edit does not count as a fix. User and repository grep config cannot change the output shape (no line numbers, columns, names).
+ * `undefined` = cannot tell.
  */
-function stillPresent(cwd: string, sha: string, stored: string): boolean | undefined {
+async function stillPresent(cwd: string, sha: string, stored: string): Promise<boolean | undefined> {
   const target = normLine(stored);
   if (!HEX40.test(sha) || target.length < 3) return undefined;
-  const word = (stored.match(/[A-Za-z_$][\w$]+/g) ?? []).reduce((a, b) => (b.length > a.length ? b : a), '');
+  const word = (codePart(stored).match(/[A-Za-z_$][\w$]+/g) ?? []).reduce((a, b) => (b.length > a.length ? b : a), '');
   if (word.length < 2) return undefined;
-  const r = spawnSync('git', ['--no-pager', `--attr-source=${EMPTY_TREE}`, 'grep', '-h', '--text', '-F', '--no-color', '-e', word, sha, '--'], { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 });
+  const r = await gitAsync(cwd, ['--no-pager', `--attr-source=${EMPTY_TREE}`, '-c', 'grep.lineNumber=false', '-c', 'grep.column=false', '-c', 'grep.fullName=false', '-c', 'grep.patternType=fixed',
+    'grep', '-h', '--no-line-number', '--no-column', '--text', '-F', '--no-color', '-e', word, sha, '--']);
   if (r.status === 1) return false;
   if (r.status !== 0) return undefined;
-  return (r.stdout ?? '').split(/\r?\n/).some((l) => normLine(l) === target);
+  return r.out.split(/\r?\n/).some((l) => normLine(l) === target);
 }
 
 /** Text of `file` in commit `sha`: `null` = not in that commit (deleted, moved), `undefined` = cannot tell. Argument arrays only; model-supplied paths are checked first. */
@@ -214,14 +241,22 @@ export function canAccept(db: Db, reviewId: string, headSha: string): { ok: bool
 
 const runCwd = (db: Db, runId: string): string | undefined => (db.prepare('SELECT cwd FROM run WHERE id = ?').get(runId) as { cwd: string | null } | undefined)?.cwd ?? undefined;
 
-/** The verdict for the branch as it is NOW: HEAD and the clean-tree check come from git in the task folder, never from a client. */
+/**
+ * The verdict for the branch as it is NOW: the head is `refs/heads/<run branch>` (never a client sha, never whatever HEAD points at), the task
+ * folder must be on that branch (HEAD attached to it, not detached), and the tree must be clean.
+ */
 export function canAcceptNow(db: Db, reviewId: string): { ok: boolean; why: string[]; head: string | null } {
   const r = getReview(db, reviewId);
   if (!r) return { ok: false, why: ['no review yet'], head: null };
-  const cwd = runCwd(db, r.runId);
+  const run = db.prepare('SELECT cwd, branch FROM run WHERE id = ?').get(r.runId) as { cwd: string | null; branch: string | null } | undefined;
+  const cwd = run?.cwd;
   if (!cwd || !existsSync(cwd)) return { ok: false, why: ['the task folder is gone'], head: null };
-  const head = gitText(cwd, ['rev-parse', '--verify', 'HEAD']).out.trim().toLowerCase();
+  const branch = run?.branch ?? '';
+  if (!/^hub\/[\w.-]+\/[\w.-]+$/.test(branch)) return { ok: false, why: ['cannot read the branch head'], head: null };
+  const head = gitText(cwd, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`]).out.trim().toLowerCase();
   if (!HEX40.test(head)) return { ok: false, why: ['cannot read the branch head'], head: null };
+  const at = gitText(cwd, ['symbolic-ref', '-q', 'HEAD']).out.trim();
+  if (at !== `refs/heads/${branch}`) return { ok: false, why: [`the task folder is not on ${branch} (${at ? `on ${at.replace(/^refs\/heads\//, '')}` : 'detached HEAD'})`], head };
   const v = canAccept(db, reviewId, head);
   const st = gitText(cwd, ['status', '--porcelain', '--untracked-files=all', ...NOT_HUB_DIR]);   // the hub's own .hub/ is never committed (checkpoint), so never "uncommitted work"
   if (!st.ok) v.why.unshift('cannot read the state of the task folder');
@@ -341,14 +376,29 @@ export interface GateOpts {
   timeoutMs?: number;
   /** Hub home for check approvals and the push guard. Default: the RunManager's. */
   home?: string;
+  /** Replaces the git version / object format probe (tests). */
+  gitInfo?: { version: string; objectFormat: string };
 }
 interface RunInfo { id: string; project_id: number | null; cwd: string | null; branch: string | null; base_sha: string | null; prompt: string | null; outcome: string | null }
+
+export const GIT_TOO_OLD = 'нужен Git 2.40 или новее';
+export const GIT_SHA256 = 'репозитории SHA-256 ревью пока не поддерживает (нужен SHA-1)';
+/** The gate needs `git --attr-source` (Git 2.40+) and SHA-1 object names: say so plainly instead of failing later with "cannot read the diff". */
+export function gitProblem(info: { version: string; objectFormat: string }): string | null {
+  const m = /(\d+)\.(\d+)/.exec(info.version);
+  if (!m || Number(m[1]) < 2 || (Number(m[1]) === 2 && Number(m[2]) < 40)) return `${GIT_TOO_OLD} (найдено: ${oneLine(info.version, 60) || 'git не найден'})`;
+  if (info.objectFormat.trim() !== 'sha1') return GIT_SHA256;
+  return null;
+}
+const gitInfoOf = (cwd: string): { version: string; objectFormat: string } => ({ version: gitText(cwd, ['version']).out.trim(), objectFormat: gitText(cwd, ['rev-parse', '--show-object-format']).out.trim() });
 
 function begin(o: GateOpts): { review: Review; fresh: boolean } {
   const run = o.db.prepare('SELECT id, project_id, cwd, branch, base_sha, prompt, outcome FROM run WHERE id = ?').get(o.runId) as RunInfo | undefined;
   if (!run) throw new GateError(404, 'run not found');
   if (run.outcome === null) throw new GateError(409, 'the run is still running');
   if (!run.branch?.startsWith('hub/') || !run.cwd || !existsSync(run.cwd) || run.project_id == null) throw new GateError(400, 'only task runs on a hub/… branch can be reviewed');
+  const problem = gitProblem(o.gitInfo ?? gitInfoOf(run.cwd));
+  if (problem) throw new GateError(409, problem);
   const root = (o.db.prepare('SELECT root FROM project WHERE id = ?').get(run.project_id) as { root: string } | undefined)?.root;
   if (!root) throw new GateError(404, 'project not found');
   // The review belongs to the branch (project + branch + folder), not to one run: a fixer or resumed run continues it, rounds and all.
@@ -357,7 +407,7 @@ function begin(o: GateOpts): { review: Review; fresh: boolean } {
   if (o.db.prepare('SELECT 1 FROM run WHERE cwd = ? AND outcome IS NULL LIMIT 1').get(run.cwd)) throw new GateError(409, 'the agent is still working in this branch');
 
   // Work the agent left uncommitted becomes a checkpoint commit on its own branch: a review is of a commit, never of a moving tree.
-  const cp = checkpoint(run.cwd, 'checkpoint before review');
+  const cp = checkpoint(run.cwd, 'checkpoint before review', { home: o.home ?? o.runs.home });   // no repository hooks, allowlisted env
   if (cp.note) throw new GateError(409, cp.note);
   const head = git(run.cwd, ['rev-parse', 'HEAD']).out;
   const base = run.base_sha ?? ['main', 'master'].map((b) => git(run.cwd as string, ['merge-base', 'HEAD', b]).out).find((s) => HEX40.test(s)) ?? '';
@@ -385,7 +435,10 @@ function begin(o: GateOpts): { review: Review; fresh: boolean } {
   return { review, fresh: true };
 }
 
-/** Creates (or advances) the review and returns it at once; `done` resolves when the round has finished. Never rejects. */
+/**
+ * Creates (or advances) the review and returns it at once; `done` resolves when the round has finished. Never rejects. The round itself starts
+ * on a later tick and runs its git work asynchronously, so the HTTP answer and the server's event loop do not wait for it.
+ */
 export function launchReview(o: GateOpts): { review: Review; done: Promise<Review> } {
   const { review, fresh } = begin(o);
   return { review, done: fresh ? runRound(o, review) : Promise.resolve(review) };
@@ -399,7 +452,10 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
   const { db } = o;
   const info = getInfo(db, review.id);
   const close = (reason: string): void => { putInfo(db, review.id, { ...info, reasons: [oneLine(reason, 400)] }); updateReview(db, review.id, { state: 'open' }); };
+  const notes: string[] = [];                // warnings found during the round (reviewer answers, folders that could not be removed)
+  const warn = (s: string): void => { if (notes.length < 20) notes.push(oneLine(s, 300)); };
   try {
+    await new Promise<void>((r) => setImmediate(r));   // the caller (POST /api/reviews) answers before any of the round's work starts
     const run = db.prepare('SELECT cwd, prompt FROM run WHERE id = ?').get(review.runId) as { cwd: string; prompt: string | null };
     const root = (db.prepare('SELECT root FROM project WHERE id = ?').get(review.projectId) as { root: string }).root;
     const cwd = run.cwd, head = review.headSha, round = review.round;
@@ -417,41 +473,51 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
       if (f.severity === 'security') continue;
       const stored = (db.prepare('SELECT line_text FROM finding WHERE id = ?').get(f.id) as { line_text: string | null }).line_text;
       if (!stored || stored.length < 3) continue;
-      if (stillPresent(cwd, head, stored) === false) markCleared(db, f.id, head);
+      if ((await stillPresent(cwd, head, stored)) === false) markCleared(db, f.id, head);
     }
 
     const roundArgs = diffArgs(from, head);
-    const diff = gitText(cwd, roundArgs);
+    const d0 = await gitAsync(cwd, roundArgs);
+    const diff = { ok: d0.status === 0, out: d0.out };
     if (!diff.ok) return finish(close('cannot read the diff'));
     if (!diff.out.trim()) return finish(close(`nothing to review: no changes since ${short(from)}`));
     // "Pre-existing" means not added anywhere in base..head; the round's diff only decides what the reviewers look at.
-    const whole = from === review.baseSha ? diff : gitText(cwd, diffArgs(review.baseSha, head));
+    const w0 = from === review.baseSha ? d0 : await gitAsync(cwd, diffArgs(review.baseSha, head));
+    const whole = { ok: w0.status === 0, out: w0.out };
     if (!whole.ok) return finish(close('cannot read the diff'));
     const tooLarge = diffTooLarge(diff.out);
 
     // Every path the branch changed (not only this round): scopes the folder REVIEW.md files and decides the risk tier.
-    const names = gitText(cwd, ['diff', '--name-only', '--no-renames', '-z', `${review.baseSha}..${head}`]);
+    const n0 = await gitAsync(cwd, ['diff', '--name-only', '--no-renames', '-z', `${review.baseSha}..${head}`]);
+    const names = { ok: n0.status === 0, out: n0.out };
     const changed = names.ok ? names.out.split('\0').filter(Boolean) : [];
 
     // 0 Checks: they run the branch's code with the user's rights, so only a list the user approved on this machine runs (digest over argv,
-    // branch scripts and files), in a minimal env (no hub secrets, push guard). Unapproved or changed: nothing runs, no AI is started.
+    // branch scripts and files of the head commit). They run in a clean copy of that commit (exactly the bytes the digest covers, nothing
+    // ignored or skip-worktree from the task folder) with an allowlisted env and git push blocked. Unapproved, changed or too large to show:
+    // nothing runs, no AI is started.
     const home = o.home ?? o.runs.home;
     const plan = planChecks(root, cwd, head, home);
+    if (plan.checks.length && plan.tooLarge) return finish(close(TOO_LARGE_REASON));
     if (!plan.approved) return finish(close(notApprovedReason(plan)));
-    const gate = await gateChecks(cwd, plan.checks, { diffText: diff.out, env: pushGuardEnv(home, agentEnv(process.env)) });
+    let gate: Awaited<ReturnType<typeof gateChecks>>;
+    if (plan.checks.length) {
+      const copy = exportCommit(cwd, head, home, root);
+      try { gate = await gateChecks(copy.dir, plan.checks, { diffText: diff.out, env: checkEnv(home) }); } finally { const w = copy.done(); if (w) warn(w); }
+    } else gate = await gateChecks(cwd, [], { diffText: diff.out });
     putInfo(db, review.id, { ...info, checks: gate.results }); info.checks = gate.results;
     if (!gate.ok) return finish(close(`checks failed: ${gate.results.find((r) => !r.ok)?.name ?? 'unknown'}`));
 
     const usable = o.available ? { available: o.available, warnings: [] as string[] } : usableAgents();
     const picks = o.picks ?? pickReviewers(review.effort, usable.available);
     if (!picks) return finish(close(`no usable reviewer: sign in to claude or codex (${usable.warnings.join('; ') || 'none available'})`));
-    info.warnings = [...(plan.noTests ? [NO_CHECKS_WARNING] : []), ...picks.warnings, ...usable.warnings];
+    info.warnings = [...(plan.noTests ? [NO_CHECKS_WARNING] : []), ...picks.warnings, ...usable.warnings, ...notes];
     putInfo(db, review.id, info);
 
     // 1 Hunt
     updateReview(db, review.id, { state: 'hunting' });
     const read = (name: string): string => { try { return readFileSync(join(root, name), 'utf8'); } catch { return ''; } };
-    const common = { diffCmd: ['git', ...roundArgs], brief: run.prompt ?? '', agentsMd: read('AGENTS.md'), reviewMd: loadReviewMd(root, changed), runs: o.runs, cwd, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) };
+    const common = { diffCmd: ['git', ...roundArgs], brief: run.prompt ?? '', agentsMd: read('AGENTS.md'), reviewMd: loadReviewMd(root, changed), runs: o.runs, cwd, warn, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) };
     // The security pass goes first, so its findings are first in line for verification.
     const found = (await pool([picks.security, ...picks.hunters].map((h) => () => hunt({ ...common, lens: h.lens, pick: h.pick })), RUN_SLOTS)).flat();
 
@@ -469,7 +535,7 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     updateReview(db, review.id, { state: 'verifying' });
     const k = Math.max(1, picks.verifiers.length);
     const dropped = Math.max(0, todo.length - MAX_VERIFIED);   // never silent: the round cannot pass while findings are unchecked
-    const verified = (await pool(todo.slice(0, MAX_VERIFIED).map((f) => () => verifyMany(f, { picks: picks.verifiers, diffCmd: common.diffCmd, runs: o.runs, cwd, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) })), Math.max(1, Math.floor(RUN_SLOTS / k)))).filter((v): v is VerifiedFinding => v !== null);
+    const verified = (await pool(todo.slice(0, MAX_VERIFIED).map((f) => () => verifyMany(f, { picks: picks.verifiers, diffCmd: common.diffCmd, runs: o.runs, cwd, warn, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) })), Math.max(1, Math.floor(RUN_SLOTS / k)))).filter((v): v is VerifiedFinding => v !== null);
     for (const d of dependencyFindings(diff.out, root)) verified.push({ ...d, votes: { real: 1, notReal: 0 } });   // licenses from the project root, never the agent-writable task folder
 
     // 3 Filter and 4 Security tagging (triage), then store.
@@ -489,7 +555,7 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     // large for the reviewers to see in full makes this branch need a human approval from now on.
     const reasons = dropped ? [`too many findings to verify: ${dropped} of ${todo.length} were not checked; run the review again to check the rest`] : [];
     const { lastReviewedSha: _prev, ...rest } = info;
-    putInfo(db, review.id, { ...rest, completed: info.completed + 1, ...(dropped ? (info.lastReviewedSha ? { lastReviewedSha: info.lastReviewedSha } : {}) : { lastReviewedSha: head }), reasons, riskWhy: tier.why.map((w) => oneLine(w, 300)).slice(0, 20), tooLarge: info.tooLarge || tooLarge });
+    putInfo(db, review.id, { ...rest, completed: info.completed + 1, ...(dropped ? (info.lastReviewedSha ? { lastReviewedSha: info.lastReviewedSha } : {}) : { lastReviewedSha: head }), reasons, warnings: [...new Set([...info.warnings, ...notes])], riskWhy: tier.why.map((w) => oneLine(w, 300)).slice(0, 20), tooLarge: info.tooLarge || tooLarge });
     updateReview(db, review.id, { state: 'open' });     // 6-7: settle() decides between open / needs-human / passed
     return finish(undefined);
   } catch (e) {

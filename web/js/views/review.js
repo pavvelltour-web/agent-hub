@@ -192,13 +192,19 @@ export default async function view(ctx) {
   function checkPlanBlock(m) {
     const p = m.checkPlan;
     if (!p.checks.length) return null;
+    if (p.tooLarge) {
+      return h('section.stack.rv-gap.rv-approve', { 'aria-label': 'Одобрение проверок' },
+        h('div.alert.err', { role: 'alert' }, icon('alert'), h('div.stack', h('b', 'Список проверок слишком большой'), h('span', 'Его нельзя показать целиком (больше 64 КБ), поэтому одобрить его нельзя. Сократите команды или скрипты package.json.'))));
+    }
+    // Every byte the digest covers is shown (scrollable <pre>, textContent): the commands, ALL package.json scripts, the hashes of the files.
+    const runs = new Set(p.runs);
     const body = [
       h('p', p.note || 'Проверки запускают код ветки с вашими правами, вне песочницы агента.'),
       h('b.t-label', 'Команды'),
-      h('pre.rv-pre', p.checks.map((c) => c.join(' ')).join('\n')),
-      p.scripts.length ? [h('b.t-label', 'Скрипты package.json, которые они запустят'), h('pre.rv-pre', p.scripts.map(([k, v]) => `${k}: ${v}`).join('\n'))] : null,
-      p.files.length ? [h('b.t-label', 'Файлы, которые запустятся'), h('ul.rv-list', p.files.map(([k, v]) => h('li', h('span.mono.rv-wrap', k), v ? ` — отпечаток ${v.slice(0, 12)}` : ' — нет в коммите')))] : null,
-      h('p.t-meta', 'Одобрение действует на этом компьютере, пока команды, скрипты и эти файлы не меняются. Любая их правка в ветке потребует одобрить снова.'),
+      h('pre.rv-pre', p.checks.map((c) => c.map((a) => (/[\s"]/.test(a) || !a ? JSON.stringify(a) : a)).join(' ')).join('\n')),
+      p.scripts.length ? [h('b.t-label', 'Скрипты package.json (все; «▶» — те, что запустятся)'), h('pre.rv-pre', p.scripts.map(([k, v]) => `${runs.has(k) ? '▶' : ' '} ${k}: ${v}`).join('\n'))] : null,
+      p.files.length ? [h('b.t-label', 'Файлы, которые запустятся (отпечаток SHA-256)'), h('pre.rv-pre', p.files.map(([k, v]) => `${k}  ${v ?? 'нет в коммите'}`).join('\n'))] : null,
+      h('p.t-meta', 'Одобрение действует на этом компьютере, пока команды, скрипты и эти файлы не меняются: проверки запускаются в чистой копии коммита, ровно с теми байтами, что показаны. Любая их правка в ветке потребует одобрить снова.'),
     ];
     if (p.approved) return h('details.rv-checks', h('summary', 'Что запускают проверки'), h('div.stack.rv-gap', body));
     const b = IN_PROGRESS.has(m.review.state) ? null : btn('Одобрить проверки', { kind: 'primary', icon: 'check', onclick: () => approveChecks(m, b) });

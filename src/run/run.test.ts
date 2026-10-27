@@ -122,6 +122,25 @@ test('checkpoint never commits the hub folder .hub/, even when the agent staged 
   } finally { rmSync(r, { recursive: true, force: true, maxRetries: 3 }); }
 });
 
+test('checkpoint runs no repository hook (F6): a husky pre-commit or post-commit file of the branch is not executed', () => {
+  const r = repo(); const home = mkdtempSync(join(tmpdir(), 'hub-home-'));
+  try {
+    const marker = join(home, 'hook-ran.txt').replace(/\\/g, '/');
+    mkdirSync(join(r, '.husky'), { recursive: true });
+    writeFileSync(join(r, '.husky', 'pre-commit'), `#!/bin/sh\necho ran > "${marker}"\n`, { mode: 0o755 });
+    writeFileSync(join(r, '.husky', 'post-commit'), `#!/bin/sh\necho ran > "${marker}"\n`, { mode: 0o755 });
+    git(r, ['config', 'core.hooksPath', '.husky']);
+    // the hook is real: a plain commit runs it
+    writeFileSync(join(r, 'probe.txt'), 'p\n'); git(r, ['add', '-A']); git(r, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'probe']);
+    assert.ok(existsSync(marker), 'a plain git commit runs the branch hook');
+    rmSync(marker);
+    writeFileSync(join(r, 'work.txt'), 'w\n');
+    const cp = checkpoint(r, 'cp', { home });
+    assert.equal(cp.committed, true, cp.note);
+    assert.equal(existsSync(marker), false, 'checkpoint ran no hook');
+  } finally { for (const d of [r, home]) rmSync(d, { recursive: true, force: true, maxRetries: 3 }); }
+});
+
 const readdirName = (d: string): string => (readdirSyncSafe(d)[0] as string);
 import { readdirSync } from 'node:fs';
 const readdirSyncSafe = (d: string): string[] => readdirSync(d);

@@ -146,7 +146,9 @@ test('humanPathsForChanges: the root list plus the nearest folder REVIEW.md list
   const got = humanPathsForChanges(root, ['src/pay/charge.ts']);
   assert.deepEqual(got, ['src/auth/**', 'src/pay/**/*.ts', 'src/pay/api/**']);
   assert.ok(riskTier(['src/pay/sub/x.ts'], { humanPaths: got }).tier === 'high' && riskTier(['src/other/x.ts'], { humanPaths: got }).tier === 'medium');
-  assert.deepEqual(humanPathsForChanges(root, ['src/pay/far/a.ts']), ['src/auth/**', 'src/pay/far/**/deep.ts'], 'the nearest folder file only');
+  // stricter (repair C, F11): a child folder's own REVIEW.md no longer hides its parents' lists
+  assert.deepEqual(humanPathsForChanges(root, ['src/pay/far/a.ts']), ['src/auth/**', 'src/pay/**/*.ts', 'src/pay/api/**', 'src/pay/far/**/deep.ts'], 'every ancestor folder file counts');
+  assert.equal(riskTier(['src/pay/far/a.ts'], { humanPaths: humanPathsForChanges(root, ['src/pay/far/a.ts']) }).tier, 'high', 'the parent list (*.ts under src/pay) covers a file under the child folder');
   assert.deepEqual(humanPathsForChanges(root, ['../x.ts', 'C:/abs.ts']), ['src/auth/**'], 'hostile paths read no folder file');
 });
 

@@ -1,18 +1,20 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, projectId, type Db } from '../history/store.ts';
+import { listProjects, openDb, projectId, type Db } from '../history/store.ts';
 import { runScore, settledOutcome } from '../econ/econ.ts';
 import { RunManager } from '../run/runner.ts';
 import { waitForRun } from '../run/wait.ts';
 import { handle, type Ctx } from '../server/api.ts';
 import { startServer } from '../server/server.ts';
 import { answerFinding } from './store.ts';
-import { RECONSIDER_MESSAGE, answer, approve, blockingLines, canAccept, launchReview, pickReviewers, reviewView, startFix, startReview } from './gate.ts';
+import { GateError, RECONSIDER_MESSAGE, answer, approve, blockingLines, canAccept, canAcceptNow, gitProblem, launchReview, normLine, pickReviewers, reviewView, startFix, startReview } from './gate.ts';
+import { sweepReviewerDirs } from './agents.ts';
+import { HUB_HOME } from '../core/registry.ts';
 import { addFindings, getReview, listFindings, listReviewsForRun } from './store.ts';
 import { approveChecks, planChecks } from './checks.ts';
 
@@ -334,10 +336,13 @@ test('API: start returns the review at once (state checks), then GET shows findi
   assert.equal(listReviewsForRun(w.db, w.runId).length, 1);
 });
 
-test('API: there is no accept/merge endpoint to guard, and api.ts never forwards extraArgs or file paths to git', () => {
-  const api = readFileSync(join(here, '..', 'server', 'api.ts'), 'utf8');
-  assert.ok(!/\/api\/[a-z/]*(accept|merge)/i.test(api), 'no accept/merge route exists; if one is added it must call canAccept');
-  assert.ok(!/extraArgs/.test(api));
+test('API: there is no accept/merge endpoint to guard (behaviour); structure: api.ts never forwards extraArgs', async () => {
+  const w = world(); const api = apiOf(w);
+  for (const [m, p] of [['POST', '/api/reviews/rvabc123/accept'], ['POST', '/api/reviews/rvabc123/merge'], ['POST', '/api/runs/rabc1/merge'], ['POST', '/api/runs/rabc1/accept'], ['POST', '/api/accept'], ['POST', '/api/merge']] as const) {
+    const r = await api(m, p); assert.equal(r.status, 404, p); assert.deepEqual(r.json, { error: 'no such endpoint' }, p);
+  }
+  // structure check: if an accept route is added it must call canAcceptNow; extraArgs is internal to the review gate
+  assert.ok(!/extraArgs/.test(readFileSync(join(here, '..', 'server', 'api.ts'), 'utf8')));
 });
 
 // ---- review screen support: hunk, risk reasons, interim fixer ------------------------------------------------------------------------------
@@ -440,7 +445,8 @@ test('runner: a successful task run ends in outcome "review" and keeps its base 
   assert.equal(rm.get(again.id)!.outcome, 'review'); assert.equal(rm.get(again.id)!.baseSha, baseSha);
 });
 
-test('web: the outcome chips know "review" (На ревью)', () => {
+// structure check (not behaviour): the chip tables live in plain web modules
+test('structure (web): the outcome chips know "review" (На ревью)', () => {
   for (const f of ['views/common.js', 'transcript.js']) assert.match(readFileSync(join(here, '..', '..', 'web', 'js', f), 'utf8'), /review['"]?:[^\n]*На ревью/, f);
 });
 
@@ -502,6 +508,35 @@ test('integrity 2: a whitespace / comment edit of the flagged line does not clea
   w.script({}); w.commit({ 'src/a.ts': A1.replace(ROUND1_LINE, '  for (let i=0;   i<=n; i++) {}   // fixed') });
   await w.go();
   assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open');
+});
+
+test('integrity 2 (B1): grep.lineNumber / grep.column in the repository config cannot auto-clear an open finding', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  git(w.root, ['config', 'grep.lineNumber', 'true']); git(w.root, ['config', 'grep.column', 'true']); git(w.root, ['config', 'grep.fullName', 'true']);
+  w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  w.script({}); w.commit({ 'docs/other.md': 'x\n' });
+  await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open', 'the flagged line is still there: not fixed');
+});
+
+test('integrity 2 (B2): REMOVING a trailing comment that held the longest identifier does not clear the finding', async () => {
+  const A2 = 'export const a = 1;\nlet total = n + 1; // recomputeEverythingAgainLaterPlease\n';
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Wrong total')] } });
+  w.commit({ 'src/a.ts': A2 }); const r = await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open');
+  w.script({}); w.commit({ 'src/a.ts': 'export const a = 1;\nlet total = n + 1;\n' });
+  await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open', 'a cosmetic comment removal is not a fix');
+  w.commit({ 'src/a.ts': 'export const a = 1;\nlet total = n + 2;\n' });
+  await w.go();
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'fixed', 'a real change of the code part still clears it');
+});
+
+test('normLine (F1): linear on hostile lines (100k "#" and a quote at the end), capped, and keeps its comment rule', () => {
+  const t0 = Date.now();
+  normLine('#'.repeat(100_000) + '"'); normLine('a//'.repeat(50_000) + "'");
+  assert.ok(Date.now() - t0 < 500, `took ${Date.now() - t0} ms`);
+  assert.equal(normLine('x = 1; // note'), 'x=1'); assert.equal(normLine("s = '#1' # c"), 's="#1"'); assert.equal(normLine('// only a comment'), '//onlyacomment');
 });
 
 test('integrity 2: a security finding is never cleared automatically, even when its line is gone', async () => {
@@ -663,12 +698,30 @@ test('integrity (d): dismissed needs a reason for Important; a finding already f
   assert.equal((await apiOf(w)('POST', `/api/findings/${f.id}/answer`, {}, { answer: 'intentional', reason: 'x' })).status, 400);
 });
 
-test('integrity (g): reviewers run in an empty temp folder, never the branch folder, and it is removed', async () => {
+test('integrity (g): reviewers run in an empty folder under <home>/reviewers, never the branch folder, and it is removed', async () => {
   const w = world(); w.commit({ 'CLAUDE.md': 'BRANCH RULES', 'src/a.ts': A1 });
   await w.go();
   const seen = w.spawned() as unknown as { cwd: string; cwdFiles: string[] }[];
   assert.ok(seen.length >= 2);
-  for (const s of seen) { assert.notEqual(s.cwd.toLowerCase(), w.wt.toLowerCase()); assert.deepEqual(s.cwdFiles, []); assert.equal(existsSync(s.cwd), false); }
+  for (const s of seen) {
+    assert.notEqual(s.cwd.toLowerCase(), w.wt.toLowerCase()); assert.deepEqual(s.cwdFiles, []);
+    assert.ok(s.cwd.toLowerCase().startsWith(join(w.home, 'reviewers').toLowerCase()), s.cwd);
+    for (let i = 0; i < 30 && existsSync(s.cwd); i++) await new Promise((res) => setTimeout(res, 100));   // Windows may release the folder a moment later
+    assert.equal(existsSync(s.cwd), false);
+  }
+});
+
+test('reviewer folders (F7): history never turns them into projects; old leftovers are swept when the panel starts, failures are reported', async () => {
+  const d = openDb(':memory:');
+  assert.equal(projectId(d, join(HUB_HOME, 'reviewers', 'rv-abc')), null);
+  assert.equal(projectId(d, 'C:/Users/u/AppData/Local/Temp/hub-reviewer-x1'), null, 'old %TEMP% reviewer folders too');
+  d.prepare("INSERT INTO project (key, root, slug) VALUES ('k', 'C:/Users/u/AppData/Local/Temp/hub-reviewer-old', 'hub-reviewer-old')").run();
+  assert.deepEqual(listProjects(d).map((p) => p.slug), [], 'a junk project from before is not listed');
+  const home = join(tmp, 'sweep-home'); const old = join(home, 'reviewers', 'rv-old'), fresh = join(home, 'reviewers', 'rv-new');
+  mkdirSync(old, { recursive: true }); mkdirSync(fresh, { recursive: true });
+  const past = new Date(Date.now() - 2 * 3_600_000); utimesSync(old, past, past);
+  assert.deepEqual(sweepReviewerDirs(home), []);
+  assert.equal(existsSync(old), false); assert.equal(existsSync(fresh), true);
 });
 
 test('integrity (h): a hub restart opens a review left mid-round with a reason; it can be run again', async () => {
@@ -677,6 +730,8 @@ test('integrity (h): a hub restart opens a review left mid-round with a reason; 
   const h2 = w.commit({ 'docs/y.md': 'b\n' });
   w.db.prepare("UPDATE review SET state = 'hunting', head_sha = ?, round = 2 WHERE id = ?").run(h2, r.id);   // a round 2 was running when the hub died
   new RunManager(w.db, { exe: { claude: fakeExe, codex: fakeExe }, summarize: false, home: join(tmp, 'home-restart') });
+  assert.equal(getReview(w.db, r.id)!.state, 'hunting', 'a RunManager alone (hub run / hub chat on the same database) never touches a round');
+  const srv = await startServer({ db: w.db, runs: w.runs }, { token: 'restart-token-123456' }); await srv.close();   // the panel starting again
   assert.equal(getReview(w.db, r.id)!.state, 'open');
   assert.deepEqual(reviewView(w.db, r.id).reasons, ['interrupted by a restart']);
   assert.equal(canAccept(w.db, r.id, h2).ok, false);
@@ -774,7 +829,56 @@ test('reviewer runs: marked, left out of the run list, and the task folder gets 
   assert.equal(existsSync(join(w.wt, '.hub')), false);
 });
 
-test('web: the review screen offers a restart for an interrupted review and the human approval for a too-large diff', () => {
+test('checks run in a clean copy of the commit (B4): a skip-worktree edit and an ignored .npmrc in the task folder never run', async () => {
+  const w = world({ base: { 'hub.json': JSON.stringify({ review: { checks: [['node', 'check.js'], ['node', '-e', 'console.log("npmrc=" + require("fs").existsSync(".npmrc") + " cwd=" + process.cwd())']] } }), 'check.js': 'console.log("COMMITTED-CHECK")\n', '.gitignore': '.npmrc\n' } });
+  w.commit({ 'src/a.ts': A1 }); w.approveChecks();
+  git(w.wt, ['update-index', '--skip-worktree', 'check.js']);
+  writeFileSync(join(w.wt, 'check.js'), 'console.log("EVIL-FROM-FOLDER")\n');
+  writeFileSync(join(w.wt, '.npmrc'), 'node-options=--require ./evil.js\n');
+  const r = await w.go();
+  const v = reviewView(w.db, r.id);
+  assert.equal(v.reasons.length, 0, v.reasons.join(' '));
+  const all = v.checks.map((c) => c.tail).join('\n');
+  assert.match(all, /COMMITTED-CHECK/); assert.doesNotMatch(all, /EVIL-FROM-FOLDER/);
+  assert.match(all, /npmrc=false/, 'the ignored .npmrc of the task folder is not there');
+  assert.doesNotMatch(all.toLowerCase(), new RegExp(w.wt.toLowerCase().replace(/[\\/.*+?^${}()|[\]]/g, '.'), 'i'), 'not run in the task folder');
+  assert.deepEqual(existsSync(join(w.home, 'check-runs')) ? readdirSync(join(w.home, 'check-runs')) : [], [], 'the copy is removed');
+});
+
+test('launchReview answers before the round does its work (F2): a finding is cleared only after the call returned', async () => {
+  const w = world(); w.script({ hunt: { correctness: [fnd('src/a.ts', 2, 'Off-by-one')] } });
+  w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  w.script({}); w.commit({ 'src/a.ts': 'export const a = 1;\nexport const ROUND1_MARK = 1;\n' });
+  const { review, done } = launchReview({ runId: w.runId, effort: 'quick', runs: w.runs, db: w.db, available: ['claude'] });
+  assert.equal(review.state, 'checks');
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'open', 'no git grep ran inside the call');
+  await done;
+  assert.equal(listFindings(w.db, r.id)[0]!.answer, 'fixed');
+});
+
+test('can-accept reads refs/heads/<branch> and requires the folder to be on it (F5): detached or another branch is refused', async () => {
+  const w = world(); w.commit({ 'src/a.ts': A1 }); const r = await w.go();
+  assert.equal(r.state, 'passed');
+  assert.equal(canAcceptNow(w.db, r.id).ok, true);
+  git(w.wt, ['checkout', '-q', '--detach']);
+  const det = canAcceptNow(w.db, r.id); assert.equal(det.ok, false); assert.match(det.why.join(' '), /detached/);
+  git(w.wt, ['checkout', '-q', '-b', 'other']);
+  const oth = canAcceptNow(w.db, r.id); assert.equal(oth.ok, false); assert.match(oth.why.join(' '), /not on hub\/t\/claude/);
+  git(w.wt, ['checkout', '-q', 'hub/t/claude']);
+  assert.equal(canAcceptNow(w.db, r.id).ok, true);
+});
+
+test('git version (F12): an old Git or a SHA-256 repository is refused with a plain message, not "cannot read the diff"', () => {
+  assert.match(gitProblem({ version: 'git version 2.39.1', objectFormat: 'sha1' }) ?? '', /Git 2\.40/);
+  assert.match(gitProblem({ version: '', objectFormat: '' }) ?? '', /Git 2\.40/);
+  assert.match(gitProblem({ version: 'git version 2.45.0', objectFormat: 'sha256' }) ?? '', /SHA-256/);
+  assert.equal(gitProblem({ version: 'git version 2.55.0.windows.3', objectFormat: 'sha1' }), null);
+  const w = world(); w.commit({ 'src/a.ts': A1 });
+  assert.throws(() => launchReview({ runId: w.runId, runs: w.runs, db: w.db, available: ['claude'], gitInfo: { version: 'git version 2.30.0', objectFormat: 'sha1' } }), (e: unknown) => e instanceof GateError && e.status === 409 && /Git 2\.40/.test(e.message));
+});
+
+// structure check (not behaviour): the screen source wires these states; the behaviour is covered by screen-model.test.ts
+test('structure (web): the review screen offers a restart for an interrupted review and the human approval for a too-large diff', () => {
   const src = readFileSync(join(here, '..', '..', 'web', 'js', 'views', 'review.js'), 'utf8');
   assert.match(src, /interrupted by a restart/); assert.match(src, /humanWhy/);
 });

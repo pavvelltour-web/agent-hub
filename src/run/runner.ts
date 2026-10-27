@@ -14,7 +14,6 @@ import { leanArgs } from './lean.ts';
 import { handoffPrompt, writeCard, type Card, type HandoffInput } from './handoff.ts';
 import { readRunnerHooks, runHooks } from './hooks-run.ts';
 import { modelSummary, type Summary } from './summarize.ts';
-import { markInterruptedReviews } from '../review/store.ts';
 import { sanitizeEvent } from '../adapters/event-utils.ts';
 
 export interface StartReq {
@@ -58,7 +57,8 @@ export class RunManager {
     this.db = db; this.opts = opts; this.home = opts.home ?? HUB_HOME;
     // A crashed server leaves rows without an end: mark them so the UI never shows a ghost "running" run.
     db.prepare("UPDATE run SET outcome = 'interrupted', ended_at = ? WHERE outcome IS NULL").run(new Date().toISOString());
-    markInterruptedReviews(db);   // review rounds live in this process too: one cut off by the crash is open again, with a restart
+    // Review rounds are NOT touched here: a `hub run` / `hub chat` process on the same database must not open a round the panel is running.
+    // The panel marks rounds cut off by a crash when it starts (server.ts).
   }
 
   start(req: StartReq): RunRow {

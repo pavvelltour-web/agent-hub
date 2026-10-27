@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { HUB_HOME } from '../core/registry.ts';
 import { norm, pathKey } from '../lib/paths.ts';
@@ -62,8 +62,16 @@ export function projectRoot(cwd: string): string {
   return m2?.[1] ?? p;
 }
 
+/** Where review-gate reviewers run: `<home>/reviewers/<id>`. Their CLI sessions are plumbing and never become a project. */
+export const reviewersDir = (home: string = HUB_HOME): string => join(home, 'reviewers');
+/** A reviewer folder: under the hub's reviewers folder, or an old `%TEMP%/hub-reviewer-*` one (before reviewers moved under the hub home). */
+export function isReviewerCwd(cwd: string, home: string = HUB_HOME): boolean {
+  const p = pathKey(cwd);
+  return p.startsWith(pathKey(reviewersDir(home)) + '/') || /\/hub-reviewer-[^/]+(?:\/|$)/i.test(p);
+}
+
 export function projectId(db: Db, cwd: string | null | undefined): number | null {
-  if (!cwd) return null;
+  if (!cwd || isReviewerCwd(cwd)) return null;
   const root = projectRoot(cwd);
   const key = pathKey(root);
   const row = db.prepare('SELECT id FROM project WHERE key = ?').get(key) as { id: number } | undefined;
@@ -156,9 +164,10 @@ export function search(db: Db, q: string, f: { projectId?: number; agent?: strin
 }
 
 export interface ProjectItem { id: number; slug: string; root: string; sessions: number; claude: number; codex: number; lastAt: string | null; tokens: number }
-export const listProjects = (db: Db): ProjectItem[] => db.prepare(`SELECT p.id, p.slug, p.root, COUNT(s.id) AS sessions, SUM(s.agent='claude') AS claude, SUM(s.agent='codex') AS codex,
+/** Projects, newest activity first. Reviewer folders (sessions of review-gate reviewers) are never listed. */
+export const listProjects = (db: Db): ProjectItem[] => (db.prepare(`SELECT p.id, p.slug, p.root, COUNT(s.id) AS sessions, SUM(s.agent='claude') AS claude, SUM(s.agent='codex') AS codex,
   MAX(COALESCE(s.ended_at, s.started_at)) AS lastAt, COALESCE(SUM(s.uncached_in + s.cached_in + s.out_tokens),0) AS tokens
-  FROM project p LEFT JOIN session s ON s.project_id = p.id AND s.parent_id IS NULL GROUP BY p.id ORDER BY lastAt IS NULL, lastAt DESC`).all() as unknown as ProjectItem[];
+  FROM project p LEFT JOIN session s ON s.project_id = p.id AND s.parent_id IS NULL GROUP BY p.id ORDER BY lastAt IS NULL, lastAt DESC`).all() as unknown as ProjectItem[]).filter((p) => !isReviewerCwd(p.root));
 
 export interface ModelUsage { model: string; agent: string; sessions: number; uncachedIn: number; cachedIn: number; out: number }
 export const usageByModel = (db: Db, sinceIso?: string): ModelUsage[] => db.prepare(`SELECT u.model, s.agent, COUNT(DISTINCT u.session_id) AS sessions, SUM(u.uncached_in) AS uncachedIn, SUM(u.cached_in) AS cachedIn, SUM(u.out_tokens) AS out

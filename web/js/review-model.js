@@ -59,17 +59,28 @@ export function model(raw) {
   return { review, findings, checks, warnings: lines(r.warnings), reasons: lines(r.reasons), riskWhy: lines(r.riskWhy), humanWhy: lines(r.humanWhy), checkPlan: checkPlanOf(r.checkPlan) };
 }
 
-/** What the checks run (argv lists, the package.json scripts they map to, file hashes) and whether the user approved it; null when absent. */
+/** Same limit as the server (MAX_PLAN_BYTES): what the digest covers must be shown in full, so a larger plan is never approvable here. */
+export const MAX_PLAN_BYTES = 64 * 1024;
+
+/**
+ * What the checks run (argv lists, ALL package.json scripts, file hashes) and whether the user approved it; null when absent. Nothing is cut:
+ * the approval button sends the digest of exactly this content, so every byte of it is kept (non-strings show as ?). A plan larger than
+ * MAX_PLAN_BYTES, or one the server marks too large, is `tooLarge` and has no approval.
+ */
 export function checkPlanOf(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const p = obj(raw);
   const digest = typeof p.digest === 'string' && /^[0-9a-f]{64}$/.test(p.digest) ? p.digest : '';
   if (!digest) return null;
-  const pairs = (v, max) => Object.entries(obj(v)).slice(0, 40).map(([k, x]) => [str(k, 200), x === null ? null : typeof x === 'string' ? str(x, max) : '?']).filter(([k]) => k);
+  const full = (v) => (typeof v === 'string' ? v.replace(/\u0000/g, '\\0') : '?');
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const pairs = (v) => Object.entries(obj(v)).map(([k, x]) => [full(k), x === null ? null : full(x)]);
+  const checks = list(p.checks).map((c) => list(c).map(full)).filter((c) => c.length);
+  const scripts = pairs(p.scripts).filter(([, x]) => x !== null), files = pairs(p.files);
+  const size = new TextEncoder().encode(JSON.stringify([checks, scripts, files])).length;
   return {
-    checks: arr(p.checks, 30).map((c) => arr(c, 40).map((a) => (typeof a === 'string' ? str(a, 300) : '?'))).filter((c) => c.length),   // never hide a part of what runs: a non-string shows as ?
-    source: str(p.source, 40), scripts: pairs(p.scripts, 600).filter(([, x]) => x !== null), files: pairs(p.files, 80),
-    digest, approved: p.approved === true, noTests: p.noTests === true, note: str(p.note, 400),
+    checks, scripts, files, runs: list(p.runs).map(full), source: str(p.source, 40),
+    digest, approved: p.approved === true, noTests: p.noTests === true, note: str(p.note, 600), tooLarge: p.tooLarge === true || size > MAX_PLAN_BYTES,
   };
 }
 export const NOT_APPROVED_RE = /^Проверки из .+ не одобрены$/;
