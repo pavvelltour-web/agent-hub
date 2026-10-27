@@ -6,7 +6,7 @@ import type { AgentAdapter, HubEvent, RunRequest } from './types.ts';
 export interface RunHandle { done: Promise<{ code: number | null; events: number }>; stop: () => void; pid: number | undefined }
 
 /** Kill the whole process tree (agents spawn shells and tools). */
-function killTree(pid: number): void {
+export function killTree(pid: number): void {
   if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
   else { try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } } }
 }

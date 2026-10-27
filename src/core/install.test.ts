@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 const fake = mkdtempSync(join(tmpdir(), 'hub-inst-'));
 process.env['USERPROFILE'] = fake; process.env['HOME'] = fake; process.env['AGENT_HUB_HOME'] = join(fake, '.agent-hub');
+process.env['HUB_GRAPHIFY'] = 'off';   // graph features are tested on their own; these tests must not depend on whether this PC has graphify
 const mk = (p: string, t: string): void => { mkdirSync(join(p, '..'), { recursive: true }); writeFileSync(p, t); };
 mk(join(fake, '.agents', 'skills', 'graphify', 'SKILL.md'), '---\nname: graphify\ndescription: Graph.\nlicense: MIT\n---\nv1');
 // Claude plugin cache + settings, Codex config

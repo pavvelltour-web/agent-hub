@@ -20,6 +20,7 @@ function say(r) {
   if (r.source === 'audit') {
     if (m.startsWith('apply-plan')) return 'Hub записал файлы в проект (после вашего подтверждения, есть резервная копия)';
     if (m.startsWith('undo')) return 'Изменение файлов отменено';
+    if (m.startsWith('graph-update')) return /"ok":true/.test(m) ? 'Граф проекта обновлён (graphify, без модели)' : 'Граф проекта не обновился';
     if (m.startsWith('approve-stage')) return 'Шаг проекта подтверждён';
     return m;
   }

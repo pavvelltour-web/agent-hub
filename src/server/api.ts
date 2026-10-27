@@ -7,6 +7,7 @@ import { loadMatrix } from '../adapters/probe.ts';
 import { applyWorkMode, loadWorkModes } from '../core/workmodes.ts';
 import { applyPlan, describe, listBackups, undoBackup } from '../core/plan.ts';
 import { planInit, listPacks } from '../core/init.ts';
+import { graphStatus, locateGraphify, updateGraph, type GraphTool } from '../core/graph.ts';
 import { addSkillRoot, HUB_HOME, library, loadUserConfig, removeSkillRoot, REPO_ROOT, saveUserConfig, skillRoots } from '../core/registry.ts';
 import { scout } from '../core/scout.ts';
 import { fetchAitmpl, searchGithub } from '../core/scout-remote.ts';
@@ -42,7 +43,9 @@ import { MAX_DIFF_BYTES, SEED_CASES_DIR, caseFromFinding, caseSummary, incidentC
 import { getReview } from '../review/store.ts';
 import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
 
-export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; seedDir?: string; baselinePath?: string } }
+export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; seedDir?: string; baselinePath?: string };
+  /** Tests: which graphify to use (`tool: null` = none). Without it the hub looks for graphify on this PC. */
+  graph?: { tool?: GraphTool | null } }
 export interface Res { status: number; json?: unknown }
 type Body = Record<string, unknown>;
 type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
@@ -53,6 +56,8 @@ const bad = (status: number, error: string): Res => ({ status, json: { error } }
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) + '…' : s);
 const num = (v: unknown): number | undefined => (v === undefined || v === null || v === '' ? undefined : Number.isFinite(Number(v)) ? Number(v) : undefined);
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v : undefined);
+
+const graphToolOf = (c: Ctx): GraphTool | undefined => (c.graph && 'tool' in c.graph ? c.graph.tool ?? undefined : locateGraphify());
 
 function rootOf(c: Ctx, id: number | undefined): string {
   const r = id == null ? undefined : (c.db.prepare('SELECT root FROM project WHERE id = ?').get(id) as { root: string } | undefined)?.root;
@@ -266,11 +271,22 @@ const ROUTES: [string, RegExp, Handler][] = [
     if (!existsSync(root)) return bad(400, 'project folder is missing on disk');
     const ids = (k: string): string[] => (Array.isArray(body[k]) ? (body[k] as unknown[]).filter((x): x is string => typeof x === 'string') : []);
     const hubType = ((): string | undefined => { try { return (JSON.parse(readFileSync(join(root, 'hub.json'), 'utf8')) as { project?: { type?: string } }).project?.type; } catch { return undefined; } })();
-    let plan; try { plan = planInit(root, { type: str(body['type']) ?? hubType ?? 'web-saas', extra: ids('extra'), remove: ids('remove') }); } catch (e) { return bad(400, (e as Error).message); }
+    let plan; try { plan = planInit(root, { type: str(body['type']) ?? hubType ?? 'web-saas', extra: ids('extra'), remove: ids('remove'), graphify: graphToolOf(c) ?? null }); } catch (e) { return bad(400, (e as Error).message); }
     if (params[0] === 'plan') return ok({ lines: describe(plan), notes: plan.notes, missing: plan.missing, selected: plan.selected.map((e) => e.id), changes: plan.changes.map((ch) => ({ path: ch.path.slice(root.length + 1).replace(/\\/g, '/'), action: ch.action, note: ch.note ?? null, before: ch.before === null ? null : clip(ch.before, 3000), after: ch.action === 'link' ? ch.after : clip(ch.after, 3000) })) });
     if (body['approved'] !== true) return bad(400, 'apply needs approved: true');
     const r = applyPlan(plan, { approved: true });
     return ok({ backupId: r.backupId, written: r.written.length, fallbacks: r.fallbacks });
+  }],
+  // ---- project graph (graphify): status, and a background update the user approved. The tool writes only <project>/graphify-out; see ADR-021.
+  ['GET', /^\/api\/graph$/, (c, { q }) => ok({ available: !!graphToolOf(c), ...graphStatus(rootOf(c, num(q.get('project')))) })],
+  ['POST', /^\/api\/graph\/update$/, (c, { body }) => {
+    const root = rootOf(c, num(body['projectId']));
+    if (!existsSync(root)) return bad(400, 'project folder is missing on disk');
+    if (body['approved'] !== true) return bad(400, 'update needs approved: true');
+    const tool = graphToolOf(c);
+    if (!tool) return bad(400, 'graphify was not found on this computer');
+    const r = updateGraph(root, { tool, home: c.runs.home });
+    return r.started ? ok({ started: true }) : bad(r.reason === 'already running' ? 409 : 400, r.reason ?? 'not started');
   }],
   // ---- review rules: repeated bug classes -> one line in the project's REVIEW.md. Writes go through the same plan -> approval -> backup -> undo flow as init.
   ['GET', /^\/api\/projects\/(\d+)\/review-rules$/, (c, { params }) => {

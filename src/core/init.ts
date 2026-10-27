@@ -7,6 +7,7 @@ import { compileAll } from './compilers.ts';
 import { change, effective } from './plan.ts';
 import { REPO_ROOT, library } from './registry.ts';
 import { compileReviewMd } from '../review/reviewmd.ts';
+import { graphStatus, GRAPHIGNORE, locateGraphify, type GraphTool } from './graph.ts';
 import type { FileChange, HubConfig, Lock, LockEntry, Plan, RegistryEntry } from './types.ts';
 
 export interface Pack { id: string; title: string; mandatory: string[]; tags: string[] }
@@ -37,8 +38,10 @@ export function buildLock(selected: RegistryEntry[], now = new Date()): Lock {
  * Build the write plan for `hub init`. Pure: reads the project and the library, writes nothing.
  * `extra` = ids chosen on top of the project type's mandatory set; tools chosen earlier (toolkit.json) are kept.
  * `remove` = skill ids to take out of this project: only the project's links are removed, never the skill itself.
+ * `graphify` = how to start graphify (undefined: look for it on this PC; null: not available). When it is available the plan adds a `.graphifyignore`
+ * (never replacing the user's own) and a note offering to build or refresh the project graph (the build itself is a separate, approved action).
  */
-export function planInit(root: string, opts: { type: string; extra?: string[]; remove?: string[]; withCodex?: boolean }): Plan & { missing: string[]; selected: RegistryEntry[] } {
+export function planInit(root: string, opts: { type: string; extra?: string[]; remove?: string[]; withCodex?: boolean; graphify?: GraphTool | null }): Plan & { missing: string[]; selected: RegistryEntry[] } {
   if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`not a directory: ${root}`);
   const pack = loadPack(opts.type);
   const lib = library(root);
@@ -65,7 +68,10 @@ export function planInit(root: string, opts: { type: string; extra?: string[]; r
   changes.push(...compileReviewMd(root, opts.type));
   for (const id of drop) for (const d of ['.claude', '.agents']) { const p = join(root, d, 'skills', id.slice('skill/'.length)); try { if (lstatSync(p).isSymbolicLink()) changes.push({ path: p, action: 'unlink', before: null, after: '', note: 'tool removed from this project' }); } catch { /* not linked */ } }
   changes.push(change(join(root, 'hub.lock.json'), JSON.stringify(buildLock(selected, new Date(0)), null, 2) + '\n', 'versions + hashes'));
-  const plan = effective({ root, changes, notes: [!agents.claude.installed ? 'Claude Code не найден на этом компьютере' : '', !agents.codex.installed ? 'Codex не найден на этом компьютере' : '',
+  const graphTool = opts.graphify === undefined ? locateGraphify() : opts.graphify ?? undefined;
+  const graph = graphTool ? graphStatus(root).state : undefined;
+  if (graphTool && !existsSync(join(root, '.graphifyignore'))) changes.push(change(join(root, '.graphifyignore'), GRAPHIGNORE, 'что не попадает в граф проекта'));
+  const plan = effective({ root, changes, notes: [graph === 'missing' ? 'Граф проекта ещё не построен: после применения нажмите «Построить граф проекта» в разделе «Инструменты». Агенты будут читать граф, а не весь репозиторий.' : graph === 'stale' ? 'Граф проекта устарел: файлы изменились после его построения. В разделе «Инструменты» нажмите «Обновить граф».' : '',!agents.claude.installed ? 'Claude Code не найден на этом компьютере' : '', !agents.codex.installed ? 'Codex не найден на этом компьютере' : '',
     ...missing.map((m) => `Скилл «${m.replace(/^\w+\//, '')}» не найден на компьютере и пропущен. Если он лежит в своей папке, добавьте её в Настройках («Свои папки со скиллами»).`),
     ...selected.filter((e) => e.kind === 'skill' && e.source.type !== 'local').map((e) => `Скилл «${e.title}» не установлен${e.installCommand ? `. Установка: ${e.installCommand}` : ''}`)].filter(Boolean) });
   return { ...plan, missing, selected };

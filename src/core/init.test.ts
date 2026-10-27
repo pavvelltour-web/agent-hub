@@ -7,6 +7,7 @@ import { join } from 'node:path';
 // Isolate from the real machine: fake HOME, own hub home.
 const fake = mkdtempSync(join(tmpdir(), 'hub-init-'));
 process.env['USERPROFILE'] = fake; process.env['HOME'] = fake; process.env['AGENT_HUB_HOME'] = join(fake, '.agent-hub');
+process.env['HUB_GRAPHIFY'] = 'off';   // graph features are tested on their own; these tests must not depend on whether this PC has graphify
 after(() => { rmSync(fake, { recursive: true, force: true }); });
 
 const { planInit } = await import('./init.ts');

@@ -144,7 +144,50 @@ export async function toolsPanel({ projectId, initialTab }) {
   const suggest = btn('Убрать лишнее', { kind: 'glass', icon: 'spark', title: 'Оставит то, что нужно этому типу проекта; остальные скиллы станут «только название», ненужные плагины выключатся. Ничего не меняется без вашего подтверждения.', onclick: keepOnly });
 
   redraw();
-  return { node: h('div.stack', setup, summary, h('div.row-flex', { style: { justifyContent: 'space-between' } }, tabs, suggest), searchBox, body, bar), cleanup() {} };
+  const graph = graphCard(projectId);
+  return { node: h('div.stack', setup, graph.node, summary, h('div.row-flex', { style: { justifyContent: 'space-between' } }, tabs, suggest), searchBox, body, bar), cleanup() { graph.cleanup(); } };
+}
+
+/**
+ * The project graph (graphify): built / stale / missing, and the button that builds or refreshes it. The update runs in the background on the
+ * server; this card polls while it runs. Nothing starts without the confirmation: the tool reads the project and writes only `graphify-out`.
+ */
+function graphCard(projectId) {
+  const box = h('section.plane.card.stack', { 'aria-label': 'Граф проекта' });
+  let st = null, timer = null, wasRunning = false;
+  const load = async () => {
+    try { st = await api.get('/graph' + qs({ project: projectId }), true); } catch { st = null; }
+    if (wasRunning && st && !st.running) toast(st.last?.ok ? 'Граф обновлён' : 'Граф не обновился: ' + (st.last?.message || 'неизвестная ошибка'), st.last?.ok ? 'ok' : 'err');
+    wasRunning = !!st?.running;
+    clearTimeout(timer);
+    if (st?.running) timer = setTimeout(load, 1500);
+    draw();
+  };
+  const confirmRun = () => {
+    const dlg = dialog(h('div.stack',
+      h('div.bar', h('h2.t-title', 'Построить граф проекта'), closeBtn()),
+      h('p', 'Hub запустит graphify в папке проекта. Он прочитает файлы проекта, кроме перечисленных в .graphifyignore, и запишет только папку graphify-out. Модель не вызывается, сеть не нужна.'),
+      h('p.t-meta', 'Изменения в документах и картинках граф подхватит агент командой /graphify . --update.'),
+      h('div.foot', btn('Отмена', { kind: 'glass', onclick: () => dlg.close() }),
+        btn('Запустить', { kind: 'primary', onclick: async () => { dlg.close(); try { await api.post('/graph/update', { projectId, approved: true }); } catch { return; } toast('Граф строится в фоне', 'ok'); wasRunning = true; await load(); } }))));
+  };
+  function draw() {
+    if (!st) { box.replaceChildren(h('div.t-heading', 'Граф проекта'), h('p.t-meta', 'Не удалось получить состояние графа.')); return; }
+    const [tone, label] = !st.available ? ['line', 'недоступен'] : st.running ? ['warn', 'строится'] : st.state === 'built' ? ['ok', 'построен'] : st.state === 'stale' ? ['warn', 'устарел'] : ['line', 'не построен'];
+    const text = !st.available ? 'graphify не найден на этом компьютере. Без него граф построить нельзя.'
+      : st.running ? 'Идёт построение. Можно заняться другим: оно работает в фоне.'
+      : st.state === 'missing' ? 'Пока графа нет: агент тратит токены на перебор файлов. С графом он спрашивает карту и открывает только нужные места.'
+      : st.state === 'stale' ? `Файлов изменилось после построения: ${st.staleFiles}${st.example ? ` (например, ${st.example})` : ''}. Граф ещё полезен, но может не знать о новом коде.`
+      : `Построен ${fmt.date(st.builtAt)}. Агенты читают граф, а не перебирают репозиторий.`;
+    const failed = !st.running && st.last && !st.last.ok;
+    box.replaceChildren(
+      h('div.row-flex', { style: { justifyContent: 'space-between', flexWrap: 'wrap' } }, h('div.row-flex', h('div.t-heading', 'Граф проекта'), chip(label, tone)),
+        btn(st.state === 'missing' ? 'Построить граф проекта' : 'Обновить граф', { kind: st.state === 'built' ? 'glass' : 'primary', icon: 'spark', disabled: !st.available || st.running, onclick: confirmRun })),
+      h('p', text),
+      failed ? h('div.alert.warn', icon('alert'), h('div', `Последняя попытка не удалась: ${st.last.message}`)) : null);
+  }
+  load();
+  return { node: box, cleanup() { clearTimeout(timer); } };
 }
 
 const EXAMPLES = ['тесты для сайта', 'работа с PDF', 'дизайн интерфейса', 'база данных', 'деплой', 'Telegram-бот'];

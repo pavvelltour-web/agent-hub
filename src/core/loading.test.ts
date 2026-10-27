@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 const fake = mkdtempSync(join(tmpdir(), 'hub-load-'));
 process.env['USERPROFILE'] = fake; process.env['HOME'] = fake; process.env['AGENT_HUB_HOME'] = join(fake, '.agent-hub');
+process.env['HUB_GRAPHIFY'] = 'off';   // graph features are tested on their own; these tests must not depend on whether this PC has graphify
 const mk = (p: string, t: string): void => { mkdirSync(join(p, '..'), { recursive: true }); writeFileSync(p, t); };
 const skill = (dir: string, name: string, desc: string): void => mk(join(dir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${desc}\n---\nbody`);
 skill(join(fake, '.claude', 'skills'), 'claude-global', 'Loaded by Claude in every project. '.repeat(4));

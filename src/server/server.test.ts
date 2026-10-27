@@ -24,7 +24,8 @@ const runs = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe } });
 const env = (): void => { runs['opts'].env = { ...process.env, FAKE_SCENARIO: scenario.v }; };
 env();
 const stub = { picked: null as string | null, opened: [] as string[], loggedIn: false };
-const srv = await startServer({ db, runs, agents: () => ({ claude: { installed: true, version: 'fake', path: 'C:/fake/claude.exe' }, codex: { installed: true, version: 'fake', path: 'C:/fake/codex.exe' } }), auth: (id) => ({ loggedIn: id === 'codex' ? true : stub.loggedIn, how: id === 'codex' ? 'ChatGPT' : '' }), native: { pickFolder: () => ({ path: stub.picked }), openLogin: (id) => { stub.opened.push(id); } } });
+const graphCtx = { tool: null as { cmd: string; prefix: string[] } | null };   // graph features off unless a test sets a (fake) graphify
+const srv = await startServer({ db, runs, graph: graphCtx, agents: () => ({ claude: { installed: true, version: 'fake', path: 'C:/fake/claude.exe' }, codex: { installed: true, version: 'fake', path: 'C:/fake/codex.exe' } }), auth: (id) => ({ loggedIn: id === 'codex' ? true : stub.loggedIn, how: id === 'codex' ? 'ChatGPT' : '' }), native: { pickFolder: () => ({ path: stub.picked }), openLogin: (id) => { stub.opened.push(id); } } });
 after(async () => { await srv.close(); });
 const base = `http://127.0.0.1:${srv.port}`;
 const cookie = `hub_token=${srv.token}`;
@@ -441,4 +442,45 @@ test('GET /api/sessions/:id/events: pages of the session file, path comes from t
   assert.equal((await ev('claude:weird')).status, 400);
   const pathParam = await ev('claude:a', `?limit=2&path=${encodeURIComponent(other)}&source_path=${encodeURIComponent(other)}`);
   assert.equal(pathParam.json.events.length, 2); assert.equal(pathParam.json.events[0].kind, 'user', 'a path in the request is ignored');
+});
+
+// ── graph as a project tool: status and background update over the API (ADR-021) ───────────────────────────────────────────────────────
+test('graph API: status says built/stale/missing; update needs approval and an available graphify, runs in the background, one at a time, and lands in the Journal', async () => {
+  const { utimesSync } = await import('node:fs');
+  const root = mkRepo(); writeFileSync(join(root, 'a.py'), 'x = 1\n');
+  const p = await api('/api/projects', { method: 'POST', body: { path: root } }); const id = p.json.id;
+  const scriptDir = mkdtempSync(join(tmpdir(), 'hub-srvgraph-')); const script = join(scriptDir, 'g.mjs');
+  writeFileSync(script, `import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path';\nconst a = process.argv.slice(2);\nawait new Promise((r) => setTimeout(r, 700));\nmkdirSync(join(a[1], 'graphify-out'), { recursive: true }); writeFileSync(join(a[1], 'graphify-out', 'graph.json'), '{}'); console.log('Code graph updated.');\n`);
+  try {
+    graphCtx.tool = null;
+    const none = await api(`/api/graph?project=${id}`);
+    assert.equal(none.status, 200); assert.equal(none.json.available, false); assert.equal(none.json.state, 'missing');
+    assert.equal((await api('/api/graph/update', { method: 'POST', body: { projectId: id, approved: true } })).status, 400, 'graphify not available');
+
+    graphCtx.tool = { cmd: process.execPath, prefix: [script] };
+    assert.equal((await api(`/api/graph?project=${id}`)).json.available, true);
+    assert.equal((await api('/api/graph/update', { method: 'POST', body: { projectId: id } })).status, 400, 'no approval: refused');
+    assert.equal((await api('/api/graph/update', { method: 'POST', body: { projectId: 99999, approved: true } })).status, 404, 'unknown project');
+    assert.equal((await api('/api/graph/update', { method: 'POST', body: { approved: true } })).status, 404, 'no project');
+    assert.equal((await api('/api/graph/update', { method: 'POST', body: { projectId: id, approved: 'yes' } })).status, 400, 'only a real true counts');
+
+    const started = await api('/api/graph/update', { method: 'POST', body: { projectId: id, approved: true } });
+    assert.equal(started.status, 200); assert.equal(started.json.started, true);
+    assert.equal((await api('/api/graph/update', { method: 'POST', body: { projectId: id, approved: true } })).status, 409, 'already running');
+    assert.equal((await api(`/api/graph?project=${id}`)).json.running, true);
+    let st = (await api(`/api/graph?project=${id}`)).json;
+    for (let i = 0; i < 40 && st.running; i++) { await new Promise((r) => setTimeout(r, 150)); st = (await api(`/api/graph?project=${id}`)).json; }
+    assert.equal(st.running, false); assert.equal(st.state, 'built'); assert.equal(st.last.ok, true); assert.match(st.last.message, /Code graph updated/);
+    assert.ok(existsSync(join(root, 'graphify-out', 'graph.json')));
+    // the user's own files were not touched by the update
+    assert.equal(readFileSync(join(root, 'a.py'), 'utf8'), 'x = 1\n');
+
+    const t = new Date(Date.now() + 60_000); utimesSync(join(root, 'a.py'), t, t);
+    const stale = (await api(`/api/graph?project=${id}`)).json;
+    assert.equal(stale.state, 'stale'); assert.equal(stale.example, 'a.py'); assert.equal(stale.staleFiles, 1);
+
+    const logs = await api(`/api/logs?project=${id}`);
+    assert.ok(logs.json.some((r: any) => r.source === 'audit' && /graph-update/.test(r.message)), 'the update is in the Journal');
+    assert.equal((await api('/api/graph')).status, 404, 'status needs a project');
+  } finally { graphCtx.tool = null; rmSync(scriptDir, { recursive: true, force: true }); }
 });
