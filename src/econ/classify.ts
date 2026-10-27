@@ -5,6 +5,8 @@ import type { TaskClass } from './router.ts';
  * Every hit adds evidence for a class; evidence of a class combines as 1 - Π(1 - weight). Confidence = the winner's evidence, cut by half of the runner-up's
  * (two classes with strong evidence = ambiguous). Below CONFIDENT the UI asks the user instead of guessing; with no hit at all the answer is `implement`
  * at 0.2: a placeholder the user is asked to confirm, never a silent pick.
+ * Safety rule: a critical-decision word (ADR, irreversible, security boundary) is never outvoted by weaker evidence for another class: the strictest type wins,
+ * at the evidence of its own words (>= 0.7), and `why` says so. Choosing a lower type is the user's act, never the classifier's.
  */
 export const CONFIDENT = 0.6;
 export interface Classified { cls: TaskClass; confidence: number; why: string }
@@ -58,6 +60,11 @@ export function classify(prompt: string): Classified {
   const scored = [...left].map(([cls, l]) => [cls, 1 - l] as const).sort((a, b) => b[1] - a[1]);
   const top = scored[0];
   if (!top) return { cls: 'implement', confidence: 0.2, why: ru ? 'опорных слов не нашлось' : 'no keyword matched' };
+  const crit = scored.find(([c]) => c === 'critical_adr');
+  if (crit && top[0] !== 'critical_adr') {
+    const named = [...new Set(words.get('critical_adr'))].slice(0, 3).join(', ');
+    return { cls: 'critical_adr', confidence: Math.round(crit[1] * 100) / 100, why: (ru ? `по словам: ${named}. В тексте есть слово о необратимом или критическом решении, поэтому выбран самый строгий тип; его можно понизить` : `by words: ${named}. The text names a critical or irreversible decision, so the strictest type is set; you can lower it`) };
+  }
   const second = scored[1]?.[1] ?? 0;
   const found = [...new Set(words.get(top[0]))].slice(0, 4).join(', ');
   return { cls: top[0], confidence: Math.round(top[1] * (1 - second / 2) * 100) / 100, why: (ru ? 'по словам: ' : 'by words: ') + found };

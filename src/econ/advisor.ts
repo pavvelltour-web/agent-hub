@@ -5,7 +5,7 @@ import { agentOf, EFFORT, MODEL_ID, modelKey, rank, type EffortLevel, type Model
 
 export type { TaskClass, ModelStats, Option, EffortLevel };
 export interface Pick { agent: AgentId; model: string; effort: string }
-export interface Choice extends Pick { rule: string; reason: string; basis?: Basis[]; alt?: Pick & { why: string }; options?: (Option & { chosen: boolean })[] }
+export interface Choice extends Pick { rule: string; reason: string; /** the price behind this pick comes from the user's own prices.json */ overridden?: boolean; basis?: Basis[]; alt?: Pick & { why: string; overridden?: boolean }; options?: (Option & { chosen: boolean })[] }
 
 /** Starting table (author's decision: Opus plans, Sonnet works, Haiku summarizes). Used for guard rails, the diagram and as the prior of the optimizer. */
 export const ROUTING: Record<TaskClass, { model: string; effort: string; reason: string }> = {
@@ -69,13 +69,13 @@ export function advise(i: AdviseIn): Choice {
   const withOpts = (c: Choice, chosen: Option | undefined): Choice => {
     const best: Option[] = [];
     for (const o of ranked) if (!best.some((b) => b.family === o.family)) best.push(chosen && chosen.family === o.family ? chosen : o);
-    return { ...c, options: best.slice(0, 5).map((o) => ({ ...o, chosen: !!chosen && o.key === chosen.key })) };
+    return { ...c, overridden: !!chosen?.overridden, options: best.slice(0, 5).map((o) => ({ ...o, chosen: !!chosen && o.key === chosen.key })) };
   };
   const altFor = (win: AgentId): Choice['alt'] => {
     const other = ranked.find((o) => o.agent !== win);
     if (!other) return undefined;
     const outOfLimit = win === 'claude' ? codexFull : claudeFull;
-    return { ...pickOf(other), why: outOfLimit ? 'Тоже без запаса.' : win === 'claude' ? 'Подойдёт как второе мнение или когда у Claude закончится лимит.' : `Подойдёт, если нужен привычный стиль, но у него осталось ${cl != null ? Math.round(cl) + '%' : 'меньше'}.` };
+    return { ...pickOf(other), overridden: other.overridden, why: outOfLimit ? 'Тоже без запаса.' : win === 'claude' ? 'Подойдёт как второе мнение или когда у Claude закончится лимит.' : `Подойдёт, если нужен привычный стиль, но у него осталось ${cl != null ? Math.round(cl) + '%' : 'меньше'}.` };
   };
 
   if (claudeFull && codexFull) return withOpts({ agent: 'claude', model: forced?.model ?? base.model, effort: forced?.effort ?? base.effort, rule: 'limit:both', reason: 'Лимиты обоих агентов исчерпаны: подождите ближайшего сброса (он показан на странице «Модели»).', alt: { agent: 'codex', model: gpt, effort: 'medium', why: 'Тоже без запаса.' } }, undefined);

@@ -56,8 +56,27 @@ test('strategies on history rows: manual = what the user actually ran; limit sto
   assert.deepEqual([by(r, 'cheap-first').costPerSolved, by(r, 'cheap-first').label], [1.25, 'estimated']);
   const withUnclassified = compareStrategies([...hist, out(S, 'high', { cls: 'unclassified', runs: 1, done: 1, costUsd: 0.1 })]);
   assert.equal(by(withUnclassified, 'router').costPerSolved, 0.666667, 'runs without a task type have no router pick and are left out of it (no crash)');
-  assert.equal(by(withUnclassified, 'manual').n, 7);
+  assert.equal(by(withUnclassified, 'manual').n, 6, 'review S6: compared on the types the router also covers; the unclassified run is outside the common set');
+  assert.equal(by(withUnclassified, 'manual').label, 'estimated');
+  assert.deepEqual([by(withUnclassified, 'manual').types, by(withUnclassified, 'manual').typesOf], [1, 2]);
   const withCal = compareStrategies(hist, { mwPerPct: () => 2 });
   assert.equal(by(withCal, 'router').limitPctPerSolved, 0.666667);
   assert.equal(by(withCal, 'router').label, 'estimated', 'a limit share computed from a calibration is not a measurement');
+});
+
+test('strategies (review S6): strategies covering different task mixes are compared on the types all of them cover, say how many, and are "estimated" where the mixes differ', () => {
+  // t1 has the dearest pair (opus:max); t2 never ran it. The router's pick (sonnet:high) ran on both.
+  const mixed: BenchRow[] = [bench('t1', S, 'high', true, 0.2), bench('t1', O, 'max', true, 2), bench('t2', S, 'high', true, 0.4)];
+  const r = compareStrategies(mixed, { clsOf, routerPick: () => 'sonnet:high' });
+  assert.deepEqual([by(r, 'always-max').costPerSolved, by(r, 'always-max').n, by(r, 'always-max').label], [2, 1, 'measured'], 'covers exactly the common set: still measured');
+  assert.deepEqual([by(r, 'router').costPerSolved, by(r, 'router').n, by(r, 'router').label], [0.2, 1, 'estimated'], 'only t1 compared although it also ran t2');
+  assert.deepEqual(r.map((x) => [x.types, x.typesOf]), [[1, 2], [1, 2], [1, 2], [1, 2]]);
+  assert.equal(by(r, 'cheap-first').label, 'estimated');
+  // identical mixes: everything measured, every type compared
+  const same = compareStrategies(rows, { clsOf, routerPick: () => 'opus:high' });
+  assert.deepEqual([by(same, 'always-max').label, by(same, 'router').label], ['measured', 'measured']);
+  assert.deepEqual(same.map((x) => [x.types, x.typesOf]), [[2, 2], [2, 2], [2, 2], [2, 2]]);
+  // no common type at all: nothing is compared, nothing is invented
+  const none = compareStrategies([bench('t1', S, 'high', true, 0.2), bench('t2', O, 'max', true, 2)], { clsOf, routerPick: () => 'sonnet:high' });
+  assert.deepEqual([by(none, 'always-max').costPerSolved, by(none, 'router').costPerSolved, by(none, 'always-max').types, by(none, 'always-max').typesOf], [null, null, 0, 2]);
 });

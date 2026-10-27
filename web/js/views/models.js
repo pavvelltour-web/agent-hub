@@ -73,12 +73,12 @@ async function overview() {
     result.replaceChildren(
       h('div.pick-card.plane.card.stack',
         h('span.t-meta', 'Лучше всего'),
-        h('div.row-flex', agentBadge(c.agent, modelName(guide, c.agent, shortModel(c.agent, c.model))), chip('мышление: ' + (EFFORT_RU[c.effort] || c.effort), 'line')),
+        h('div.row-flex', agentBadge(c.agent, modelName(guide, c.agent, shortModel(c.agent, c.model))), chip('мышление: ' + (EFFORT_RU[c.effort] || c.effort), 'line'), c.overridden ? chip('цена изменена вручную', 'warn', 'Выбор опирается на цену из вашего файла prices.json, а не из каталога') : null),
         h('p', c.reason),
         h('div.row-flex', chip(`≈ ${fmt.tok(tokens)}–${fmt.tok(tokensHi)} токенов`, 'line'), e.usd ? chip(`≈ $${e.usd.low}–$${e.usd.high}`, 'line') : null, e.percent ? chip(pctText(e.percent), 'line') : null, chip(e.confidence === 'low' ? 'прогноз грубый' : 'прогноз средней точности', e.confidence === 'low' ? 'warn' : 'ok')),
         e.notes.length ? h('details', h('summary.t-meta', 'Почему прогноз неточный'), h('ul.t-meta', { style: { margin: '6px 0 0', paddingLeft: '18px' } }, e.notes.map((n) => h('li', n)))) : null),
-      c.options ? h('div.plate.card.tight.stack', h('b.t-label', 'Карта: качество и цена'), qualityMap(c.options), h('p.t-meta', rt.observedRuns >= 3 ? `Чем ближе точка к «идеалу», тем лучше выбор. Качество считается по вашим оценкам задач (учтено запусков: ${rt.observedRuns}), а где данных мало, берётся оценка автора.` : 'Чем ближе точка к «идеалу», тем лучше выбор. Пока качество — оценка автора: оценивайте задачи в чате («Получилось?»), и карта станет вашей.')) : null,
-      alt ? h('div.plate.card.tight.row-flex', h('span.t-meta', 'Запасной вариант:'), agentBadge(alt.agent, modelName(guide, alt.agent, shortModel(alt.agent, alt.model))), alt.effort ? chip('мышление: ' + (EFFORT_RU[alt.effort] || alt.effort), 'line') : null, h('span.t-meta.grow', alt.why)) : null);
+      c.options ? h('div.plate.card.tight.stack', h('b.t-label', 'Карта: качество и цена'), qualityMap(c.options), c.options.some((o) => o.overridden) ? h('div.row-flex', chip('цена изменена вручную', 'warn'), h('span.t-meta', 'у моделей: ' + c.options.filter((o) => o.overridden).map((o) => FAMILY_RU[o.family] || o.family).join(', ') + '. Если Fable, то сдвинуты цены всех моделей.')) : null, h('p.t-meta', rt.observedRuns >= 3 ? `Чем ближе точка к «идеалу», тем лучше выбор. Качество считается по вашим оценкам задач (учтено запусков: ${rt.observedRuns}), а где данных мало, берётся оценка автора.` : 'Чем ближе точка к «идеалу», тем лучше выбор. Пока качество — оценка автора: оценивайте задачи в чате («Получилось?»), и карта станет вашей.')) : null,
+      alt ? h('div.plate.card.tight.row-flex', h('span.t-meta', 'Запасной вариант:'), agentBadge(alt.agent, modelName(guide, alt.agent, shortModel(alt.agent, alt.model))), alt.effort ? chip('мышление: ' + (EFFORT_RU[alt.effort] || alt.effort), 'line') : null, alt.overridden ? chip('цена изменена вручную', 'warn') : null, h('span.t-meta.grow', alt.why)) : null);
   }
   ask();
 
@@ -102,18 +102,26 @@ async function overview() {
         h('li', 'Если шаг не получается дважды, добавляется мышление; трижды — переход на Opus.'),
         h('li', 'Код, написанный Claude, проверяет GPT, и наоборот: чужие ошибки видно лучше.'),
         h('li', 'Если у Claude лимит почти кончился, а у Codex запас есть, работа уходит в Codex. Если кончились оба, hub предложит подождать сброса.')))),
-    h('section.group', sectionHead('Сколько стоит решённая задача'), h('div.plane.card.tight.stack', h('p.t-meta', { style: { padding: '0 6px' } }, 'Главное число — доля недельного лимита подписки на одну решённую задачу; доллары по цене API нужны для сравнения. «Замерено» — числа взяты из настоящих запусков; «прикидка» — часть числа посчитана (цена по токенам, доля лимита по калибровке или цепочка из раздельных запусков).'), h('div', { style: { overflowX: 'auto' } }, strategyTable(oc.strategies)))),
+    h('section.group', sectionHead('Сколько стоит решённая задача'), h('div.plane.card.tight.stack', h('p.muted', { style: { padding: '0 6px', margin: 0 } }, 'Главное число — доля недельного лимита подписки на одну решённую задачу; доллары по цене API нужны для сравнения. «Замерено» — числа взяты из настоящих запусков; «прикидка» — часть числа посчитана (цена по токенам, доля лимита по калибровке или цепочка из раздельных запусков).'), h('div', { style: { overflowX: 'auto' } }, strategyTable(oc.strategies)), strategyScope(oc.strategies))),
     reviewQuality(rq),
     h('section.group', sectionHead('Расход за 30 дней', h('span.t-meta', `цены Claude проверены ${dateRu(m.pricesVerifiedAt)}; остальные и ваши правки — в настройках`)), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, usage)),
     h('details.group', h('summary', h('span.t-heading', 'Точность прогнозов')), h('p.t-meta', 'Прогноз и факт в миллионах токенов с учётом кэша. Чем больше запусков, тем точнее советы.'), h('div.plane.card.tight', { style: { overflowX: 'auto' } }, outcomes))) };
 }
 
+const FAMILY_RU = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT' };
 const STRATEGY_RU = { 'always-max': ['Всегда самая сильная модель', 'самая дорогая пара «модель + мышление» из ваших запусков'], manual: ['Как вы выбирали сами', 'всё, что вы запускали'], 'cheap-first': ['Сначала дешёвая, не вышло — дороже', 'считается по раздельным запускам, это прикидка'], router: ['Выбор hub', 'пара, которую hub выбрал бы для типа задачи'] };
 /** «Сколько стоит решённая задача»: four ways to pick a model, on the user's own runs. «нет данных» is not zero; «прикидка» = some number is computed, not read off real runs. */
+/** «сравнено по N типам из M»: the four rows are compared only on the task types every one of them has runs for. */
+function strategyScope(rows) {
+  const r = Array.isArray(rows) ? rows.find((x) => typeof x.typesOf === 'number') : null;
+  if (!r || !r.typesOf || r.types >= r.typesOf) return null;
+  return h('p.muted', { style: { padding: '0 6px', margin: 0 }, role: 'note' }, `Сравнено по ${r.types} типам из ${r.typesOf}: берутся только типы задач, на которых запускались все способы. Поэтому числа ниже «прикидка», где у способа были и другие типы.`);
+}
 function strategyTable(rows) {
   const usd = (v) => (typeof v === 'number' ? (v < 0.01 ? '<$0.01' : '$' + v.toFixed(2)) : h('span.t-meta', 'нет данных'));
   const pct = (v) => (typeof v === 'number' ? (v < 0.1 ? '<0,1%' : (Math.round(v * 10) / 10).toLocaleString('ru-RU') + '%') : h('span.t-meta', 'нет данных'));
   const list = Array.isArray(rows) ? rows.filter((r) => STRATEGY_RU[r.strategy]) : [];
+  if (list.length && list[0].typesOf > 0 && list[0].types === 0) return empty('Нечего сравнить', `Способы выбора запускались на разных типах задач, общих нет (всего типов: ${list[0].typesOf}). Запустите ещё несколько задач разных типов.`);
   return list.some((r) => r.n > 0) ? h('table.tbl', h('thead', h('tr', h('th', 'Способ выбора'), h('th.r', 'Подписка: % недели за решённую'), h('th.r', 'По API: $ за решённую'), h('th.r.hide-s', 'Попыток'), h('th', 'Данные'))),
     h('tbody', list.map((r) => h('tr', h('td', h('b', STRATEGY_RU[r.strategy][0]), h('div.t-meta', STRATEGY_RU[r.strategy][1])), h('td.r.num', pct(r.limitPctPerSolved)), h('td.r.num', usd(r.costPerSolved)), h('td.r.num.hide-s', r.n), h('td', r.n ? chip(r.label === 'measured' ? 'замерено' : 'прикидка', r.label === 'measured' ? 'ok' : 'warn') : null)))))
     : empty('Пока нечего сравнивать', 'Когда вы запустите несколько задач и они закончатся, здесь появится сравнение способов выбора модели.');

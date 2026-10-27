@@ -64,15 +64,15 @@ function start(projects, models, state) {
     if (!r) return;
     const c = r.choice, e = r.estimate, alt = c.alt;
     advice.replaceChildren(
-      h('div.row-flex', agentBadge(c.agent, modelName(guide, c.agent, shortModel(c.agent, c.model))), chip('мышление: ' + (({ low: 'быстро', medium: 'обычно', high: 'глубоко', max: 'максимум' })[c.effort] || c.effort), 'line')),
+      h('div.row-flex', agentBadge(c.agent, modelName(guide, c.agent, shortModel(c.agent, c.model))), chip('мышление: ' + (({ low: 'быстро', medium: 'обычно', high: 'глубоко', max: 'максимум' })[c.effort] || c.effort), 'line'), c.overridden ? chip('цена изменена вручную', 'warn', 'Выбор опирается на цену из вашего файла prices.json, а не из каталога') : null),
       h('p', c.reason),
       e?.percent ? h('span.t-meta', pctText(e.percent) + '.') : null,
-      alt ? h('div.row-flex', h('span.t-meta', `Можно и ${agentName(alt.agent)}: ${alt.why}`), btn('Взять его', { kind: 'glass', class: 'btn-sm', onclick: () => { s.agent = alt.agent; s.model = shortModel(alt.agent, alt.model); s.effort = alt.effort; drawWho(); } })) : null);
+      alt ? h('div.row-flex', h('span.t-meta', `Можно и ${agentName(alt.agent)}: ${alt.why}`), alt.overridden ? chip('цена изменена вручную', 'warn') : null, btn('Взять его', { kind: 'glass', class: 'btn-sm', onclick: () => { s.agent = alt.agent; s.model = shortModel(alt.agent, alt.model); s.effort = alt.effort; drawWho(); } })) : null);
   }
 
   // The task type: read from the text as it is typed (pre-filled), always editable. Below the confidence bar the hub asks instead of guessing.
   let clsTouched = false, seq = 0, timer = 0;
-  const clsHint = h('span.t-meta', { role: 'status' });
+  const clsHint = h('p.muted', { role: 'status', style: { margin: 0 } });
   const clsSel = h('select.select', { 'aria-label': 'Тип задачи', onchange: (e) => { clsTouched = true; setCls(e.target.value); clsHint.textContent = ''; } },
     TASKS.map(([v, t]) => h('option', { value: v, selected: s.cls === v }, t)));
   function setCls(v) { s.cls = v; clsSel.value = v; if (s.agent === 'auto') ask(); }

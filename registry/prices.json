@@ -4,7 +4,7 @@
   "models": {
     "claude-fable-5-1": {
       "label": "Claude Fable 5.1", "tiers": [{ "input": 10, "cacheRead": 0.25, "output": 50 }],
-      "source": "Anthropic pricing page, Claude Fable 5.1 row", "url": "https://platform.claude.com/docs/en/about-claude/pricing", "date": "2026-10-27", "dateKind": "checked"
+      "source": "Anthropic pricing page, Claude Fable 5.1 row (cache hits 0.025x input, footnote 1: $0.25 on $10)", "url": "https://platform.claude.com/docs/en/about-claude/pricing", "date": "2026-10-27", "dateKind": "checked"
     },
     "claude-opus-5-5": {
       "label": "Claude Opus 5.5", "tiers": [{ "input": 4, "cacheRead": 0.2, "output": 20 }],

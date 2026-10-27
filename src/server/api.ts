@@ -21,7 +21,7 @@ import { advise, MODEL_GUIDE, ROUTING, type LimitState, type TaskClass } from '.
 import { calibrate, costUsd, effortProfiles, estimate, modelStats, outcomes, PRICES_VERIFIED_AT, profileFromHistory } from '../econ/econ.ts';
 import { compareStrategies } from '../econ/strategies.ts';
 import { classify } from '../econ/classify.ts';
-import { priceTable, saveOverride, type PriceTable } from '../econ/prices.ts';
+import { reloadPrices, saveOverride, type PriceTable } from '../econ/prices.ts';
 import { agentOf, modelKey } from '../econ/router.ts';
 import { PRIORS, TAGS } from '../econ/priors.ts';
 import { buildCases, exportCases, NEVER_INCLUDED } from '../econ/cases.ts';
@@ -47,7 +47,7 @@ export interface Res { status: number; json?: unknown }
 type Body = Record<string, unknown>;
 type Handler = (c: Ctx, p: { params: string[]; q: URLSearchParams; body: Body }) => Res | Promise<Res>;
 
-const pricesJson = (t: PriceTable): Res => ok({ models: [...t.models.values()].map((e) => ({ ...e, overridden: t.overridden.has(e.id) })), rejected: t.rejected });
+const pricesJson = (t: PriceTable): Res => ok({ models: [...t.models.values()].map((e) => ({ ...e, overridden: t.overridden.has(e.id) })), rejected: t.rejected, rejectedRows: t.rejectedRows, ...(t.overrideProblem ? { overrideProblem: t.overrideProblem } : {}) });
 const ok = (json: unknown): Res => ({ status: 200, json });
 const bad = (status: number, error: string): Res => ({ status, json: { error } });
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) + '…' : s);
@@ -300,7 +300,7 @@ const ROUTES: [string, RegExp, Handler][] = [
       usage, routing: ROUTING, guide: MODEL_GUIDE, priors: { rows: PRIORS.priors, surcharges: PRIORS.surcharges }, pricesVerifiedAt: PRICES_VERIFIED_AT, profile: profileFromHistory(c.db),
     });
   }],
-  ['GET', /^\/api\/prices$/, () => pricesJson(priceTable())],
+  ['GET', /^\/api\/prices$/, () => pricesJson(reloadPrices(HUB_HOME))],
   ['POST', /^\/api\/prices$/, (_c, { body }) => {
     const id = str(body['model']);
     if (!id) return bad(400, 'model required');

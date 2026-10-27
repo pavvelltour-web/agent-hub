@@ -10,9 +10,12 @@ import { modelKey, priceTier, rank, type EffortLevel, type ModelKey, type TaskCl
  * - cheap-first: the cheapest pair first, the next one up only when it failed (the cascade); built from separate runs, so a simulation.
  * `label` is 'measured' only when every number comes straight from runs of that strategy; a price filled in from tokens, a limit share computed from
  * a calibration, or a cascade assembled from separate runs make it 'estimated'. Unknown stays null, never 0.
+ * Strategies are compared on the task types ALL of them have runs for (a strategy that never ran a type would otherwise look cheaper or dearer by mix, not by merit);
+ * a strategy whose own coverage is wider than that common set is 'estimated', and every row says how many types were compared.
  */
 export type StrategyName = 'always-max' | 'manual' | 'cheap-first' | 'router';
-export interface StrategyResult { strategy: StrategyName; costPerSolved: number | null; limitPctPerSolved: number | null; n: number; label: 'measured' | 'estimated' }
+/** `types` of `typesOf` task types (bench: tasks) went into the numbers: only the types every compared strategy has runs for, so the four rows are about the same work. */
+export interface StrategyResult { strategy: StrategyName; costPerSolved: number | null; limitPctPerSolved: number | null; n: number; label: 'measured' | 'estimated'; types: number; typesOf: number }
 export interface StrategyOpts {
   /** Task class of a bench task (bench rows carry only the task id). */
   clsOf?: (taskId: string) => string | undefined;
@@ -60,7 +63,7 @@ function fromOutcomes(rows: OutcomeRow[], o: StrategyOpts): Cell[] {
 }
 
 /** Cost and limit share per solved task of a set of cells that really ran; null when nothing was solved or any number is missing. */
-function measured(strategy: StrategyName, cells: Cell[]): StrategyResult {
+function measured(strategy: StrategyName, cells: Cell[]): Omit<StrategyResult, 'types' | 'typesOf'> {
   const solved = cells.reduce((s, c) => s + c.solved, 0);
   const sum = (f: (c: Cell) => number | null): number | null => { let t = 0; for (const c of cells) { const v = f(c); if (v == null) return null; t += v; } return t; };
   const cost = sum((c) => c.cost), pct = sum((c) => c.pct);
@@ -69,7 +72,7 @@ function measured(strategy: StrategyName, cells: Cell[]): StrategyResult {
 }
 
 /** Cascade per group: the cheapest pair, then the next only if it failed. Expected cost and expected solves, from each pair's own success rate and mean cost. */
-function cascade(groups: Map<string, Cell[]>): StrategyResult {
+function cascade(groups: Map<string, Cell[]>): Omit<StrategyResult, 'types' | 'typesOf'> {
   let cost: number | null = 0, pct: number | null = 0, solved = 0, n = 0, counterfactual = false;
   for (const cells of groups.values()) {
     const ladder = [...cells].sort((a, b) => tierOf(a.key) - tierOf(b.key) || a.key.localeCompare(b.key));
@@ -93,19 +96,29 @@ export function compareStrategies(rows: BenchRow[] | OutcomeRow[], opts: Strateg
   const groups = new Map<string, Cell[]>();
   for (const c of cells) groups.set(c.group, [...(groups.get(c.group) ?? []), c]);
 
-  // always-max: the dearest pair seen anywhere, wherever it ran
-  const maxKey = [...new Set(cells.map((c) => c.key))].sort((a, b) => tierOf(b) - tierOf(a) || b.localeCompare(a))[0];
-  const alwaysMax = measured('always-max', cells.filter((c) => c.key === maxKey));
-  // manual: history only, every run as it happened
-  const manual = bench ? measured('manual', []) : measured('manual', cells);
-  // router: per group, the pair the router picks (when it has runs)
+  // which types each strategy has runs for
+  const maxKey = [...new Set(cells.map((c) => c.key))].sort((a, b) => tierOf(b) - tierOf(a) || b.localeCompare(a))[0];     // always-max: the dearest pair seen anywhere
   const pick = opts.routerPick ?? ((cls: string): string | undefined => (CLASSES.has(cls) ? rank({ cls: cls as TaskClass })[0]?.key : undefined));   // 'unclassified' has no router pick
-  const routed: Cell[] = [];
-  for (const [, cs] of groups) {
-    const cls = cs[0]?.cls, want = cls ? pick(cls) : undefined;
-    const cell = want ? cs.find((c) => c.key === want) : undefined;
-    if (cell) routed.push(cell);
-  }
-  const results: Record<StrategyName, StrategyResult> = { 'always-max': alwaysMax, manual, 'cheap-first': cascade(groups), router: measured('router', routed) };
-  return NAMES.map((n) => results[n]);
+  const routedCell = (cs: Cell[]): Cell | undefined => { const cls = cs[0]?.cls, want = cls ? pick(cls) : undefined; return want ? cs.find((c) => c.key === want) : undefined; };
+  const cover: Record<StrategyName, Set<string>> = {
+    'always-max': new Set([...groups].filter(([, cs]) => cs.some((c) => c.key === maxKey)).map(([g]) => g)),
+    manual: new Set(bench ? [] : groups.keys()),            // a bench is not the user's own choosing: nothing to say
+    'cheap-first': new Set(groups.keys()),
+    router: new Set([...groups].filter(([, cs]) => routedCell(cs)).map(([g]) => g)),
+  };
+  const active = NAMES.filter((n) => cover[n].size > 0);
+  const common = new Set(active.length ? [...cover[active[0] as StrategyName]].filter((g) => active.every((n) => cover[n].has(g))) : []);
+  const inCommon = (c: Cell): boolean => common.has(c.group);
+  const kept = new Map([...groups].filter(([g]) => common.has(g)));
+
+  const results: Record<StrategyName, Omit<StrategyResult, 'types' | 'typesOf'>> = {
+    'always-max': measured('always-max', cells.filter((c) => c.key === maxKey && inCommon(c))),
+    manual: measured('manual', bench ? [] : cells.filter(inCommon)),
+    'cheap-first': cascade(kept),
+    router: measured('router', [...kept.values()].map(routedCell).filter((c): c is Cell => !!c)),
+  };
+  return NAMES.map((n) => {
+    const r = results[n], differs = cover[n].size > 0 && cover[n].size !== common.size;     // this strategy ran types the others did not: its own mix is wider than what was compared
+    return { ...r, label: differs ? 'estimated' : r.label, types: common.size, typesOf: groups.size };
+  });
 }

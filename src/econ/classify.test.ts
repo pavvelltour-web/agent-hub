@@ -35,3 +35,14 @@ test('classify: the words that decided are named, in the prompt\'s own language'
   assert.match(classify('почини падающий тест').why, /почини|падающ/);
   assert.match(classify('fix the failing test').why, /fix|failing/);
 });
+
+test('classify (review S4): a critical-decision word is never outvoted by debug words: the strictest type wins and the answer says why', () => {
+  for (const p of ['Change the security boundary: fix failing crash in auth', 'необратимое решение: почини падающий тест с ошибкой', 'fix the bug, it touches the security boundary', 'граница безопасности: исправь ошибку в авторизации']) {
+    const r = classify(p);
+    assert.equal(r.cls, 'critical_adr', `${p} → ${r.cls} ${r.confidence}`);
+    assert.ok(r.confidence >= CONFIDENT, `${p}: the UI must set it, not ask: ${r.confidence}`);
+    assert.match(r.why, /(security boundary|необратим|граница безопасности)/i, 'names the word that raised it');
+    assert.match(r.why, /строг|strict/i, 'says the type was raised to the strictest');
+  }
+  assert.equal(classify('fix the failing test with a crash').cls, 'debug', 'without a critical word it stays debug');
+});

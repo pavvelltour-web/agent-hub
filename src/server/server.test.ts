@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -173,8 +173,29 @@ test('prices: the table with its sources, an override that changes the cost show
   assert.equal((await api('/api/prices', { method: 'POST', body: { model: 'bad name', input: 1, cacheRead: 1, output: 1 } })).status, 400);
   assert.equal((await api('/api/prices', { method: 'POST', body: { model: 'x1', input: -1, cacheRead: 1, output: 1 } })).status, 400);
   assert.equal((await api('/api/prices', { method: 'POST', body: { model: 'x1', input: 'free', cacheRead: 1, output: 1 } })).status, 400);
+  assert.equal((await api('/api/prices', { method: 'POST', body: { model: 'x1', input: 0, cacheRead: 1, output: 1 } })).status, 400, 'review S5a: free is not a price');
+  const adv = await api('/api/advise', { method: 'POST', body: { cls: 'implement' } });
+  assert.ok(adv.json.choice.options.some((o: any) => o.family === 'sonnet' && o.overridden === true), 'review S5b: the option that uses a changed price says so');
+  assert.equal(adv.json.choice.overridden, false, 'Claude is at its limit in this test, so the pick is GPT, whose price was not changed');
+  await api('/api/prices', { method: 'POST', body: { model: 'gpt-6.1-sol', input: 2.5, cacheRead: 0.2, output: 12 } });
+  const adv2 = await api('/api/advise', { method: 'POST', body: { cls: 'implement' } });
+  assert.equal(adv2.json.choice.overridden, true, 'the pick uses a price the user changed, and the answer says so');
+  await api('/api/prices', { method: 'POST', body: { model: 'gpt-6.1-sol', reset: true } });
   const reset = await api('/api/prices', { method: 'POST', body: { model: 'claude-sonnet-5-5', reset: true } });
   assert.equal(reset.json.models.find((x: any) => x.id === 'claude-sonnet-5-5').overridden, false);
+  assert.equal((await api('/api/advise', { method: 'POST', body: { cls: 'implement' } })).json.choice.overridden, false);
+  // review S5c/d: a file the hub cannot read is reported by GET and refuses a save instead of being replaced
+  const file = join(process.env['AGENT_HUB_HOME'] as string, 'prices.json');
+  writeFileSync(file, '{ broken');
+  const bad = await api('/api/prices', { method: 'POST', body: { model: 'zz-1', reset: true } });
+  assert.equal(bad.status, 400); assert.equal(readFileSync(file, 'utf8'), '{ broken', 'even a reset does not replace a file it cannot read');
+  const refused = await api('/api/prices', { method: 'POST', body: { model: 'claude-sonnet-5-5', input: 3, cacheRead: 0.3, output: 15 } });
+  assert.equal(refused.status, 400); assert.match(JSON.stringify(refused.json), /прочитать|JSON/);
+  assert.equal(readFileSync(file, 'utf8'), '{ broken');
+  writeFileSync(file, JSON.stringify({ models: { free: { tiers: [{ input: 0, cacheRead: 0, output: 0 }] } } }));
+  const rej = await api('/api/prices'); assert.deepEqual(rej.json.rejectedRows.map((r: any) => r.id), ['free']);
+  rmSync(file);
+  assert.equal((await api('/api/prices')).json.overrideProblem, undefined);
 });
 
 test('estimate vs actual: a classified run stores its estimate and /api/outcomes compares it with what was used', async () => {

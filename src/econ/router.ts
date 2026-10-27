@@ -1,4 +1,5 @@
-import { costUsd, DEFAULT_PROFILE, type Profile } from './econ.ts';
+import { canonicalModel, costUsd, DEFAULT_PROFILE, type Profile } from './econ.ts';
+import { priceTable } from './prices.ts';
 import type { AgentId } from '../core/types.ts';
 import { PRIORS, surchargeFor, tagEffect, UNSIZED_SURCHARGE_PENALTY, type Basis, type PriorSet } from './priors.ts';
 
@@ -73,17 +74,20 @@ const SCARCITY_PENALTY = 0.06;      // quality-equivalent cost of draining an ag
  * Price tier 0..1 for a typical task (mostly cached reads, some output) at an effort. Output tokens come from the measured profile of that agent and effort
  * when it has >= MIN_RUNS runs, else from the default scaled by the prior multiplier. GPT is priced as GPT-6.1 Sol (registry/prices.json); with no price row a model is assumed equal to Sonnet and flagged.
  */
-export function priceTier(k: ModelKey, effort: EffortLevel = 'medium', profile?: Profile): { tier: number; known: boolean; measured: boolean } {
+export function priceTier(k: ModelKey, effort: EffortLevel = 'medium', profile?: Profile): { tier: number; known: boolean; measured: boolean; overridden: boolean } {
   const measured = !!profile && profile.source === 'history' && profile.n >= MIN_RUNS;
   const out = measured ? (profile as Profile).p50.out : DEFAULT_PROFILE.p50.out * EFFORT_PRICE_MULT[effort];
   const usd = (m: string): number | null => costUsd(m, { ...DEFAULT_PROFILE.p50, out });
   const ref = costUsd(MODEL_ID.fable, DEFAULT_PROFILE.p50) ?? 1;
   const own = usd(k === 'gpt' ? GPT_PRICED : MODEL_ID[k]);        // a model without a price row is treated as Sonnet and flagged
-  return { tier: (own ?? usd(MODEL_ID.sonnet) ?? 0) / ref, known: own != null, measured };
+  // the price came from the user's file when the model's own row did, when Fable did (every tier is measured against it), or when Sonnet stood in for a model with no row
+  const over = priceTable().overridden, used = k === 'gpt' ? GPT_PRICED : MODEL_ID[k];
+  const overridden = over.has(canonicalModel(used) ?? used) || over.has(MODEL_ID.fable) || (own == null && over.has(MODEL_ID.sonnet));
+  return { tier: (own ?? usd(MODEL_ID.sonnet) ?? 0) / ref, known: own != null, measured, overridden };
 }
 
 /** One (model, effort) pair. `family` is the model, `key` the pair. `priceMeasured`: the price uses this effort's measured output tokens, not the prior multiplier. `basis`: the sourced priors (registry/model-priors.json) that moved this option for the task's tags. */
-export interface Option { key: `${ModelKey}:${EffortLevel}`; family: ModelKey; agent: AgentId; model: string; effort: EffortLevel; quality: number; prior: number; runs: number; measured: boolean; price: number; priceKnown: boolean; priceMeasured: boolean; basis: Basis[]; bonus: number; scarcity: number; distance: number }
+export interface Option { key: `${ModelKey}:${EffortLevel}`; family: ModelKey; agent: AgentId; model: string; effort: EffortLevel; quality: number; prior: number; runs: number; measured: boolean; price: number; priceKnown: boolean; priceMeasured: boolean; /** the price used comes from the user's own prices.json */ overridden: boolean; basis: Basis[]; bonus: number; scarcity: number; distance: number }
 export interface RankIn {
   cls: TaskClass; stats?: ModelStats; effortProfiles?: Record<string, Profile>; priceWeight?: number;
   tags?: readonly string[]; priors?: PriorSet;     // task tags (terminal, doc-qa, computer-use, long-prompt, routine-build) and the vendor-strength priors they read
@@ -114,7 +118,7 @@ export function rank(i: RankIn): Option[] {
       const p = priceTier(key, effort, i.effortProfiles?.[`${agent}:${effort}`]);
       const tier = p.tier * (sur?.priceMultiplier ?? 1);         // a sized surcharge is a price multiple; an unsized one sorts the model last
       const distance = Math.hypot(1 - quality, lam * tier) + (sur && sur.priceMultiplier == null ? UNSIZED_SURCHARGE_PENALTY : 0);
-      out.push({ key: `${key}:${effort}`, family: key, agent, model: key === 'gpt' ? i.codexModel ?? 'gpt-6.1-sol' : MODEL_ID[key], effort, quality: Math.round(quality * 1000) / 1000, prior, runs: n, measured: n >= MIN_RUNS, price: Math.round(tier * 1000) / 1000, priceKnown: p.known, priceMeasured: p.measured, basis, bonus, scarcity, distance: Math.round(distance * 10000) / 10000 });
+      out.push({ key: `${key}:${effort}`, family: key, agent, model: key === 'gpt' ? i.codexModel ?? 'gpt-6.1-sol' : MODEL_ID[key], effort, quality: Math.round(quality * 1000) / 1000, prior, runs: n, measured: n >= MIN_RUNS, price: Math.round(tier * 1000) / 1000, priceKnown: p.known, priceMeasured: p.measured, overridden: p.overridden, basis, bonus, scarcity, distance: Math.round(distance * 10000) / 10000 });
     }
   }
   return out.sort((a, b) => a.distance - b.distance);
