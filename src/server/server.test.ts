@@ -131,10 +131,15 @@ test('models: limits (manual + stale), usage, routing; advise cites its rule and
   assert.equal(adv.json.choice.agent, 'codex'); assert.equal(adv.json.choice.rule, 'limit:claude→codex');
   assert.ok(adv.json.estimate.tokens.low.cachedIn > 0 && adv.json.estimate.usd === null, 'GPT price unknown → dollars null, not zero');
   assert.equal((await api('/api/advise', { method: 'POST', body: { cls: 'nonsense' } })).status, 400);
+  const tagged = await api('/api/advise', { method: 'POST', body: { cls: 'implement', tags: ['routine-build', 'bogus', 7] } });
+  assert.deepEqual(tagged.json.choice.basis.map((b: any) => b.tag), ['routine-build'], 'unknown tags are dropped; the recommendation carries the prior behind it');
+  assert.ok(tagged.json.choice.basis[0].source.length > 3 && /^\d{4}-\d{2}-\d{2}$/.test(tagged.json.choice.basis[0].date));
+  assert.equal(adv.json.choice.basis, undefined);
   await api('/api/limits', { method: 'POST', body: { agent: 'codex', usedPercent: 10, resetsAt: '2020-01-01T00:00:00Z' } });
   const m = await api('/api/models');
   assert.equal(m.json.agents.find((a: any) => a.id === 'codex').limit.stale, true, 'a limit whose window already reset is stale');
   assert.equal(m.json.agents.find((a: any) => a.id === 'claude').limit.usedPercent, 97);
+  assert.ok(m.json.priors.rows.length >= 8 && m.json.priors.rows.every((r: any) => r.source && r.date), 'the panel gets every prior with its source and date');
   assert.equal(m.json.routing.implement.model, 'claude-sonnet-5-5'); assert.equal(m.json.pricesVerifiedAt, '2026-10-22');
 });
 

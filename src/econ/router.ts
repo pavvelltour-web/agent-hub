@@ -1,5 +1,6 @@
 import { costUsd, DEFAULT_PROFILE, type Profile } from './econ.ts';
 import type { AgentId } from '../core/types.ts';
+import { PRIORS, surchargeFor, tagEffect, UNSIZED_SURCHARGE_PENALTY, type Basis, type PriorSet } from './priors.ts';
 
 /**
  * Picks the model that sits closest to the ideal "top quality at zero price".
@@ -78,10 +79,12 @@ export function priceTier(k: ModelKey, effort: EffortLevel = 'medium', profile?:
   return { tier: usd(k === 'gpt' ? MODEL_ID.sonnet : MODEL_ID[k]) / ref, known: k !== 'gpt', measured };
 }
 
-/** One (model, effort) pair. `family` is the model, `key` the pair. `priceMeasured`: the price uses this effort's measured output tokens, not the prior multiplier. */
-export interface Option { key: `${ModelKey}:${EffortLevel}`; family: ModelKey; agent: AgentId; model: string; effort: EffortLevel; quality: number; prior: number; runs: number; measured: boolean; price: number; priceKnown: boolean; priceMeasured: boolean; bonus: number; scarcity: number; distance: number }
+/** One (model, effort) pair. `family` is the model, `key` the pair. `priceMeasured`: the price uses this effort's measured output tokens, not the prior multiplier. `basis`: the sourced priors (registry/model-priors.json) that moved this option for the task's tags. */
+export interface Option { key: `${ModelKey}:${EffortLevel}`; family: ModelKey; agent: AgentId; model: string; effort: EffortLevel; quality: number; prior: number; runs: number; measured: boolean; price: number; priceKnown: boolean; priceMeasured: boolean; basis: Basis[]; bonus: number; scarcity: number; distance: number }
 export interface RankIn {
-  cls: TaskClass; stats?: ModelStats; effortProfiles?: Record<string, Profile>; priceWeight?: number; codexModel?: string; implementedBy?: AgentId;
+  cls: TaskClass; stats?: ModelStats; effortProfiles?: Record<string, Profile>; priceWeight?: number;
+  tags?: readonly string[]; priors?: PriorSet;     // task tags (terminal, doc-qa, computer-use, long-prompt, routine-build) and the vendor-strength priors they read
+ codexModel?: string; implementedBy?: AgentId;
   allowed?: (k: ModelKey) => boolean; scarce?: Partial<Record<AgentId, boolean>>;
 }
 
@@ -95,6 +98,8 @@ export function rank(i: RankIn): Option[] {
     const enough = (s: Stat | undefined): Stat | undefined => (s && s.n >= MIN_RUNS ? s : undefined);   // one or two runs are anecdotes, not data
     const st = enough(i.stats?.[`${i.cls}|${key}`]);
     const prior = PRIOR[i.cls][key];
+    const tagged = tagEffect(i.priors ?? PRIORS, i.cls, i.tags ?? []).get(key), sur = surchargeFor(i.priors ?? PRIORS, key, i.tags ?? []);
+    const basis: Basis[] = [...(tagged?.basis ?? []), ...(sur ? [{ tag: 'long-prompt', model: key, quality: null, source: sur.source, date: sur.date, dateKind: sur.dateKind, url: sur.url }] : [])];
     for (const effort of levelsFor(key, i.cls)) {
       const delta = PRIOR_EFFORT[i.cls][effort] ?? 0, pair = enough(i.stats?.[`${i.cls}|${key}|${effort}`]);
       const n = pair?.n ?? st?.n ?? 0;
@@ -102,10 +107,11 @@ export function rank(i: RankIn): Option[] {
       const base = pair ? (PRIOR_STRENGTH * (prior + delta) + pair.score) / (PRIOR_STRENGTH + pair.n) : (PRIOR_STRENGTH * prior + (st?.score ?? 0)) / (PRIOR_STRENGTH + n) + delta;
       const bonus = i.cls === 'review' && i.implementedBy && i.implementedBy !== agent ? DIVERSITY_BONUS : 0;
       const scarcity = i.scarce?.[agent] ? SCARCITY_PENALTY : 0;
-      const quality = Math.max(0, Math.min(1, base + bonus - scarcity));
+      const quality = Math.max(0, Math.min(1, base + bonus - scarcity + (tagged?.delta ?? 0)));
       const p = priceTier(key, effort, i.effortProfiles?.[`${agent}:${effort}`]);
-      const distance = Math.hypot(1 - quality, lam * p.tier);
-      out.push({ key: `${key}:${effort}`, family: key, agent, model: key === 'gpt' ? i.codexModel ?? 'gpt-6.1-sol' : MODEL_ID[key], effort, quality: Math.round(quality * 1000) / 1000, prior, runs: n, measured: n >= MIN_RUNS, price: Math.round(p.tier * 1000) / 1000, priceKnown: p.known, priceMeasured: p.measured, bonus, scarcity, distance: Math.round(distance * 10000) / 10000 });
+      const tier = p.tier * (sur?.priceMultiplier ?? 1);         // a sized surcharge is a price multiple; an unsized one sorts the model last
+      const distance = Math.hypot(1 - quality, lam * tier) + (sur && sur.priceMultiplier == null ? UNSIZED_SURCHARGE_PENALTY : 0);
+      out.push({ key: `${key}:${effort}`, family: key, agent, model: key === 'gpt' ? i.codexModel ?? 'gpt-6.1-sol' : MODEL_ID[key], effort, quality: Math.round(quality * 1000) / 1000, prior, runs: n, measured: n >= MIN_RUNS, price: Math.round(tier * 1000) / 1000, priceKnown: p.known, priceMeasured: p.measured, basis, bonus, scarcity, distance: Math.round(distance * 10000) / 10000 });
     }
   }
   return out.sort((a, b) => a.distance - b.distance);

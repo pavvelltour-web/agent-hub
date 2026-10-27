@@ -5,6 +5,19 @@ import { EFFORT_RU, limitCard, modelName, pageHead, pctText, sessionRow, shortMo
 const SHORT = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT' };
 const BALANCE = [[0.3, 'Только качество'], [0.6, 'Скорее качество'], [1, 'Баланс'], [2, 'Скорее цена'], [4, 'Только цена']];
 
+const TAG_RU = { terminal: 'работа в терминале', 'doc-qa': 'вопросы по документам', 'computer-use': 'управление компьютером', 'routine-build': 'рутинная сборка', 'long-prompt': 'очень длинный запрос' };
+const familyOf = (id) => (/opus|sonnet|haiku|fable/i.exec(id) || ['gpt'])[0].toLowerCase();
+const dateRu = (iso) => (/^\d{4}-\d{2}-\d{2}$/.test(iso || '') ? iso.split('-').reverse().join('.') : '—');
+/** Plain-language lines: which sourced claim stands behind a model's strengths, with its source and date. Data only, shown as text. */
+function priorLines(priors, id) {
+  const fam = familyOf(id), seen = new Set(), lines = [];
+  if (fam === 'gpt' && !/sol/i.test(id)) return lines;   // the sources measured GPT 6.1 Sol only: Astra and Luna are not attributed their numbers
+  const add = (key, text, row) => { if (!seen.has(key)) { seen.add(key); lines.push(text + ' · ' + row.source + ' · ' + dateRu(row.date) + (row.dateKind === 'recorded' ? ' (дата записи в плане)' : '')); } };
+  for (const r of priors?.rows || []) if (r.model === fam) for (const t of r.tags) add(t + '|' + r.source, (TAG_RU[t] || t) + ': ' + (typeof r.quality === 'number' ? Math.round(r.quality * 1000) / 10 + '%' : 'сильнее по оценке аналитиков'), r);
+  for (const x of priors?.surcharges || []) if (x.model === fam) add('sur|' + x.source, 'Запрос длиннее ' + Number(x.aboveTokens).toLocaleString('ru-RU') + ' токенов дороже' + (x.priceMultiplier ? ' в ' + x.priceMultiplier + ' раза' : ' (во сколько, источник не пишет)'), x);
+  return lines;
+}
+
 /** «Sonnet · глубоко»: a model together with the thinking depth it is offered at. */
 const pairName = (o) => (SHORT[o.family] || o.family) + (o.effort ? ' · ' + (EFFORT_RU[o.effort] || o.effort) : '');
 
@@ -71,7 +84,7 @@ async function overview() {
 
   // ---- every model in plain words
   const group = (agent, title) => h('section.plane.card.stack', h('div.row-flex', agentBadge(agent, title)),
-    h('div.list', guide.filter((g) => g.agent === agent).map((g) => h('div.model-row', h('b', g.name), h('span', g.use), h('span.t-meta', g.note)))));
+    h('div.list', guide.filter((g) => g.agent === agent).map((g) => { const src = priorLines(m.priors, g.id); return h('div.model-row', h('b', g.name), h('span', g.use), h('span.t-meta', g.note), src.length ? h('div.t-meta.prior-src', { style: { gridColumn: '1 / -1' } }, h('b', 'Откуда оценки: '), src.map((l) => h('div', l))) : null); })));
 
   const usage = m.usage.length ? h('table.tbl', h('thead', h('tr', h('th', 'Модель'), h('th', 'Агент'), h('th.r', 'Разговоров'), h('th.r.hide-s', 'Прочитано'), h('th.r', 'Написано'), h('th.r', 'Стоило бы по API'))),
     h('tbody', m.usage.map((u) => h('tr', h('td', h('a', { href: '#/models/' + encodeURIComponent(u.model) }, fmt.model(u.model))), h('td', agentName(u.agent)), h('td.r.num', u.sessions), h('td.r.num.hide-s', fmt.tok(u.uncachedIn + u.cachedIn)), h('td.r.num', fmt.tok(u.out)), h('td.r.num', u.costUsd == null ? h('span.t-meta', 'цена не известна') : fmt.usd(u.costUsd)))))) : empty('За 30 дней разговоров нет', 'Загрузите историю в настройках.');

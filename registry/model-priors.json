@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "note": "Vendor-strength priors for the router. Numbers are vendor- or blog-reported (docs/superpowers/plans/2026-10-26-agent-hub-v0.2.md, 'Research basis'), never our own measurements: real runs replace them. The plan gives no URLs, so none is invented. `dateKind: recorded` = the date the evidence was written into the plan, because the source's own date is not given. `quality: null` = a stated direction without a published number. A tag compares models by score when two or more have one, otherwise the named model gets a small lean.",
+  "priors": [
+    { "model": "opus", "cls": "implement", "tags": ["terminal"], "quality": 0.652, "source": "Vals.ai, Terminal-Bench 4.0: Opus 5.5 65.2 %", "date": "2026-10-24", "dateKind": "published" },
+    { "model": "sonnet", "cls": "implement", "tags": ["terminal"], "quality": 0.641, "source": "Vals.ai, Terminal-Bench 4.0: Sonnet 5.5 64.1 %", "date": "2026-10-24", "dateKind": "published" },
+    { "model": "gpt", "cls": "implement", "tags": ["terminal"], "quality": 0.551, "source": "Vals.ai, Terminal-Bench 4.0: GPT-6.1 Sol 55.1 %", "date": "2026-10-24", "dateKind": "published" },
+    { "model": "opus", "cls": "debug", "tags": ["terminal"], "quality": 0.652, "source": "Vals.ai, Terminal-Bench 4.0: Opus 5.5 65.2 %", "date": "2026-10-24", "dateKind": "published" },
+    { "model": "sonnet", "cls": "debug", "tags": ["terminal"], "quality": 0.641, "source": "Vals.ai, Terminal-Bench 4.0: Sonnet 5.5 64.1 %", "date": "2026-10-24", "dateKind": "published" },
+    { "model": "gpt", "cls": "debug", "tags": ["terminal"], "quality": 0.551, "source": "Vals.ai, Terminal-Bench 4.0: GPT-6.1 Sol 55.1 %", "date": "2026-10-24", "dateKind": "published" },
+    { "model": "opus", "cls": "implement", "tags": ["computer-use"], "quality": 0.818, "source": "DataCamp comparison: Opus stronger at max effort on computer use (OSWorld 81.8)", "date": "2026-10-26", "dateKind": "recorded" },
+    { "model": "gpt", "cls": "summary", "tags": ["doc-qa"], "quality": null, "source": "DataCamp comparison: Sol stronger per dollar on document Q&A", "date": "2026-10-26", "dateKind": "recorded" },
+    { "model": "gpt", "cls": "implement", "tags": ["routine-build"], "quality": null, "source": "DataCamp comparison: Sol stronger per dollar on routine builds", "date": "2026-10-26", "dateKind": "recorded" },
+    { "model": "gpt", "cls": "mechanical", "tags": ["routine-build"], "quality": null, "source": "DataCamp comparison: Sol stronger per dollar on routine builds", "date": "2026-10-26", "dateKind": "recorded" }
+  ],
+  "surcharges": [
+    { "model": "gpt", "aboveTokens": 272000, "priceMultiplier": null, "source": "DataCamp comparison: Sol long-context surcharge above 272K input (size of the surcharge not given)", "date": "2026-10-26", "dateKind": "recorded" }
+  ]
+}

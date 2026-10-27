@@ -19,6 +19,7 @@ import type { AgentId, RegistryEntry } from '../core/types.ts';
 import { build, KINDS, render, type Format, type Kind } from '../diagram/index.ts';
 import { advise, MODEL_GUIDE, ROUTING, type LimitState, type TaskClass } from '../econ/advisor.ts';
 import { calibrate, costUsd, effortProfiles, estimate, modelStats, outcomes, PRICES_VERIFIED_AT, profileFromHistory } from '../econ/econ.ts';
+import { PRIORS, TAGS } from '../econ/priors.ts';
 import { buildCases, exportCases, NEVER_INCLUDED } from '../econ/cases.ts';
 import { startOverhead } from '../econ/overhead.ts';
 import { readSessionEvents as readClaudeEvents, syncClaude, type SyncStats } from '../history/claude.ts';
@@ -264,7 +265,7 @@ const ROUTES: [string, RegExp, Handler][] = [
     const usage = usageByModel(c.db, since).map((u) => ({ ...u, costUsd: costUsd(u.model, u) }));
     return ok({
       agents: (['claude', 'codex'] as AgentId[]).map((id) => ({ id, ...agents[id], limit: limitState(c, id) ?? null, calibration: calibrate(c.db, id) })),
-      usage, routing: ROUTING, guide: MODEL_GUIDE, pricesVerifiedAt: PRICES_VERIFIED_AT, profile: profileFromHistory(c.db),
+      usage, routing: ROUTING, guide: MODEL_GUIDE, priors: { rows: PRIORS.priors, surcharges: PRIORS.surcharges }, pricesVerifiedAt: PRICES_VERIFIED_AT, profile: profileFromHistory(c.db),
     });
   }],
   ['GET', /^\/api\/overhead$/, (c, { q }) => ok(startOverhead(c.db, num(q.get('project')) != null ? { projectId: num(q.get('project')) as number } : {}))],
@@ -305,7 +306,7 @@ const ROUTES: [string, RegExp, Handler][] = [
   ['POST', /^\/api\/advise$/, (c, { body }) => {
     const cls = (str(body['cls']) ?? 'implement') as TaskClass;
     if (!(cls in ROUTING)) return bad(400, 'unknown task class');
-    const choice = advise({ cls, ...(body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? { implementedBy: body['implementedBy'] } : {}), ...(body['securityBoundary'] === true ? { securityBoundary: true } : {}), ...(num(body['failures']) != null ? { failures: num(body['failures']) as number } : {}), limits: limitsFor(c), ...learned(c) });
+    const choice = advise({ cls, ...(body['implementedBy'] === 'claude' || body['implementedBy'] === 'codex' ? { implementedBy: body['implementedBy'] } : {}), ...(body['securityBoundary'] === true ? { securityBoundary: true } : {}), ...(Array.isArray(body['tags']) ? { tags: (body['tags'] as unknown[]).filter((t): t is string => typeof t === 'string' && (TAGS as readonly string[]).includes(t)) } : {}), ...(num(body['expectedInputTokens']) != null ? { expectedInputTokens: num(body['expectedInputTokens']) as number } : {}), ...(num(body['failures']) != null ? { failures: num(body['failures']) as number } : {}), limits: limitsFor(c), ...learned(c) });
     const est = estimate(profileFromHistory(c.db, choice.agent), choice.model, calibrate(c.db, choice.agent), num(body['scale']) ?? 1);
     return ok({ choice, estimate: est });
   }],

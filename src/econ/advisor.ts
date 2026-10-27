@@ -1,10 +1,11 @@
 import type { AgentId } from '../core/types.ts';
 import type { Profile } from './econ.ts';
+import { PRIORS, tagsFor, type Basis, type PriorSet } from './priors.ts';
 import { agentOf, EFFORT, MODEL_ID, modelKey, rank, type EffortLevel, type ModelStats, type Option, type TaskClass } from './router.ts';
 
 export type { TaskClass, ModelStats, Option, EffortLevel };
 export interface Pick { agent: AgentId; model: string; effort: string }
-export interface Choice extends Pick { rule: string; reason: string; alt?: Pick & { why: string }; options?: (Option & { chosen: boolean })[] }
+export interface Choice extends Pick { rule: string; reason: string; basis?: Basis[]; alt?: Pick & { why: string }; options?: (Option & { chosen: boolean })[] }
 
 /** Starting table (author's decision: Opus plans, Sonnet works, Haiku summarizes). Used for guard rails, the diagram and as the prior of the optimizer. */
 export const ROUTING: Record<TaskClass, { model: string; effort: string; reason: string }> = {
@@ -29,6 +30,9 @@ export interface AdviseIn {
   stats?: ModelStats;            // what the user's own finished runs say about quality (per model and per model+effort pair)
   effortProfiles?: Record<string, Profile>;   // measured tokens per `agent:effort`; priced instead of the prior multiplier once there are >= 3 runs
   priceWeight?: number;          // 1 = default balance, <1 favours quality, >1 favours price
+  tags?: string[];               // task tags: terminal, doc-qa, computer-use, long-prompt, routine-build
+  expectedInputTokens?: number;  // above the surcharge threshold in the priors data this adds the long-prompt tag
+  priors?: PriorSet;             // default: registry/model-priors.json
   explore?: number;              // share (0..0.3) of simple tasks used to try a less-measured model; 0 = never
   rand?: () => number;
 }
@@ -58,7 +62,8 @@ export function advise(i: AdviseIn): Choice {
   const claudeFull = full(i.limits?.claude, th), codexFull = full(i.limits?.codex, th);
   const cl = left(i.limits?.claude), cx = left(i.limits?.codex);
   const scarce = { claude: cl != null && cx != null && cl < 35 && cx - cl >= 25 && !codexFull, codex: cl != null && cx != null && cx < 35 && cl - cx >= 25 && !claudeFull };
-  const ranked = rank({ cls: i.cls, ...(i.stats ? { stats: i.stats } : {}), ...(i.effortProfiles ? { effortProfiles: i.effortProfiles } : {}), ...(i.priceWeight != null ? { priceWeight: i.priceWeight } : {}), codexModel: gpt, ...(i.implementedBy ? { implementedBy: i.implementedBy } : {}), scarce });
+  const priors = i.priors ?? PRIORS, tags = [...new Set([...(i.tags ?? []), ...tagsFor(i.expectedInputTokens, priors)])];
+  const ranked = rank({ cls: i.cls, ...(i.stats ? { stats: i.stats } : {}), ...(i.effortProfiles ? { effortProfiles: i.effortProfiles } : {}), tags, priors, ...(i.priceWeight != null ? { priceWeight: i.priceWeight } : {}), codexModel: gpt, ...(i.implementedBy ? { implementedBy: i.implementedBy } : {}), scarce });
   const pickOf = (o: Option): { agent: AgentId; model: string; effort: string } => ({ agent: o.agent, model: o.model, effort: o.agent === 'codex' ? GPT_EFFORT[o.effort] ?? 'medium' : o.effort });
   // the map shows the best effort of each model (the chosen pair stands in for its model), so five dots are five models, not five efforts of one
   const withOpts = (c: Choice, chosen: Option | undefined): Choice => {
@@ -81,7 +86,7 @@ export function advise(i: AdviseIn): Choice {
   if (forced && !claudeFull && win) {
     const c = { ...pickOf(win), model: forced.model, effort: forced.effort, rule: forced.rule, reason: forced.reason };
     const o = { ...win, effort: forced.effort as EffortLevel };
-    return withOpts({ ...c, ...(altFor('claude') ? { alt: altFor('claude') } : {}) }, o);
+    return withOpts({ ...c, ...(o.basis.length ? { basis: o.basis } : {}), ...(altFor('claude') ? { alt: altFor('claude') } : {}) }, o);
   }
   if (!win) win = allowed[0];
   if (!win) return withOpts({ agent: 'claude', model: base.model, effort: base.effort, rule: `class:${i.cls}`, reason: base.reason }, undefined);
@@ -102,7 +107,7 @@ export function advise(i: AdviseIn): Choice {
     else { rule = 'optimizer'; reason = `${pairLabel(win)}: ближе всех к идеалу «хорошо и недорого», качество ≈ ${pct(win.quality)}, цена ≈ ${pct(win.price)} от самой дорогой модели. ${win.measured ? `Считаю по ${win.runs} вашим запускам.` : 'Пока по оценке автора: ваших запусков этого типа мало.'}`; }
   }
   const alt = altFor(win.agent);
-  return withOpts({ ...pickOf(win), rule, reason, ...(alt ? { alt } : {}) }, win);
+  return withOpts({ ...pickOf(win), rule, reason, ...(win.basis.length ? { basis: win.basis } : {}), ...(alt ? { alt } : {}) }, win);
 }
 
 export { EFFORT, agentOf, modelKey };
