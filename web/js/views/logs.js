@@ -17,10 +17,11 @@ function say(r) {
   if (r.source === 'end') return `${who(r.agent)} ${OUTCOME[m.replace(/^run /, '')] || m}`;
   if (r.source === 'handoff') return `${who(r.agent)}: работа сохранена, другой агент может продолжить`;
   if (r.source === 'limit') return `${who(r.agent)}: лимит. ${m}`;
+  if (r.source === 'warn' && /^context_continue:/.test(m)) return `${who(r.agent)}: контекст стал большим, работа продолжена в новой сессии`;
   if (r.source === 'audit') {
     if (m.startsWith('apply-plan')) return 'Hub записал файлы в проект (после вашего подтверждения, есть резервная копия)';
     if (m.startsWith('undo')) return 'Изменение файлов отменено';
-    if (m.startsWith('graph-update')) return /"ok":true/.test(m) ? 'Граф проекта обновлён (graphify, без модели)' : 'Граф проекта не обновился';
+    if (m.startsWith('graph-update')) return r.ok === true ? 'Граф проекта обновлён (graphify, без модели)' : 'Граф проекта не обновился';
     if (m.startsWith('approve-stage')) return 'Шаг проекта подтверждён';
     return m;
   }

@@ -231,7 +231,8 @@ export async function runCascade(o: CascadeOpts): Promise<CascadeResult> {
     if (left() <= 0) return { stop: 'the cascade timed out' };
     if (started >= MAX_RUNS) return { stop: `the cascade is capped at ${MAX_RUNS} runs` };
     let row: RunRow;
-    try { row = runs.start(q); started++; } catch (e) { return { stop: `could not start the ${role} run: ${oneLine((e as Error).message)}` }; }
+    try { row = runs.start({ ...q, autoContinue: false }); started++; }   // a rung that outgrows its context stops with its card; the cascade, not the runner, decides what runs next
+    catch (e) { return { stop: `could not start the ${role} run: ${oneLine((e as Error).message)}` }; }
     if (!state.id) { state.id = row.id; save(); o.onStart?.(row); }
     await waitForRun(runs, row.id, Math.min(left(), RUNG_TIMEOUT_MS));
     for (let i = 0; i < 200 && runs.isLive(row.id); i++) await new Promise((res) => setTimeout(res, 50));   // a stopped run ends a moment later
@@ -241,6 +242,7 @@ export async function runCascade(o: CascadeOpts): Promise<CascadeResult> {
     if (left() <= 0) return { stop: 'the cascade timed out and the agent was stopped', run: end };
     const ev = runs.events(row.id);
     if (ev.some((e) => e.kind === 'error' && (e.data as { needsLogin?: boolean }).needsLogin)) return { stop: `${r.agent} is not signed in: sign in with its own CLI and start again`, run: end };
+    if (end.outcome === 'context') return { stop: `${r.agent} stopped: its context grew past the limit (a card with what was done is in .hub/handoffs; continue from it by hand)`, run: end };
     if (end.outcome === 'limit') return { stop: `${r.agent} hit its usage limit`, run: end };
     const err = [...ev].reverse().find((e) => e.kind === 'error');
     return { stop: `the ${role} run ended as '${end.outcome}'${err ? `: ${oneLine((err.data as { message?: string }).message ?? '')}` : ''}`, run: end };

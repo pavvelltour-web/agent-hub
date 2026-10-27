@@ -525,14 +525,14 @@ const ROUTES: [string, RegExp, Handler][] = [
     const limit = Math.min(500, num(q.get('limit')) ?? 200);
     const pid = num(q.get('project'));
     const ev = c.db.prepare(`SELECT e.ts, e.kind, e.data, e.run_id AS runId, r.agent, r.project_id AS projectId FROM run_event e JOIN run r ON r.id = e.run_id WHERE e.kind IN ('error','warn','limit','handoff','end') ${pid != null ? 'AND r.project_id = ?' : ''} ORDER BY e.ts DESC LIMIT ?`).all(...(pid != null ? [pid] : []), limit) as unknown as { ts: string; kind: string; data: string; runId: string; agent: string; projectId: number }[];
-    const rows: { ts: string; level: string; source: string; message: string; runId?: string; agent?: string }[] = ev.map((e) => {
+    const rows: { ts: string; level: string; source: string; message: string; runId?: string; agent?: string; ok?: boolean }[] = ev.map((e) => {
       const d = JSON.parse(e.data) as Record<string, unknown>;
       const level = e.kind === 'error' ? 'error' : e.kind === 'limit' || e.kind === 'warn' ? 'warn' : 'info';
       const message = e.kind === 'end' ? `run ${String(d['outcome'])}` : e.kind === 'handoff' ? `handoff card ready: ${String(d['id'])}` : String(d['message'] ?? e.kind);
       return { ts: e.ts, level, source: e.kind, message: clip(message, 300), runId: e.runId, agent: e.agent };
     });
     const roots = (pid != null ? [rootOf(c, pid)] : listProjects(c.db).slice(0, 30).map((p) => p.root));
-    for (const r of roots) { try { for (const l of readFileSync(join(r, '.hub', 'audit.jsonl'), 'utf8').trim().split('\n').slice(-50)) { const a = JSON.parse(l) as { ts: string; action: string }; rows.push({ ts: a.ts, level: 'audit', source: 'audit', message: `${a.action} ${clip(JSON.stringify({ ...a, ts: undefined, action: undefined }), 120)}` }); } } catch { /* no audit yet */ } }
+    for (const r of roots) { try { for (const l of readFileSync(join(r, '.hub', 'audit.jsonl'), 'utf8').trim().split('\n').slice(-50)) { const a = JSON.parse(l) as { ts: string; action: string; ok?: unknown }; rows.push({ ts: a.ts, level: 'audit', source: 'audit', ...(typeof a.ok === 'boolean' ? { ok: a.ok } : {}), message: `${a.action} ${clip(JSON.stringify({ ...a, ts: undefined, action: undefined }), 120)}` }); } } catch { /* no audit yet */ } }
     return ok(rows.sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, limit));
   }],
   ['GET', /^\/api\/diagram\/(\w+)$/, (c, { params, q }) => {

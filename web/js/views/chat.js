@@ -116,7 +116,7 @@ export async function chatPanel({ projectId, runId, q, global }) {
     return {
       override(e) {
         const d = e.data && typeof e.data === 'object' ? e.data : {}, msg = typeof d.message === 'string' ? d.message : '';
-        if (e.kind === 'warn') { if (!msg.startsWith('handoff_ready')) note(msg); return true; }
+        if (e.kind === 'warn') { if (msg.startsWith('context_continue:')) return false; if (!msg.startsWith('handoff_ready')) note(msg); return true; }   // the link to the continuing run is drawn by transcript.js
         if (e.kind === 'error') { transcript.append(errorCard({ message: msg, needsLogin: d.needsLogin === true })); return true; }
         if (e.kind === 'limit') { if (d.reached) transcript.append(h('div.alert.warn', icon('alert'), h('div.stack', h('b', `${agentName(run.agent)}: лимит исчерпан`), h('span', msg.slice(0, 220)), typeof d.resetsAt === 'string' ? h('span.t-meta', 'Сброс ' + fmt.until(d.resetsAt)) : null))); return true; }
         return false;

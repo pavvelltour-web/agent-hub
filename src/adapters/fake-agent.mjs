@@ -56,7 +56,7 @@ if (scenario.startsWith('fixture:')) {
   }
 } else if (scenario === 'cascade-script') {
   // Cascade (src/run/cascade.test.ts): FAKE_CASCADE_SCRIPT is a JSON file, an array with one step per call, in call order:
-  // { git?: string[][], lockIndex?: true, write?: { <relative path>: <content> }, text?: string, login?: true, sleepMs?: number }
+  // { git?: string[][], lockIndex?: true, write?: { <relative path>: <content> }, text?: string, login?: true, sleepMs?: number, ctx?: number }
   // (git: commands run in the cwd first; lockIndex: leave a git index.lock; `{{cwd}}` in a content is replaced by the cwd with forward slashes). Each call appends {argv, prompt, cwd} to FAKE_CAPTURE_FILE and writes the files into its cwd.
   const steps = JSON.parse(readFileSync(process.env.FAKE_CASCADE_SCRIPT, 'utf8'));
   const argv = process.argv.slice(2);
@@ -64,6 +64,7 @@ if (scenario.startsWith('fixture:')) {
   appendFileSync(process.env.FAKE_CAPTURE_FILE, JSON.stringify({ argv, prompt, cwd: process.cwd() }) + '\n');
   const step = steps[index] ?? {};
   out({ type: 'system', subtype: 'init', session_id: `cascade-${index}`, model: 'claude-sonnet-5-5' });
+  if (step.ctx) out({ type: 'assistant', message: { content: [{ type: 'text', text: 'reading a lot' }], usage: { input_tokens: 10, cache_read_input_tokens: step.ctx, output_tokens: 5 } } });   // a call whose prompt is `ctx` tokens
   if (step.sleepMs) await sleep(step.sleepMs);
   if (step.login) out({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login', usage: { input_tokens: 0, output_tokens: 0 } });
   else {

@@ -1,7 +1,7 @@
 // CLI-like transcript: renders stored/live run events the way Claude Code and Codex show them (compact rows, monospace for tools).
 // Every text from an agent goes in through textContent (h() children); nothing here builds markup from data (ADR-012).
 // One `ctx` per run: { agent, tools: Map<toolId, row>, override?, after? }. Everything else lives in ctx.st (created on first use).
-import { agentName, fmt, h, md } from './ui.js';
+import { agentName, fmt, h, linkBtn, md } from './ui.js';
 
 const FAMILY = {
   read: ['read', 'notebookread'],
@@ -232,7 +232,12 @@ export function renderEvent(container, e, ctx) {
     case 'todo': todoRow(ctx, Array.isArray(d.items) ? d.items : [], at); break;
     case 'usage': s.usage = d; break;
     case 'unknown': at.append(h('div.tx-row.tx-unknown', mark(), h('span.tx-muted', `Неизвестное событие: ${str(d.type) || '?'}`))); break;
-    case 'warn': at.append(h('div.note', str(d.message))); break;
+    case 'warn': {
+      const m = str(d.message), next = /^context_continue:(r[a-z0-9]+)$/.exec(m);   // the runner names the run that continues this one from its card
+      if (next) at.append(h('div.note', h('div.stack', h('span', { style: { fontSize: '14px' } }, 'Контекст стал большим: работа продолжается в новой сессии по короткой записи о сделанном.'), h('div', linkBtn('Открыть новую сессию', '#/chat/' + next[1], 'glass', 'handoff')))));
+      else at.append(h('div.note', m));
+      break;
+    }
     case 'error': at.append(h('div.tx-row.tx-orphan.is-err', mark(), h('div.tx-body', str(d.message) || 'Ошибка'))); break;
     case 'limit': if (d.reached) at.append(h('div.tx-row.tx-orphan.is-err', mark(), h('div.tx-body', `Лимит исчерпан. ${str(d.message)}`))); break;
     case 'end': s.partial?.el.remove(); s.partial = null; s.subs.length = 0; container.append(footer(ctx, d)); break;
@@ -246,7 +251,8 @@ export function renderEvent(container, e, ctx) {
 export function renderRun(container, run, events, opts = {}) {
   const ctx = { agent: run.agent, tools: new Map(), ...opts };
   if (run.resumeOf?.startsWith('session:')) container.append(h('div.note', 'Продолжение разговора из истории: агент помнит, что было раньше'));
-  if (run.handoffOf) container.append(h('div.note', `Продолжение после лимита: ${agentName(run.agent)} получил короткую запись о сделанном, а не весь чат`));
+  if (run.handoffOf && /Its context grew large/.test(run.prompt || '')) container.append(h('div.note', 'Новая сессия: прежняя стала слишком большой, поэтому агент получил короткую запись о сделанном, а не весь чат'));
+  else if (run.handoffOf) container.append(h('div.note', `Продолжение после лимита: ${agentName(run.agent)} получил короткую запись о сделанном, а не весь чат`));
   else if (run.prompt) container.append(h('div.msg.user', h('div.bubble', run.prompt)));      // a session from the history has no prompt of its own: its `user` events are in the stream
   for (const e of events) renderSafe(container, e, ctx);
   return ctx;

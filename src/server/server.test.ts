@@ -481,6 +481,7 @@ test('graph API: status says built/stale/missing; update needs approval and an a
 
     const logs = await api(`/api/logs?project=${id}`);
     assert.ok(logs.json.some((r: any) => r.source === 'audit' && /graph-update/.test(r.message)), 'the update is in the Journal');
+    assert.ok(logs.json.some((r: any) => r.source === 'audit' && /graph-update/.test(r.message) && r.ok === true), 'the Journal row carries ok as a field (the panel does not parse text)');
     assert.equal((await api('/api/graph')).status, 404, 'status needs a project');
   } finally { graphCtx.tool = null; rmSync(scriptDir, { recursive: true, force: true }); }
 });

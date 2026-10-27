@@ -37,7 +37,7 @@ const ladder = (agent: 'claude' | 'codex' = 'claude'): Rung[] => [
   { role: 'fixer', agent, model: MODEL_ID.opus, effort: 'high', permission: 'edit' },
 ];
 
-interface Step { git?: string[][]; lockIndex?: boolean; write?: Record<string, string>; text?: string; login?: boolean; sleepMs?: number }
+interface Step { git?: string[][]; lockIndex?: boolean; write?: Record<string, string>; text?: string; login?: boolean; sleepMs?: number; ctx?: number }
 interface Rig { root: string; home: string; runs: RunManager; capture: () => { argv: string[]; prompt: string; cwd: string }[]; req: (task: string) => StartReq; approve: () => void; db: ReturnType<typeof openDb> }
 
 function rig(steps: Step[], o: { approved?: boolean; verify?: string[]; files?: Record<string, string> } = {}): Rig {
@@ -453,4 +453,16 @@ test('R2-S3: verify refuses a HEAD that is not the run\'s own branch (work moved
   assert.match(res.rungs[0]?.blocked ?? '', /branch/i);
   assert.equal(res.rungs[0]?.hubSide, undefined);
   assert.equal(verifiedOf(r, res)[0], 0);
+});
+
+test('S3: a rung whose context passes the limit stops the cascade with its card and a clear reason; nothing runs outside the cascade', async () => {
+  const r = rig([{ ctx: 300_000, sleepMs: 30_000 }, { write: { 'impl.txt': 'good\n' } }]);
+  const res = await go(r, 'bigctx', { timeoutMs: 60_000 });
+  assert.equal(res.solved, false);
+  assert.match(res.reason ?? '', /context/i);
+  await new Promise((x) => setTimeout(x, 1500));
+  assert.equal(r.capture().length, 1, 'no continuation run was started behind the cascade\'s back');
+  assert.equal((r.db.prepare('SELECT count(*) AS n FROM run').get() as { n: number }).n, 1);
+  assert.equal(r.runs.get(res.rungs[0]?.runId ?? '')?.outcome, 'context');
+  assert.ok(r.runs.handoffCard(res.rungs[0]?.runId ?? ''), 'the stopped rung left a card for a manual continue');
 });

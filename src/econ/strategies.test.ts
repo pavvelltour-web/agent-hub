@@ -41,7 +41,7 @@ test('strategies: a missing price stays unknown, a price filled in from tokens i
 });
 
 const out = (model: string, effort: string, p: Partial<OutcomeRow>): OutcomeRow =>
-  ({ cls: 'implement', model, effort, runs: 0, done: 0, limit: 0, failed: 0, pending: 0, actualMw: 1, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, costUsd: null, costEstimated: false, ...p });
+  ({ cls: 'implement', model, effort, runs: 0, done: 0, limit: 0, failed: 0, pending: 0, contextStops: 0, actualMw: 1, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, costUsd: null, costEstimated: false, ...p });
 
 test('strategies on history rows: manual = what the user actually ran; limit stops and pending branches are not attempts; limit % needs a measured calibration', () => {
   const hist: OutcomeRow[] = [

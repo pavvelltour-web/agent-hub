@@ -108,3 +108,10 @@ test('claude parse: per-call prompt size (input + cache writes + cache reads) be
   assert.deepEqual(ctx(undefined), []); assert.deepEqual(ctx([1, 2]), []);
   assert.ok(!claudeAdapter.parse({ type: 'result', is_error: false, usage: { input_tokens: 1, cache_read_input_tokens: 900000, output_tokens: 1 } }).some((e) => e.kind === 'context'), 'a whole run summed over many calls is not a context size');
 });
+
+test('N4: a subagent\'s call (parent_tool_use_id) does not count toward the parent session\'s context', () => {
+  const line = (extra: object): unknown[] => claudeAdapter.parse({ type: 'assistant', ...extra, message: { content: [{ type: 'text', text: 'x' }], usage: { input_tokens: 900_000 } } }).filter((e) => e.kind === 'context');
+  assert.deepEqual(line({ parent_tool_use_id: 'toolu_1' }), []);
+  assert.deepEqual(line({ parent_tool_use_id: null }), [{ kind: 'context', tokens: 900_000 }]);
+  assert.deepEqual(line({}), [{ kind: 'context', tokens: 900_000 }]);
+});

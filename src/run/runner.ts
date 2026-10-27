@@ -23,6 +23,7 @@ export interface StartReq {
   extraArgs?: string[];                                      // INTERNAL only (review gate): appended to the CLI args; api.ts must never forward it from a request body
   isolatedCwd?: string;                                      // INTERNAL only (review gate): run in this empty folder, without project hooks or settings; api.ts must never forward it
   cls?: string; workMode?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
+  autoContinue?: boolean;                                    // INTERNAL (cascade): false = a run stopped for context size leaves its card but is not restarted; api.ts must never forward it
 }
 export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null; baseSha: string | null; verifyPassed: number | null }
 export interface StoredEvent { seq: number; ts: string; kind: string; data: unknown }
@@ -57,6 +58,8 @@ const projectTypeOf = (root: string): string | null => { try { return (JSON.pars
 export class RunManager {
   readonly adapters: Record<AgentId, AgentAdapter> = { claude: claudeAdapter, codex: codexAdapter };
   private live = new Map<string, { handle: RunHandle; stopped: boolean }>();
+  /** Runs the hub stopped for context size whose card is being written: a Stop click in this window cancels the restart. */
+  private pendingHandover = new Map<string, { cancelled: boolean }>();
   private subs = new Map<string, Set<(e: StoredEvent) => void>>();
   private db: Db;
   private opts: RunManagerOpts;
@@ -115,7 +118,10 @@ export class RunManager {
     let ctxDepth = 0;
     for (let p = req.handoffOf ? this.get(req.handoffOf) : undefined; p?.outcome === 'context' && ctxDepth < CONTEXT_CHAIN_MAX; p = p.handoffOf ? this.get(p.handoffOf) : undefined) ctxDepth++;
     const ctxLimit = this.opts.contextLimit ?? CONTEXT_LIMIT, ctxCapped = ctxDepth + 1 >= CONTEXT_CHAIN_MAX;
-    let ctxWarned = false, ctxStop = false;
+    const ctxRestart = !ctxCapped && req.autoContinue !== false;
+    // A continuation keeps the chain's ORIGINAL task text (not the previous handoff prompt, which would nest one card inside the next).
+    const origPrompt = req.handoffOf ? this.rootPrompt(req.handoffOf) ?? req.prompt : req.prompt;
+    let ctxWarned = false, ctxStop = false, handleRef: RunHandle | undefined;
     const events: HubEvent[] = [];
     let seq = 0, limit: Extract<HubEvent, { kind: 'limit' }> | undefined, tokIn = 0, tokOut = 0, cost = 0, cached = 0;
     const emit = (raw: HubEvent): void => {
@@ -124,9 +130,14 @@ export class RunManager {
       if (ctxStop && e.kind === 'warn' && e.message === 'stopped by user') return;   // the hub stopped it, the user did not
       if (e.kind === 'context') {
         // Per-call prompt size: watched, never stored or shown. A run in a hub task folder is stopped and continued from a card; a chat in the user's own folder is only warned.
+        if (this.live.get(id)?.stopped) return;   // the user already clicked Stop: stopped wins, whatever was still buffered
         if (ctxLimit > 0 && e.tokens > ctxLimit && !ctxWarned) {
           ctxWarned = true;
-          if (branch && !req.isolatedCwd) { ctxStop = true; emit({ kind: 'warn', message: ctxCapped ? 'контекст большой, и это уже три сессии подряд: остановил, продолжите вручную по карточке' : 'контекст большой: начну новую сессию по карточке' }); this.stop(id); }
+          if (branch && !req.isolatedCwd) {
+            ctxStop = true;
+            emit({ kind: 'warn', message: ctxCapped ? 'контекст большой, и это уже три сессии подряд: остановил, продолжите вручную по карточке' : ctxRestart ? 'контекст большой: начну новую сессию по карточке' : 'контекст большой: остановил, карточка записана; продолжите вручную' });
+            handleRef?.stop();   // the hub's own stop: not the user's (`stopped` stays false)
+          }
           else emit({ kind: 'warn', message: `контекст большой (${Math.round(e.tokens / 1000)} тыс.): лучше начать новый чат, так дешевле` });
         }
         return;
@@ -170,12 +181,13 @@ export class RunManager {
       handle = startAgent(adapter, { prompt: req.prompt, cwd, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}), ...(resumeId ? { resumeId } : {}), permission, lean: lean?.args ?? [], ...(req.extraArgs?.length ? { extraArgs: req.extraArgs } : {}) }, emit,
         { env, ...(exe ? { exe } : {}) });
     } catch (e) { lean?.cleanup(); throw e; }   // a start that throws must not leave the temp MCP file behind
+    handleRef = handle;
     const entry = { handle, stopped: false };
     this.live.set(id, entry);
     /** Commit a checkpoint, write the handoff card (reason as given) and record it on the run. false = the card could not be written. */
     const handover = async (reason: HandoffInput['reason'], resetsAt?: string): Promise<boolean> => {
       try {
-        const inp: HandoffInput = { runId: id, task: req.task ?? 'chat', prompt: req.prompt, from: { agent: req.agent, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}) }, reason, cwd, events, ...(baseSha ? { baseSha } : {}), ...(resetsAt ? { resetsAt } : {}) };
+        const inp: HandoffInput = { runId: id, task: req.task ?? 'chat', prompt: origPrompt, from: { agent: req.agent, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}) }, reason, cwd, events, ...(baseSha ? { baseSha } : {}), ...(resetsAt ? { resetsAt } : {}) };
         const sum = await this.summarize(inp);
         const card = sum ? writeCard(join(req.projectRoot, '.hub'), inp, sum, 'claude-haiku-5-5') : writeCard(join(req.projectRoot, '.hub'), inp);
         emit({ kind: 'warn', message: `handoff_ready:${card.path}` });
@@ -185,6 +197,7 @@ export class RunManager {
       } catch (e) { emit({ kind: 'error', message: `could not write handoff card: ${(e as Error).message}` }); return false; }
     };
     void handle.done.then(async () => {
+      if (ctxStop) this.pendingHandover.set(id, { cancelled: false });   // set in the same step as the delete below: Stop never finds the run in neither map
       this.live.delete(id);
       lean?.cleanup();
       const outcome = limit ? 'limit' : ctxStop ? 'context' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
@@ -194,8 +207,12 @@ export class RunManager {
       else if (outcome === 'limit' && limit) await handover('limit_reached', limit.resetsAt);
       else if (outcome === 'context') {
         // Same worktree, same agent, model, effort and permission (a review thread stays in plan): only the context is fresh.
-        if (await handover('context') && !ctxCapped) {
-          try { const next = this.handoff(id, { agent: req.agent, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}) }); emit({ kind: 'warn', message: `новая сессия по карточке: ${next.id}` }); }
+        const wrote = await handover('context');
+        const cancelled = this.pendingHandover.get(id)?.cancelled === true;
+        this.pendingHandover.delete(id);   // checked and cleared in one step, right before the restart: a Stop after this finds nothing to cancel
+        if (cancelled) emit({ kind: 'warn', message: 'остановлено вами: новая сессия не начата, карточка записана' });
+        else if (wrote && ctxRestart) {
+          try { const next = this.handoff(id, { agent: req.agent, ...(req.model ? { model: req.model } : {}), ...(req.effort ? { effort: req.effort } : {}) }); emit({ kind: 'warn', message: `context_continue:${next.id}` }); }
           catch (e) { emit({ kind: 'warn', message: `не удалось начать новую сессию: ${(e as Error).message.slice(0, 200)}; продолжите вручную по карточке` }); }
         }
       }
@@ -218,7 +235,11 @@ export class RunManager {
   /** Record what the verify command said about a run: true = passed (1), false = failed (0). NULL (never set) means none ran. Quality scoring reads it (econ `runScore`). */
   setVerified(id: string, passed: boolean): void { this.db.prepare('UPDATE run SET verify_passed = ? WHERE id = ?').run(passed ? 1 : 0, id); }
 
-  stop(id: string): boolean { const r = this.live.get(id); if (!r) return false; r.stopped = true; r.handle.stop(); return true; }
+  stop(id: string): boolean {
+    const r = this.live.get(id);
+    if (!r) { const p = this.pendingHandover.get(id); if (!p) return false; p.cancelled = true; return true; }   // the process is gone but the restart has not begun: cancel it
+    r.stopped = true; r.handle.stop(); return true;
+  }
   isLive = (id: string): boolean => this.live.has(id);
 
   get(id: string): RunRow | undefined { return this.db.prepare(`SELECT ${COLS} FROM run WHERE id = ?`).get(id) as unknown as RunRow | undefined; }
@@ -233,6 +254,13 @@ export class RunManager {
     let s = this.subs.get(id); if (!s) this.subs.set(id, (s = new Set()));
     s.add(cb);
     return () => { s?.delete(cb); };
+  }
+
+  /** The task text the chain started from: the prompt of the first run (a continuation's own prompt is a handoff prompt that holds the previous card). */
+  private rootPrompt(runId: string): string | undefined {
+    let row = this.get(runId);
+    for (let i = 0; row?.handoffOf && i < 50; i++) row = this.get(row.handoffOf);
+    return row?.prompt ?? undefined;
   }
 
   handoffCard(runId: string): { path: string; markdown: string; branch: string; resetsAt: string | null } | undefined {
@@ -252,6 +280,7 @@ export class RunManager {
     const projectRoot = (this.db.prepare('SELECT root FROM project WHERE id = ?').get(prev.projectId) as { root: string } | undefined)?.root ?? root;
     const c = { markdown: card.markdown, facts: { branch: card.branch } } as unknown as Card;
     const prevPerm = prev.workMode === 'review' ? 'plan' : prev.permission === 'plan' || prev.permission === 'full' || prev.permission === 'edit' ? prev.permission : undefined;
-    return this.start({ agent: to.agent, prompt: handoffPrompt(c, prev.prompt ?? ''), projectRoot: existsSync(projectRoot) ? projectRoot : root, handoffOf: runId, task: 'handoff', ...(to.model ? { model: to.model } : {}), ...(to.effort ? { effort: to.effort } : {}), ...(to.permission ?? prevPerm ? { permission: (to.permission ?? prevPerm) as Permission } : {}), ...(prev.workMode ? { workMode: prev.workMode } : {}) });
+    let est: unknown; try { est = prev.estJson ? JSON.parse(prev.estJson) : undefined; } catch { est = undefined; }
+    return this.start({ agent: to.agent, prompt: handoffPrompt(c, this.rootPrompt(runId) ?? prev.prompt ?? ''), ...(prev.cls ? { cls: prev.cls } : {}), ...(est !== undefined ? { est } : {}), projectRoot: existsSync(projectRoot) ? projectRoot : root, handoffOf: runId, task: 'handoff', ...(to.model ? { model: to.model } : {}), ...(to.effort ? { effort: to.effort } : {}), ...(to.permission ?? prevPerm ? { permission: (to.permission ?? prevPerm) as Permission } : {}), ...(prev.workMode ? { workMode: prev.workMode } : {}) });
   }
 }

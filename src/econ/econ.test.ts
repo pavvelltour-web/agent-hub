@@ -113,3 +113,18 @@ test('router: with no data the optimizer reproduces the author table; real resul
   assert.equal(c.options?.filter((o) => o.chosen).length, 1); assert.deepEqual(c.options?.map((o) => o.distance), [...(c.options ?? [])].map((o) => o.distance).sort((a, b) => a - b));
   assert.equal(modelKey('gpt-6.1-sol'), 'gpt'); assert.equal(rank({ cls: 'plan' })[0]!.family, 'opus');   // 3.1: options are (model, effort) pairs, `family` is the model
 });
+
+test('N5: a run stopped for context size is its own count (contextStops); its huge partial tokens stay out of effort profiles and actual-token averages; its score is null', async () => {
+  const { effortProfile, outcomes, runScore } = await import('./econ.ts');
+  const d = openDb(':memory:');
+  const add = (id: string, outcome: string, tin: number): void => { d.prepare("INSERT INTO run (id, agent, model, effort, prompt, cwd, started_at, ended_at, outcome, tokens_in, tokens_cached, tokens_out, cls) VALUES (?, 'claude', 'claude-sonnet-5-5', 'high', 'p', 'C:/x', '2026-10-14T10:00:00Z', '2026-10-14T10:05:00Z', ?, ?, 0, 1000, 'implement')").run(id, outcome, tin); };
+  add('a', 'done', 100_000); add('b', 'done', 120_000); add('c', 'done', 110_000); add('big', 'context', 9_000_000);
+  const p = effortProfile(d, 'claude', 'high');
+  assert.equal(p.n, 3, 'the context-stopped run is not a sample of what a task at this effort costs');
+  assert.ok(p.p90.uncachedIn < 1_000_000);
+  const row = outcomes(d).find((o) => o.cls === 'implement')!;
+  assert.equal(row.runs, 4); assert.equal(row.contextStops, 1);
+  assert.equal(row.done + row.limit + row.failed + row.pending + row.contextStops, row.runs, 'every run is in exactly one category');
+  assert.ok(row.actualMw < 1, `actual tokens average only settled runs, got ${row.actualMw}`);
+  assert.equal(runScore('context', null), null);
+});

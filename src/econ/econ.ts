@@ -49,7 +49,7 @@ export const MIN_EFFORT_RUNS = 3;
  * Fewer than MIN_EFFORT_RUNS rows: the default profile, so callers fall back to the prior multiplier.
  */
 export function effortProfile(db: Db, agent: string, effort: string): Profile {
-  const runs = db.prepare(`SELECT r.tokens_in AS tin, r.tokens_cached AS tc, r.tokens_out AS o FROM run r WHERE r.agent = ? AND lower(r.effort) = ? AND r.outcome IS NOT NULL AND r.outcome != 'interrupted' AND ${NOT_REVIEWER_SQL} AND (r.tokens_in IS NOT NULL OR r.tokens_out IS NOT NULL)`).all(agent, effort.toLowerCase()) as unknown as { tin: number | null; tc: number | null; o: number | null }[];
+  const runs = db.prepare(`SELECT r.tokens_in AS tin, r.tokens_cached AS tc, r.tokens_out AS o FROM run r WHERE r.agent = ? AND lower(r.effort) = ? AND r.outcome IS NOT NULL AND r.outcome NOT IN ('interrupted', 'context') AND ${NOT_REVIEWER_SQL} AND (r.tokens_in IS NOT NULL OR r.tokens_out IS NOT NULL)`).all(agent, effort.toLowerCase()) as unknown as { tin: number | null; tc: number | null; o: number | null }[];
   const sessions = db.prepare(`SELECT s.uncached_in AS u, s.cached_in AS c, s.out_tokens AS o FROM session s WHERE s.agent = ? AND lower(s.effort) = ? AND s.parent_id IS NULL AND s.msg_count >= 5 AND (s.uncached_in + s.cached_in) > 0 AND NOT EXISTS (SELECT 1 FROM run r WHERE r.agent = s.agent AND r.session_native_id = s.native_id)`).all(agent, effort.toLowerCase()) as unknown as { u: number; c: number; o: number }[];
   const rows = [
     ...runs.map((r) => ({ u: Math.max(0, (r.tin ?? 0) - (r.tc ?? 0)), c: r.tc ?? 0, o: r.o ?? 0 })),
@@ -165,7 +165,7 @@ export function modelStats(db: Db): Record<string, { n: number; score: number }>
 }
 
 // ---------- estimate vs actual ----------
-export interface OutcomeRow { cls: string; model: string; effort: string; runs: number; done: number; limit: number; failed: number; pending: number; actualMw: number; estLowMw: number | null; estHighMw: number | null; withinRange: number; withEstimate: number; costUsd: number | null; costEstimated: boolean }
+export interface OutcomeRow { cls: string; model: string; effort: string; runs: number; done: number; limit: number; failed: number; pending: number; contextStops: number; actualMw: number; estLowMw: number | null; estHighMw: number | null; withinRange: number; withEstimate: number; costUsd: number | null; costEstimated: boolean }
 
 /**
  * Finished runs grouped by task class, model and effort: how often they succeed and whether the shown estimate held (weighted Mtok). A branch still in review is `pending`, not done.
@@ -177,9 +177,11 @@ export function outcomes(db: Db): OutcomeRow[] {
   const g = new Map<string, OutcomeRow & { lowSum: number; highSum: number; actualSum: number; costSum: number; settled: number; unpriced: number }>();
   for (const r of rows) {
     const key = [r.cls ?? 'unclassified', canonicalModel(r.model) ?? r.model ?? 'unknown', r.effort ?? '-'].join('|');
-    const o = g.get(key) ?? { cls: r.cls ?? 'unclassified', model: canonicalModel(r.model) ?? r.model ?? 'unknown', effort: r.effort ?? '-', runs: 0, done: 0, limit: 0, failed: 0, pending: 0, actualMw: 0, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, costUsd: null, costEstimated: false, lowSum: 0, highSum: 0, actualSum: 0, costSum: 0, settled: 0, unpriced: 0 };
+    const o = g.get(key) ?? { cls: r.cls ?? 'unclassified', model: canonicalModel(r.model) ?? r.model ?? 'unknown', effort: r.effort ?? '-', runs: 0, done: 0, limit: 0, failed: 0, pending: 0, contextStops: 0, actualMw: 0, estLowMw: null, estHighMw: null, withinRange: 0, withEstimate: 0, costUsd: null, costEstimated: false, lowSum: 0, highSum: 0, actualSum: 0, costSum: 0, settled: 0, unpriced: 0 };
     const out = settledOutcome(r.outcome, r.rstate);
-    o.runs++; if (out === 'done') o.done++; else if (out === 'review') o.pending++; else if (out === 'limit') o.limit++; else if (out === 'failed') o.failed++;
+    o.runs++;
+    if (out === 'context') { o.contextStops++; g.set(key, o); continue; }   // stopped for context size and continued elsewhere: partial work, its tokens say nothing about what the task costs
+    if (out === 'done') o.done++; else if (out === 'review') o.pending++; else if (out === 'limit') o.limit++; else if (out === 'failed') o.failed++;
     const cached = r.tc ?? 0;
     const actual = weighted({ uncachedIn: Math.max(0, (r.tin ?? 0) - cached), cachedIn: cached, out: r.tout ?? 0 });
     o.actualSum += actual;
@@ -192,5 +194,5 @@ export function outcomes(db: Db): OutcomeRow[] {
     if (r.est) { try { const e = (JSON.parse(r.est) as { estimate?: Estimate } & Partial<Estimate>); const t = e.estimate?.tokens ?? e.tokens; if (t) { const lo = weighted(t.low), hi = weighted(t.high); o.withEstimate++; o.lowSum += lo; o.highSum += hi; if (actual >= lo && actual <= hi) o.withinRange++; } } catch { /* ignore a malformed estimate */ } }
     g.set(key, o);
   }
-  return [...g.values()].map(({ lowSum, highSum, actualSum, costSum, settled, unpriced, ...o }) => ({ ...o, costUsd: settled > 0 && unpriced === 0 ? costSum / settled : null, costEstimated: o.costEstimated && unpriced === 0, actualMw: o.runs ? actualSum / o.runs : 0, estLowMw: o.withEstimate ? lowSum / o.withEstimate : null, estHighMw: o.withEstimate ? highSum / o.withEstimate : null })).sort((a, b) => b.runs - a.runs);
+  return [...g.values()].map(({ lowSum, highSum, actualSum, costSum, settled, unpriced, ...o }) => ({ ...o, costUsd: settled > 0 && unpriced === 0 ? costSum / settled : null, costEstimated: o.costEstimated && unpriced === 0, actualMw: o.runs - o.contextStops > 0 ? actualSum / (o.runs - o.contextStops) : 0, estLowMw: o.withEstimate ? lowSum / o.withEstimate : null, estHighMw: o.withEstimate ? highSum / o.withEstimate : null })).sort((a, b) => b.runs - a.runs);
 }

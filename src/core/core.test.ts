@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -318,4 +318,68 @@ test('graph update: one at a time per project; a failing tool is reported with i
     const gone = updateGraph(root, { tool: { cmd: join(root, 'no-such-tool.exe'), prefix: [] }, home });
     assert.equal(gone.started, true); assert.equal((await gone.done).ok, false, 'a tool that cannot start is a failure, not a crash');
   } finally { rmSync(home, { recursive: true, force: true }); for (const d of gtmp) rmSync(d, { recursive: true, force: true }); }
+});
+
+// ── review fixes for the graph status (S1, S2, N6, N7) ────────────────────────────────────────────────────────────────────────────────────
+test('S1: a hostile .graphifyignore line cannot stall the status (linear matching, caps on length and wildcards)', () => {
+  const root = project(); const name = 'a'.repeat(80);
+  touch(join(root, name), 120_000); buildGraph(root, 60_000); touch(join(root, name + 'x'), 1000);
+  const b0 = Date.now(); graphStatus(root); const base = Date.now() - b0;   // git itself costs a little; the pattern must add next to nothing
+  writeFileSync(join(root, '.graphifyignore'), '**a**a**a**a**a**a**b\n'); utimesSync(join(root, '.graphifyignore'), new Date(Date.now() - 100_000), new Date(Date.now() - 100_000));
+  const t0 = Date.now(); const s = graphStatus(root); const ms = Date.now() - t0;
+  assert.ok(ms < base + 150, `took ${ms} ms (without the pattern ${base} ms)`);
+  assert.equal(s.state, 'stale');
+  // lines over the caps are dropped (ignored), the other lines still work
+  writeFileSync(join(root, '.graphifyignore'), `${'*a'.repeat(30)}\n${'x'.repeat(300)}\nskipme/\n`);
+  touch(join(root, 'skipme', 'f.txt'), 500);
+  const t1 = Date.now(); const s2 = graphStatus(root); assert.ok(Date.now() - t1 < base + 150);
+  assert.ok(!s2.example?.startsWith('skipme/'), 'a normal line next to hostile ones still applies');
+});
+
+test('S1: the glob subset keeps its meaning without regex (names, dir/, *, **, ?, anchoring)', () => {
+  const root = project(); buildGraph(root, 60_000);
+  writeFileSync(join(root, '.graphifyignore'), 'a/**/z.txt\n/top.md\n*.tmp\ndocs/\nq?.js\n'); utimesSync(join(root, '.graphifyignore'), new Date(Date.now() - 100_000), new Date(Date.now() - 100_000));
+  for (const f of ['a/z.txt', 'a/b/c/z.txt', 'top.md', 'x/y.tmp', 'docs/readme.md', 'sub/docs/readme.md', 'qa.js']) touch(join(root, f), 1000);
+  assert.equal(graphStatus(root).state, 'built', 'all of these are ignored');
+  for (const f of ['a/zz.txt', 'sub/top.md', 'qab.js', 'b/z.txt']) { touch(join(root, f), 1000); assert.equal(graphStatus(root).example, f, `${f} is not ignored`); rmSync(join(root, f)); }
+});
+
+test('S2: a core.fsmonitor in the project\'s git config is never run by the status or the init plan', () => {
+  const root = project(); const marker = join(project(), 'ran.txt'); const script = join(project(), 'fsm.mjs');
+  writeFileSync(script, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'ran');\nprocess.stdout.write('\\0');`);
+  gitRun(root, ['init', '-q', '-b', 'main']); touch(join(root, 'a.ts'), 120_000);
+  gitRun(root, ['config', 'core.fsmonitor', `"${process.execPath.replace(/\\/g, '/')}" "${script.replace(/\\/g, '/')}"`]);
+  gitRun(root, ['config', 'core.untrackedCache', 'true']);
+  buildGraph(root, 60_000);
+  graphStatus(root);
+  planInit(root, { type: 'web-saas', graphify: { cmd: process.execPath, prefix: [] } });
+  assert.equal(exists2(marker), false, 'the fsmonitor program must not run');
+});
+
+test('N7: untracked dependency folders cannot crowd real files out of the status (ignored before the cap)', () => {
+  const root = project();
+  gitRun(root, ['init', '-q', '-b', 'main']); touch(join(root, 'a.ts'), 120_000); buildGraph(root, 60_000);
+  for (let i = 0; i < 12; i++) touch(join(root, 'node_modules', 'pkg', `f${i}.js`), 1000);
+  touch(join(root, 'zzz.ts'), 1000);
+  assert.equal(graphStatus(root, { maxFiles: 5 }).state, 'stale', 'zzz.ts is newer and must be seen');
+});
+
+test('N6: a .hub or graphify-out that is a link out of the project is refused: nothing is written there', async () => {
+  const outside = project(); const home = mkdtempSync(join(tmpdir(), 'hub-gh-')); const f = fakeGraph('ok');
+  try {
+    const a = project();
+    symlinkSync(outside, join(a, '.hub'), 'junction');
+    const ra = updateGraph(a, { tool: f.tool, home });
+    assert.equal(ra.started, false); assert.match(ra.reason ?? '', /\.hub/);
+    const b = project();
+    symlinkSync(outside, join(b, 'graphify-out'), 'junction');
+    const rb = updateGraph(b, { tool: f.tool, home });
+    assert.equal(rb.started, false); assert.match(rb.reason ?? '', /graphify-out/);
+    assert.deepEqual(readdirSync(outside), [], 'nothing was written through the link');
+    assert.equal(calls(f.log).length, 0, 'graphify never started');
+    // a link that stays inside the project is fine
+    const c = project(); mkdirSync(join(c, 'real-out')); symlinkSync(join(c, 'real-out'), join(c, 'graphify-out'), 'junction');
+    const rc = updateGraph(c, { tool: f.tool, home }); assert.equal(rc.started, true); await rc.done;
+    assert.ok(exists2(join(c, 'real-out', 'graph.json')));
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
