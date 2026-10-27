@@ -52,6 +52,10 @@ The review gate's `startFix` is left unchanged: a cascade works before any revie
 
 `<home>/cascades/<first run id>.json` (written by the cascade after each step): status, verify argv, per-step `{runId, role, agent, model, effort, verifyPassed, repair, blocked, note, tail}`, reason, card path. `GET /api/runs/:id/cascade` finds the cascade a run belongs to. It is a convenience view: the runs, branch and commits are the record. Model output and verify output in it are untrusted and drawn only through `h()` / textContent after `cascadeModel` typed them.
 
+## Quality evidence (task 3.4)
+
+Each working rung's run stores `run.verify_passed` (1 green, 0 red or BLOCKED, NULL = no verify judged it: the read-only reviewer, every run outside a cascade). `runScore` orders evidence: the user's rating > the verify result (green 0.9, red 0.1) > the outcome (`done` without any verify 0.5, down from 0.7; `failed` 0; limit, stop and a pending review are no evidence). A verify result outranks the gate's outcome by that order, so a verified run keeps 0.9 even if its review later ends `reconsider`. Consequence for learned routing: with the blend of 5 prior runs, a model whose history is only unverified `done` now measures below its prior (implement/Sonnet: prior 0.80, ten unverified done runs: 0.73 before, 0.60 now) until its runs carry verify results.
+
 ## Unverified
 
 - No real Claude or Codex has run the ladder. The prompts, the Opus xhigh effort on the reviewer, and whether repair-then-escalate beats going straight to Opus are proposed; task 3.5 (strategy comparison on the user's own data) is where that gets measured.

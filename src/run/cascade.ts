@@ -235,6 +235,7 @@ export async function runCascade(o: CascadeOpts): Promise<CascadeResult> {
     const v = await check(run, r.role);
     const x: RungResult = { runId: run.id, role: r.role, verifyPassed: v.passed, ...(repair ? { repair: true } : {}), ...(v.blocked ? { blocked: v.blocked } : {}), ...(v.tail ? { tail: clip(v.tail, 4000) } : {}) };
     note(r, x);
+    runs.setVerified(run.id, v.passed && !v.blocked);
     return { solved: v.passed, tail: v.tail, ...(v.blocked ? { blocked: v.blocked } : {}) };
   };
   const failed = (r: Rung, res: { stop: string; run?: RunRow }): CascadeResult => {

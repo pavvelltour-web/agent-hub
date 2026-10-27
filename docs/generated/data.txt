@@ -89,6 +89,7 @@
   permission       TEXT
   work_mode        TEXT
   base_sha         TEXT
+  verify_passed    INTEGER
 
 [run_event]
 # id               INTEGER

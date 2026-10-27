@@ -113,6 +113,8 @@ test('red twice: stuck-review in plan gets the last 40 verify lines as redacted 
     assert.equal(new Set(res.rungs.map((x) => r.runs.get(x.runId)?.branch)).size, 1);
     // the executor's repair resumed its own thread
     assert.equal(r.runs.get(res.rungs[1]!.runId)?.resumeOf, res.rungs[0]!.runId);
+    // verify_passed is written per verified rung (1 / 0) and stays NULL for the read-only reviewer, which no verify judged
+    assert.deepEqual(res.rungs.map((x) => r.runs.get(x.runId)?.verifyPassed), [0, 0, null, 1]);
   } finally { delete process.env['CASCADE_TEST_SECRET']; }
 });
 
@@ -136,6 +138,7 @@ test('a diff that weakens the verify tests is BLOCKED: the rung fails, nothing e
   assert.equal(r.capture().length, 1);
   assert.equal(res.rungs[0]?.verifyPassed, false);
   assert.match(res.rungs[0]?.blocked ?? '', /test\/a\.test\.js/);
+  assert.equal(r.runs.get(res.rungs[0]!.runId)?.verifyPassed, 0, 'a blocked rung is stored as not verified-passed');
   assert.match(res.reason ?? '', /BLOCKED/);
 });
 

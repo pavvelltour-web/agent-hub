@@ -132,21 +132,26 @@ const REVIEW_STATE_SQL = "(SELECT v.state FROM review v JOIN run u ON u.id = v.r
 /** Review-gate reviewer runs are plumbing, not the user's work: never part of stats, routing or shared cases. */
 export const NOT_REVIEWER_SQL = "(r.work_mode IS NULL OR r.work_mode != 'gate-reviewer')";
 
+/** Score of a run whose verify command passed / failed, and of a `done` run that nothing verified. A user's rating (0 / 0.5 / 1) outranks all three. */
+export const VERIFY_PASS = 0.9, VERIFY_FAIL = 0.1, DONE_UNVERIFIED = 0.5;
 /**
- * 0..1 per finished run: a rating from the user wins; without one, "done" is a weak yes and "failed" a no. Limit stops and manual stops say
- * nothing about quality, and neither does a branch still in review (`review` = pending, see settledOutcome): pass the settled outcome.
+ * 0..1 per finished run, by the order of evidence: the user's rating > the verify result (`verify_passed`: 1 green, 0 red, null = none ran) > the
+ * outcome. Without a rating or a verify result, "done" is a weak yes (0.5: nothing checked it) and "failed" a no. Limit stops and manual stops say
+ * nothing about quality, and neither does a branch still in review (`review` = pending, see settledOutcome): pass the settled outcome. A verify
+ * result outranks the gate's outcome, so a run that passed its verify scores VERIFY_PASS even if its review later ends `reconsider`.
  */
-export function runScore(outcome: string | null, rating: number | null): number | null {
+export function runScore(outcome: string | null, rating: number | null, verifyPassed: number | boolean | null = null): number | null {
   if (rating === 2) return 1; if (rating === 1) return 0.5; if (rating === 0) return 0;
-  if (outcome === 'done') return 0.7; if (outcome === 'failed') return 0;
+  if (verifyPassed === 1 || verifyPassed === true) return VERIFY_PASS; if (verifyPassed === 0 || verifyPassed === false) return VERIFY_FAIL;
+  if (outcome === 'done') return DONE_UNVERIFIED; if (outcome === 'failed') return 0;
   return null;
 }
 /** Keys `cls|model` (every effort together) and `cls|model|effort` (that pair only). */
 export function modelStats(db: Db): Record<string, { n: number; score: number }> {
-  const rows = db.prepare(`SELECT r.cls, r.model, r.effort, r.outcome, r.rating, ${REVIEW_STATE_SQL} AS rstate FROM run r WHERE r.cls IS NOT NULL AND r.model IS NOT NULL AND r.outcome IS NOT NULL AND ${NOT_REVIEWER_SQL}`).all() as unknown as { cls: string; model: string; effort: string | null; outcome: string; rating: number | null; rstate: string | null }[];
+  const rows = db.prepare(`SELECT r.cls, r.model, r.effort, r.outcome, r.rating, r.verify_passed AS verify, ${REVIEW_STATE_SQL} AS rstate FROM run r WHERE r.cls IS NOT NULL AND r.model IS NOT NULL AND r.outcome IS NOT NULL AND ${NOT_REVIEWER_SQL}`).all() as unknown as { cls: string; model: string; effort: string | null; outcome: string; rating: number | null; verify: number | null; rstate: string | null }[];
   const out: Record<string, { n: number; score: number }> = {};
   for (const r of rows) {
-    const sc = runScore(settledOutcome(r.outcome, r.rstate), r.rating); if (sc == null) continue;
+    const sc = runScore(settledOutcome(r.outcome, r.rstate), r.rating, r.verify); if (sc == null) continue;
     const m = canonicalModel(r.model) ?? r.model;
     const key = `${r.cls}|${/opus/i.test(m) ? 'opus' : /sonnet/i.test(m) ? 'sonnet' : /haiku/i.test(m) ? 'haiku' : /fable/i.test(m) ? 'fable' : 'gpt'}`;
     // per model (all efforts) and, when the run recorded its effort, per (model, effort) pair

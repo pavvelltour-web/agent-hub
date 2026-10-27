@@ -23,10 +23,10 @@ export interface StartReq {
   isolatedCwd?: string;                                      // INTERNAL only (review gate): run in this empty folder, without project hooks or settings; api.ts must never forward it
   cls?: string; workMode?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
 }
-export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null; baseSha: string | null }
+export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null; baseSha: string | null; verifyPassed: number | null }
 export interface StoredEvent { seq: number; ts: string; kind: string; data: unknown }
 
-const COLS = 'id, agent, model, effort, prompt, cwd, branch, started_at AS startedAt, ended_at AS endedAt, outcome, session_native_id AS sessionNativeId, tokens_in AS tokensIn, tokens_out AS tokensOut, cost_usd AS costUsd, handoff_of AS handoffOf, resume_of AS resumeOf, error, project_id AS projectId, tokens_cached AS tokensCached, cls, est_json AS estJson, rating, project_type AS projectType, permission, work_mode AS workMode, base_sha AS baseSha';
+const COLS = 'id, agent, model, effort, prompt, cwd, branch, started_at AS startedAt, ended_at AS endedAt, outcome, session_native_id AS sessionNativeId, tokens_in AS tokensIn, tokens_out AS tokensOut, cost_usd AS costUsd, handoff_of AS handoffOf, resume_of AS resumeOf, error, project_id AS projectId, tokens_cached AS tokensCached, cls, est_json AS estJson, rating, project_type AS projectType, permission, work_mode AS workMode, base_sha AS baseSha, verify_passed AS verifyPassed';
 const MAX_CONCURRENT = 4;
 const MAX_KEEP = 400;
 
@@ -165,6 +165,9 @@ export class RunManager {
     const exe = this.opts.exe?.claude;
     return modelSummary(inp, { ...(exe ? { exe } : {}), ...(this.opts.env ? { env: this.opts.env } : {}) }).catch(() => undefined);
   }
+
+  /** Record what the verify command said about a run: true = passed (1), false = failed (0). NULL (never set) means none ran. Quality scoring reads it (econ `runScore`). */
+  setVerified(id: string, passed: boolean): void { this.db.prepare('UPDATE run SET verify_passed = ? WHERE id = ?').run(passed ? 1 : 0, id); }
 
   stop(id: string): boolean { const r = this.live.get(id); if (!r) return false; r.stopped = true; r.handle.stop(); return true; }
   isLive = (id: string): boolean => this.live.has(id);
