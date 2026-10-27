@@ -53,12 +53,15 @@ export function readVerify(root: string): string[] | undefined {
 
 // ---- test edits ----------------------------------------------------------------------------------------------------------------------
 
-const TESTISH = /(?:^|\/)(?:tests?|__tests__|specs?|__snapshots__)\/|\.(?:test|spec)\.[A-Za-z0-9]+$|\.snap$|(?:^|\/)test_[^/]*\.py$|_test\.(?:go|py)$/i;
-/** Test runner configuration: any change at all (a runner told to ignore, retry or mock tests changes what "green" means). */
-const RUNNER_CONFIG = /(?:^|\/)(?:(?:jest|vitest|playwright|karma|cypress|ava)\.config\.[cm]?[jt]s|(?:jest|vitest)\.(?:setup|workspace)\.[cm]?[jt]s|\.mocharc(?:\.[a-z]+)?|mocha\.opts|pytest\.ini|conftest\.py|tox\.ini|\.nycrc(?:\.json)?|\.c8rc(?:\.json)?)$/i;
-/** `package.json` keys that configure a test runner; a change in them is a change of runner config. */
-const PKG_RUNNER_KEYS = ['jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc'];
+const TESTISH = /(?:^|\/)(?:tests?|__tests__|specs?|__snapshots__|fixtures?|__fixtures__|testdata)\/|(?:^|\/)expected[^/]*(?:\/|$)|\.(?:test|spec)\.[A-Za-z0-9]+$|(?:^|\/)test-[^/]+\.[cm]?[jt]s$|[-_]test\.[cm]?[jt]s$|(?:^|\/)test\.[cm]?[jt]s$|\.snap$|(?:^|\/)test_[^/]*\.py$|_test\.(?:go|py)$/i;
+/** Test runner and build configuration that decides what "green" means: any change at all. */
+const RUNNER_CONFIG = /(?:^|\/)(?:(?:jest|vitest|vite|playwright|cypress|ava|karma)\.(?:config|conf|setup|workspace)\.[A-Za-z]+|babel\.config\.[A-Za-z]+|\.babelrc(?:\.[a-z]+)?|\.mocharc(?:\.[a-z]+)?|mocha\.opts|pytest\.ini|conftest\.py|tox\.ini|setup\.cfg|pyproject\.toml|tsconfig[^/]*\.json|\.nycrc(?:\.[a-z]+)?|\.c8rc(?:\.[a-z]+)?)$/i;
+/** `package.json` keys (at any depth) that configure how tests run; a change in them is a change of runner config. */
+const PKG_RUNNER_KEYS = ['scripts', 'jest', 'vitest', 'mocha', 'ava', 'tap', 'c8', 'nyc', 'babel'];
 const SKIP = /\.(?:skip|todo|only)\b|\bx(?:it|describe|test)\s*\(|\bf(?:it|describe)\s*\(|\bskip\s*:\s*(?:true|["'`])/;
+/** An early exit added to a test file makes the runner stop green before the assertions: process.exit, os._exit, sys.exit, Deno.exit, exit(...), a bare top-level return. */
+const EARLY_EXIT = /\b(?:process\.(?:exit|abort)|os\._exit|sys\.exit|Deno\.exit)\b|\bprocess\.exitCode\s*=|(?:^|[^.\w$])exit\s*\(/;
+const TOP_RETURN = /^return\s*;?\s*$/;
 
 /** Files the verify command names itself (`node --test src/a.test.ts`, `sh tools.sh`); globs and options are not files. */
 function namedPaths(verify: string[]): Set<string> {
@@ -68,18 +71,19 @@ function namedPaths(verify: string[]): Set<string> {
   return new Set([...files, ...(/[\\/]/.test(prog) ? [prog] : [])].map(norm));
 }
 
-/** The runner-config keys of package.json at `sha` as one string ('' when the file or JSON is missing, '?' when unreadable). */
-function pkgRunnerConfig(cwd: string, sha: string): string {
-  const r = git(cwd, ['--no-pager', 'show', `${sha}:package.json`]);
+/** The runner-config keys of the package.json at `path` in commit `sha` as one string ('' when the file is missing, '?' when it is not JSON). */
+function pkgRunnerConfig(cwd: string, sha: string, path: string): string {
+  const r = git(cwd, ['--no-pager', 'show', `${sha}:${path}`]);
   if (!r.ok) return '';
   try { const j = JSON.parse(r.out.replace(/^﻿/, '')) as Record<string, unknown>; return JSON.stringify(PKG_RUNNER_KEYS.map((k) => j[k] ?? null)); } catch { return '?'; }
 }
 
 /**
- * Reasons the diff base..head must not count. In test files ("test file": under test/, tests/, __tests__/, spec/, __snapshots__/; named `*.test.*`,
- * `*.spec.*`, `*.snap`, `test_*.py`, `*_test.go|py`; or named by the verify command): any removed or changed line, a deleted file, an added skip /
- * todo / only / focus marker. Test runner config (jest/vitest/mocha/... config files, the runner keys of package.json): any change. Added lines
- * (new tests, new assertions) are fine. Paths come from `-z` output (never from diff headers, which git quotes for non-ASCII names). Fails closed:
+ * Reasons the diff base..head must not count. In test files ("test file": under test/, tests/, __tests__/, spec/, __snapshots__/, fixtures/,
+ * testdata/ or an `expected*` path; named `*.test.*`, `*.spec.*`, `test-*.js`, `*-test.js`, `*_test.js`, `*.snap`, `test_*.py`, `*_test.go|py`; or named by the
+ * verify command): any removed or changed line, a deleted file, an added skip / todo / only / focus marker or early exit. Test runner and build config
+ * (jest, vitest, vite, karma, babel, mocha, pytest, tox, pyproject, tsconfig, nyc/c8 files; the `scripts` and runner keys of ANY package.json): any change.
+ * Other added lines in test files are trusted (a heuristic, not a proof: a new test that asserts nothing is not caught). Added lines Paths come from `-z` output (never from diff headers, which git quotes for non-ASCII names). Fails closed:
  * an unreadable diff is a reason. An empty list means nothing found, NOT proof that the tests are sound.
  */
 export function testEdits(cwd: string, base: string, head: string, verify: string[]): string[] {
@@ -103,6 +107,7 @@ export function testEdits(cwd: string, base: string, head: string, verify: strin
   const added: string[] = [];
   for (const [p, s] of changed) {
     if (RUNNER_CONFIG.test(p)) { out.push(`${p}: the test runner configuration was changed`); continue; }
+    if (/(?:^|\/)package\.json$/.test(p)) { if (s === 'D' ? pkgRunnerConfig(cwd, base, p) !== '' : pkgRunnerConfig(cwd, base, p) !== pkgRunnerConfig(cwd, head, p)) out.push(`${p}: the scripts or test runner keys of this package.json were changed`); continue; }
     if (!TESTISH.test(p) && !named.has(p)) continue;
     const c = counts.get(p);
     if (s === 'D') out.push(`${p}: the test file was deleted`);
@@ -116,10 +121,9 @@ export function testEdits(cwd: string, base: string, head: string, verify: strin
     let inHunk = false;
     for (const line of d.out.split('\n')) {
       if (line.startsWith('@@')) { inHunk = true; continue; }
-      if (inHunk && line.startsWith('+') && SKIP.test(line)) { out.push(`${p}: a skip / todo / only marker was added`); break; }
+      if (inHunk && line.startsWith('+') && (SKIP.test(line) || EARLY_EXIT.test(line) || TOP_RETURN.test(line.slice(1).replace(/\r$/, '')))) { out.push(`${p}: a skip / todo / only / early-exit marker was added`); break; }
     }
   }
-  if (changed.has('package.json') && pkgRunnerConfig(cwd, base) !== pkgRunnerConfig(cwd, head)) out.push('package.json: the test runner configuration was changed');
   return [...new Set(out)];
 }
 
@@ -251,9 +255,13 @@ export async function runCascade(o: CascadeOpts): Promise<CascadeResult> {
     reachedVerify = true;
     const agentBlock = (why: string): Verdict => ({ passed: false, tail: '', blocked: why });
     const hubBlock = (why: string): Verdict => ({ passed: false, tail: '', blocked: why, hubSide: true });
-    if (!run.cwd || !run.baseSha) return hubBlock('the run has no task folder to verify');
+    if (!run.cwd || !run.baseSha || !run.branch) return hubBlock('the run has no task folder or branch to verify');
+    // verify judges the run's own branch: work moved to another branch (or a detached HEAD) is the agent's doing
+    const onBranch = git(run.cwd, ['symbolic-ref', '-q', 'HEAD']).out;
+    if (onBranch !== `refs/heads/${run.branch}`) return agentBlock(`the task folder is not on the run's branch ${run.branch} (HEAD is ${onBranch ? onBranch.replace(/^refs\/heads\//, '') : 'detached'}): verify was not run`);
     const cp = checkpoint(run.cwd, `hub: cascade checkpoint (${role})`, { home });
-    if (cp.note) return hubBlock(`the hub could not take a checkpoint of the agent's work (${cp.note}): nothing was judged`);
+    // right after the agent ran, a checkpoint that cannot be taken is the agent's doing (a locked index, a nested repository, an unreadable file)
+    if (cp.note) return agentBlock(`the agent's work could not be committed (${cp.note}): verify was not run`);
     if (!HEX40.test(cp.sha)) return hubBlock('cannot read the head commit of the task folder');
     const hidden = hiddenEntries(run.cwd);
     if (typeof hidden === 'string') return hubBlock(hidden);

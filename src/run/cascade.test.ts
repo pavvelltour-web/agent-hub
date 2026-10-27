@@ -1,4 +1,5 @@
 import { after, test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -279,13 +280,13 @@ test('B2: checkpoint does not swallow a failed git add: no commit and a note, ne
   assert.equal(ok.committed, true); assert.equal(ok.note, undefined); assert.equal(git(d, ['status', '--porcelain']).out, '');
 });
 
-test('B2 + S3: a checkpoint that cannot be taken is a hub-side failure: the cascade stops, verify_passed stays NULL (not charged to the model)', async () => {
+test('B2 + R2-S1: a checkpoint that fails right after the agent ran (it left the index locked) counts against the agent: blocked, verify_passed 0, never 0.5', async () => {
   const r = rig([{ lockIndex: true, write: { 'impl.txt': 'good\n' } }]);
   const res = await go(r, 'locked');
   assert.equal(res.solved, false);
   assert.match(res.rungs[0]?.blocked ?? '', /checkpoint|commit/i);
-  assert.equal(res.rungs[0]?.hubSide, true);
-  assert.equal(verifiedOf(r, res)[0], null, 'hub-side failure: no verdict on the model');
+  assert.equal(res.rungs[0]?.hubSide, undefined, 'agent-caused');
+  assert.equal(verifiedOf(r, res)[0], 0, 'stored as not passed: the score is 0.1, not the 0.5 of an unverified done');
 });
 
 test('B3 + S1: testEdits sees removed lines in a Cyrillic or quoted path, skip/only markers, snapshots and runner config', () => {
@@ -343,4 +344,113 @@ test('notes: a stale running cascade reads as stopped; no empty model is stored;
   writeFileSync(f, JSON.stringify(st));
   const stale = readCascadeFor(r.home, res.rungs[0]!.runId);
   assert.equal(stale?.status, 'stopped'); assert.match(stale?.reason ?? '', /stale/i);
+});
+
+// ---- round 2 of the Opus review: raw clean copy, agent-caused checkpoint failures, more weakening, the branch ----
+const sh = (cwd: string, args: string[]): string => git(cwd, args).out;
+function repoWithWorktree(prefix: string, files: Record<string, string>): { repo: string; wt: string; home: string; sha: string } {
+  const base = mkdtempSync(join(tmpdir(), prefix)); cleanup.push(base);
+  const repo = join(base, 'repo'), home = join(base, 'home'); mkdirSync(repo); mkdirSync(home);
+  git(repo, ['init', '-q', '-b', 'main']);
+  for (const [p, c] of Object.entries(files)) { mkdirSync(dirname(join(repo, p)), { recursive: true }); writeFileSync(join(repo, p), c); }
+  git(repo, ['add', '-A']); gitc(repo, ['commit', '-qm', 'init']);
+  const wt = join(base, 'wt'); git(repo, ['worktree', 'add', '-q', '-b', 'hub/t/a', wt]);
+  return { repo, wt, home, sha: sh(wt, ['rev-parse', 'HEAD']) };
+}
+
+test('R2-B1: the clean copy is the raw blob bytes: a smudge filter from .git/info/attributes + repo config neither runs nor changes the copy', async () => {
+  const { exportCommit } = await import('../review/checks.ts');
+  const p = repoWithWorktree('hub-raw-', { 'test/a.test.js': "throw new Error('real test');\n", 'src/x.js': 'module.exports = 1\n' });
+  const common = sh(p.wt, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  mkdirSync(join(common, 'info'), { recursive: true });
+  writeFileSync(join(common, 'info', 'attributes'), '*.test.js filter=evil\n');
+  const mark = join(dirname(p.repo), 'smudge-ran.txt').split('\\').join('/');
+  git(p.wt, ['config', 'filter.evil.smudge', `node -e "process.stdin.resume();require('fs').writeFileSync('${mark}','x');process.stdout.write('/*smudged*/')"`]);
+  const copy = exportCommit(p.wt, p.sha, p.home, p.repo);
+  try {
+    assert.equal(readFileSync(join(copy.dir, 'test', 'a.test.js'), 'utf8'), "throw new Error('real test');\n", 'the committed bytes, not the filter output');
+    assert.equal(existsSync(mark), false, 'the filter command never ran');
+  } finally { copy.done(); }
+});
+
+test('R2-B1: a symlink entry becomes a plain file holding the target text (never a link), a submodule is skipped, a ".." or ".git" path and an oversize commit are refused', async () => {
+  const { exportCommit, CopyError } = await import('../review/checks.ts');
+  const { lstatSync } = await import('node:fs');
+  const p = repoWithWorktree('hub-raw2-', { 'a.txt': 'a\n' });
+  const blob = (text: string): string => { const r = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: p.repo, input: text, encoding: 'utf8' }); return r.stdout.trim(); };
+  const treeWith = (entries: [string, string, string][]): string => {   // [mode, name, blob sha]: written with --literally so git does not refuse the names
+    const buf = Buffer.concat(entries.map(([mode, name, sha]) => Buffer.concat([Buffer.from(`${mode} ${name}\0`), Buffer.from(sha, 'hex')])));
+    const t = spawnSync('git', ['hash-object', '-w', '-t', 'tree', '--literally', '--stdin'], { cwd: p.repo, input: buf, encoding: 'utf8' }).stdout.trim();
+    return spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', t, '-m', 'x'], { cwd: p.repo, encoding: 'utf8' }).stdout.trim();
+  };
+  const ok = treeWith([['100644', 'a.txt', blob('a\n')], ['120000', 'link', blob('../../outside')], ['160000', 'sub', 'a'.repeat(40)]]);
+  const copy = exportCommit(p.repo, ok, p.home, p.repo);
+  try {
+    assert.equal(lstatSync(join(copy.dir, 'link')).isSymbolicLink(), false, 'never a link'); assert.equal(readFileSync(join(copy.dir, 'link'), 'utf8'), '../../outside');
+    assert.equal(existsSync(join(copy.dir, 'sub')), false, 'submodule skipped'); assert.equal(readFileSync(join(copy.dir, 'a.txt'), 'utf8'), 'a\n');
+  } finally { copy.done(); }
+  for (const bad of ['..', '.git', 'C:evil', 'a\\b']) {
+    const sha = treeWith([['100644', bad, blob('x')]]);
+    assert.throws(() => exportCommit(p.repo, sha, p.home, p.repo), (e: unknown) => e instanceof CopyError, bad);
+  }
+  const big = treeWith([['100644', 'one', blob('x'.repeat(5000))], ['100644', 'two', blob('y')]]);
+  assert.throws(() => exportCommit(p.repo, big, p.home, p.repo, { bytes: 1000 }), /too large|слишком/i);
+  assert.throws(() => exportCommit(p.repo, big, p.home, p.repo, { files: 1 }), /too many|слишком/i);
+  assert.deepEqual(readdirSync(join(p.home, 'check-runs')), [], 'a refused copy leaves no folder behind');
+});
+
+test('R2-B1: checkpoint runs no clean filter from agent-controlled attributes/config', async () => {
+  const { checkpoint } = await import('./git.ts');
+  const p = repoWithWorktree('hub-cpf-', { 'a.js': '1\n' });
+  const common = sh(p.wt, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  mkdirSync(join(common, 'info'), { recursive: true });
+  writeFileSync(join(common, 'info', 'attributes'), '*.js filter=evil\n');
+  const mark = join(dirname(p.repo), 'clean-ran.txt').split('\\').join('/');
+  git(p.wt, ['config', 'filter.evil.clean', `node -e "process.stdin.resume();require('fs').writeFileSync('${mark}','x')"`]);
+  git(p.wt, ['config', 'filter.evil.process', `node -e "require('fs').writeFileSync('${mark}','x')"`]);
+  writeFileSync(join(p.wt, 'b.js'), '2\n');
+  const cp = checkpoint(p.wt, 'hub: t', { home: p.home });
+  assert.equal(existsSync(mark), false, 'the filter command never ran in the hub process');
+  assert.equal(cp.committed, true, cp.note);
+});
+
+test('R2-S2: weakening outside test files is caught: configs, nested package.json, fixtures, early exits, node discovery names', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hub-casc-diff3-')); cleanup.push(d);
+  git(d, ['init', '-q', '-b', 'main']);
+  const at = (rel: string, text: string): void => { mkdirSync(dirname(join(d, rel)), { recursive: true }); writeFileSync(join(d, rel), text); };
+  const files: Record<string, string> = { 'test/a.test.js': "const t = require('node:test'); t('x', () => { throw new Error('red'); });\n", 'test-foo.js': 'assert(1)\n', 'jest.config.json': '{}\n', 'vite.config.ts': 'export default {}\n', 'karma.conf.js': 'x\n', 'pyproject.toml': '[tool.pytest]\n', 'setup.cfg': 'x\n', 'tsconfig.json': '{}\n', 'tsconfig.build.json': '{}\n', '.babelrc': '{}\n', 'babel.config.js': 'x\n', 'fixtures/expected.json': '{"v":1}\n', 'src/testdata/case.txt': 'a\n', 'packages/a/package.json': '{"jest":{"a":1}}\n', 'packages/b/package.json': '{"scripts":{"test":"x"}}\n', 'a_test.js': 'assert(1)\n', 'b-test.js': 'assert(1)\n', 'src/code.ts': 'x\n' };
+  for (const [p, c] of Object.entries(files)) at(p, c);
+  git(d, ['add', '-A']); gitc(d, ['commit', '-qm', 'base']);
+  const base = sh(d, ['rev-parse', 'HEAD']);
+  const after = (m: string): string => { git(d, ['add', '-A']); gitc(d, ['commit', '-qm', m]); return sh(d, ['rev-parse', 'HEAD']); };
+  const reset = (): void => { git(d, ['reset', '-q', '--hard', base]); };
+  const V = ['node', '--test'];
+  for (const p of ['jest.config.json', 'vite.config.ts', 'karma.conf.js', 'pyproject.toml', 'setup.cfg', 'tsconfig.json', 'tsconfig.build.json', '.babelrc', 'babel.config.js']) {
+    at(p, files[p] + '\n// changed\n');
+    assert.match(testEdits(d, base, after('c-' + p), V).join('|'), new RegExp(p.replace(/\./g, '\\.')), p); reset();
+  }
+  for (const p of ['fixtures/expected.json', 'src/testdata/case.txt']) { at(p, 'weaker\n'); assert.match(testEdits(d, base, after('f-' + p), V).join('|'), /removed or changed/, p); reset(); }
+  at('packages/a/package.json', '{"jest":{"a":2}}\n'); assert.match(testEdits(d, base, after('na'), V).join('|'), /packages\/a\/package\.json/, 'a nested jest key'); reset();
+  at('packages/b/package.json', '{"scripts":{"test":"exit 0"}}\n'); assert.match(testEdits(d, base, after('nb'), V).join('|'), /packages\/b\/package\.json/, 'a nested scripts change'); reset();
+  at('packages/a/package.json', '{"jest":{"a":1},"dependencies":{"x":"1"}}\n'); assert.deepEqual(testEdits(d, base, after('dep'), V), [], 'a nested dependency is fine'); reset();
+  for (const line of ['process.exit(0);', 'sys.exit(0)', 'os._exit(0)', 'Deno.exit(0)', 'exit(0)', 'return;', 'process.exitCode = 0;']) {
+    at('test/a.test.js', line + '\n' + files['test/a.test.js']);
+    assert.match(testEdits(d, base, after('x-' + line), V).join('|'), /early-exit|skip/i, line); reset();
+  }
+  for (const p of ['test-foo.js', 'a_test.js', 'b-test.js']) { at(p, 'x\n'); assert.match(testEdits(d, base, after('n-' + p), V).join('|'), /removed or changed/, p); reset(); }
+  at('src/code.ts', 'x\nreturn;\n'); at('src/exit.ts', 'process.exit(1)\n');
+  assert.deepEqual(testEdits(d, base, after('code'), V), [], 'exits in ordinary code are not test edits');
+  reset();
+  at('tests/\u044f\u00e9.test.js', 'a(1)\nb(2)\n'); git(d, ['add', '-A']); gitc(d, ['commit', '-qm', 'cyr']); const b2 = sh(d, ['rev-parse', 'HEAD']);
+  at('tests/\u044f\u00e9.test.js', 'a(1)\n'); git(d, ['add', '-A']); gitc(d, ['commit', '-qm', 'cyr2']);
+  assert.match(testEdits(d, b2, sh(d, ['rev-parse', 'HEAD']), V).join('|'), /\u044f\u00e9\.test\.js/, 'a real non-ASCII name (git quotes it)');
+});
+
+test('R2-S3: verify refuses a HEAD that is not the run\'s own branch (work moved to another branch)', async () => {
+  const r = rig([{ git: [['checkout', '-q', '-b', 'other']], write: { 'impl.txt': 'good\n' } }]);
+  const res = await go(r, 'branchswap');
+  assert.equal(res.solved, false, 'verify must not judge another branch');
+  assert.match(res.rungs[0]?.blocked ?? '', /branch/i);
+  assert.equal(res.rungs[0]?.hubSide, undefined);
+  assert.equal(verifiedOf(r, res)[0], 0);
 });

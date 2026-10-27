@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { HubConfig } from '../core/types.ts';
 import { isSecretPath, safeJoin } from '../lib/paths.ts';
 import { redact } from '../lib/redact.ts';
@@ -494,15 +494,25 @@ export function pathProblem(paths: string[], platform: NodeJS.Platform = process
   return null;
 }
 
+/** Largest copy `exportCommit` writes: a committed gigabyte must not fill the hub-home disk. */
+export const MAX_COPY_BYTES = 200 * 1024 * 1024, MAX_COPY_FILES = 50_000;
+const BATCH_BYTES = 32 * 1024 * 1024;
+
+/** A path that may be written inside the copy: relative, no empty / `.` / `..` / `.git` segment, no backslash, no drive letter, no NUL. */
+const safeEntry = (p: string): boolean => !!p && !p.includes('\0') && !p.includes('\\') && !isAbsolute(p) && !/^[A-Za-z]:/.test(p) && !p.split('/').some((s) => s === '' || s === '.' || s === '..' || /^\.git$/i.test(s) || /^git~\d+$/i.test(s));
+
 /**
  * A clean copy of commit `sha` (of the repository at `tree`) under `<home>/check-runs/`, where the checks run: exactly the blob bytes the digest
- * was computed from. Nothing of the task folder comes along: no ignored files (an ignored `.npmrc`), no skip-worktree / assume-unchanged edits,
- * no branch `node_modules`. The copy uses its own index, no repository hooks, no attributes of the branch (no eol conversion or filters) and
- * plain files instead of symlinks. `node_modules` is linked (junction) from the PROJECT ROOT when the root has one, so `tsc` and test runners
- * resolve; it is the user's own install, not the branch's. `done()` removes the copy and returns a warning when that fails.
+ * was computed from. The files are written by this function from `git ls-tree` + `git cat-file --batch`, which apply NO filter, textconv, eol
+ * conversion or attribute (a smudge filter in `.git/info/attributes`, `core.attributesFile` or the repository config can neither change the bytes
+ * nor run a command here). Nothing of the task folder comes along: no ignored files, no skip-worktree edits, no branch `node_modules`. Every path is
+ * checked to stay inside the copy; a symlink entry (120000) is written as a plain file holding its target text and never as a link; a submodule
+ * (160000) is skipped; a commit over `MAX_COPY_BYTES` / `MAX_COPY_FILES` is refused. `node_modules` is linked (junction) from the PROJECT ROOT when the
+ * root has one, so `tsc` and test runners resolve; it is the user's own install, not the branch's. `done()` removes the copy and returns a warning when that fails.
  */
-export function exportCommit(tree: string, sha: string, home: string, root: string): { dir: string; done: () => string | null } {
+export function exportCommit(tree: string, sha: string, home: string, root: string, limits: { bytes?: number; files?: number } = {}): { dir: string; done: () => string | null } {
   if (!HEX40.test(sha)) throw new Error('cannot copy the commit for the checks: bad sha');
+  const maxBytes = limits.bytes ?? MAX_COPY_BYTES, maxFiles = limits.files ?? MAX_COPY_FILES;
   const base = join(home, 'check-runs'); mkdirSync(base, { recursive: true });
   const dir = mkdtempSync(join(base, 'c-'));
   const work = join(dir, 'tree');
@@ -512,21 +522,49 @@ export function exportCommit(tree: string, sha: string, home: string, root: stri
     try { rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); return null; } catch (e) { return `could not remove the checks folder ${dir}: ${(e as Error).message}`; }
   };
   try {
-    const env = { ...minimalEnv(), GIT_INDEX_FILE: join(dir, 'index') };
-    const g = (args: string[], input?: string): string => {
-      const r = spawnSync('git', [`--attr-source=${EMPTY_TREE}`, '-c', `core.hooksPath=${noHooksDir(home)}`, '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-c', 'core.symlinks=false', '-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false', ...args], { cwd: tree, env, encoding: 'utf8', windowsHide: true, timeout: 300_000, maxBuffer: 64 * 1024 * 1024, ...(input !== undefined ? { input } : {}) });
-      if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr ?? '').split('\n')[0]}`);
-      return r.stdout ?? '';
+    const env = minimalEnv();
+    const run = (args: string[], input?: string): Buffer => {
+      const r = spawnSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false', ...args], { cwd: tree, env, windowsHide: true, timeout: 300_000, maxBuffer: 512 * 1024 * 1024, ...(input !== undefined ? { input } : {}) });
+      if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr?.toString('utf8') ?? '').split('\n')[0]}`);
+      return r.stdout;
     };
-    g(['read-tree', sha]);
-    const paths = g(['ls-files', '-z']).split('\0').filter(Boolean);
-    const bad = pathProblem(paths);
+    // `<mode> <type> <sha> <size>\t<path>\0` per entry (size is `-` for a submodule)
+    const entries: { mode: string; sha: string; size: number; path: string }[] = [];
+    for (const rec of run(['ls-tree', '-r', '-l', '-z', '--full-tree', sha]).toString('utf8').split('\0').filter(Boolean)) {
+      const m = /^(\d+) (\w+) ([0-9a-f]{40}) +(-|\d+)\t([\s\S]*)$/.exec(rec);
+      if (!m) throw new CopyError('cannot read the file list of the commit');
+      if (m[2] === 'commit') continue;                                    // submodule: skipped
+      if (m[2] !== 'blob') throw new CopyError(`unexpected entry in the commit: ${m[5]}`);
+      if (!['100644', '100755', '120000'].includes(m[1] as string)) throw new CopyError(`unexpected file mode ${m[1]}: ${m[5]}`);
+      entries.push({ mode: m[1] as string, sha: m[3] as string, size: Number(m[4]), path: m[5] as string });
+    }
+    const bad = pathProblem(entries.map((e) => e.path));
     if (bad) throw new CopyError(bad);
+    for (const e of entries) if (!safeEntry(e.path)) throw new CopyError(`path not allowed in the copy: ${e.path.slice(0, 120)}`);
     // a node_modules committed to the branch never comes along: dependencies are the project root's install or none
-    const nmPaths = paths.filter((p) => p.split('/').includes('node_modules'));
-    if (nmPaths.length) g(['update-index', '--force-remove', '-z', '--stdin'], nmPaths.join('\0') + '\0');
-    g(['checkout-index', '-a', '-f', `--prefix=${work.replace(/\\/g, '/')}/`]);
+    const files = entries.filter((e) => !e.path.split('/').includes('node_modules'));
+    if (files.length > maxFiles) throw new CopyError(`the commit has too many files for a copy (${files.length}, limit ${maxFiles})`);
+    const total = files.reduce((n, e) => n + e.size, 0);
+    if (total > maxBytes) throw new CopyError(`the commit is too large for a copy (${Math.round(total / 1048576)} MB, limit ${Math.round(maxBytes / 1048576)} MB)`);
     mkdirSync(work, { recursive: true });
+    const root0 = resolve(work);
+    for (let i = 0; i < files.length;) {
+      const batch: typeof files = []; let bytes = 0;
+      while (i < files.length && (batch.length === 0 || bytes + (files[i] as { size: number }).size <= BATCH_BYTES)) { bytes += (files[i] as { size: number }).size; batch.push(files[i++] as (typeof files)[number]); }
+      const out = run(['cat-file', '--batch'], batch.map((e) => e.sha).join('\n') + '\n');
+      let off = 0;
+      for (const e of batch) {
+        const nl = out.indexOf(10, off);
+        const head = nl < 0 ? '' : out.toString('latin1', off, nl);
+        const m = /^([0-9a-f]{40}) blob (\d+)$/.exec(head);
+        if (!m || m[1] !== e.sha || Number(m[2]) !== e.size) throw new CopyError(`cannot read the content of ${e.path}`);
+        const body = out.subarray(nl + 1, nl + 1 + e.size); off = nl + 1 + e.size + 1;
+        const target = resolve(root0, ...e.path.split('/'));
+        if (!target.startsWith(root0 + sep)) throw new CopyError(`path leaves the copy: ${e.path.slice(0, 120)}`);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, body, { mode: e.mode === '100755' ? 0o755 : 0o644 });   // 120000: the link target as text, never a link
+      }
+    }
     const nm = join(root, 'node_modules');
     if (existsSync(nm)) { link = join(work, 'node_modules'); symlinkSync(nm, link, 'junction'); }
     return { dir: work, done };

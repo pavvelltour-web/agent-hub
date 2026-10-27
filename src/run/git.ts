@@ -79,27 +79,47 @@ export function facts(cwd: string, baseSha?: string): Facts {
 export const NOT_HUB_DIR = ['--', '.', ':(exclude).hub'];
 
 /**
+ * `-c` arguments that stop agent-controlled configuration from running a command or rewriting bytes while the hub reads or stages a task folder:
+ * no attributes file, no fsmonitor hook, and every `filter.<name>` of the repository / user config (clean, smudge, process) emptied. `.git/info/attributes`
+ * still names filters, but a filter with no command does nothing. The task folder's own `config` is the agent's to write, so this is a defence,
+ * not a proof: any other config key that runs a program on `add` / `status` / `commit` would need adding here.
+ */
+export function agentConfigGuard(cwd: string, home: string): string[] {
+  const empty = join(home, 'empty-attributes');
+  mkdirSync(home, { recursive: true });
+  if (!existsSync(empty)) writeFileSync(empty, '');
+  const args = ['-c', `core.attributesFile=${empty.replace(/\\/g, '/')}`, '-c', 'core.fsmonitor=false'];
+  const names = new Set<string>();
+  for (const line of git(cwd, ['config', '--name-only', '--get-regexp', '^filter\\.']).out.split(/\r?\n/)) {
+    const m = /^filter\.(.+)\.[^.]+$/i.exec(line.trim());
+    if (m) names.add(m[1] as string);
+  }
+  for (const n of names) args.push('-c', `filter.${n}.clean=`, '-c', `filter.${n}.smudge=`, '-c', `filter.${n}.process=`, '-c', `filter.${n}.required=false`);
+  return args;
+}
+
+/**
  * Checkpoint uncommitted work on the agent's own branch. The hub's own `.hub/` (handoff cards, audit) is never committed, even if the agent
  * staged it. No repository hook runs (`core.hooksPath` = an empty folder, `--no-verify`): hooks such as husky's are files of the branch, i.e.
  * the agent's code, and must not run before anyone looked at them. Git runs with the allowlisted env (`minimalEnv`) unless `o.env` is given.
  */
 export function checkpoint(cwd: string, message: string, o: { home?: string; env?: NodeJS.ProcessEnv } = {}): { committed: boolean; sha: string; note?: string } {
   const env = o.env ?? minimalEnv();
-  const noHooks = ['-c', `core.hooksPath=${noHooksDir(o.home ?? HUB_HOME)}`];
+  const noHooks = ['-c', `core.hooksPath=${noHooksDir(o.home ?? HUB_HOME)}`, ...agentConfigGuard(cwd, o.home ?? HUB_HOME)];
   const head = (): string => git(cwd, ['rev-parse', 'HEAD']).out;
   const first = (t: string): string => t.split(/\r?\n/)[0] ?? '';
   // A failed `git add` (locked index, a file git cannot read) must never look like "nothing to commit": the work would be missing from the commit.
-  const add = git(cwd, [...noHooks, '-c', 'core.fsmonitor=false', 'add', '-A', ...NOT_HUB_DIR], env);
+  const add = git(cwd, [...noHooks, 'add', '-A', ...NOT_HUB_DIR], env);
   if (!add.ok) return { committed: false, sha: head(), note: `git add failed: ${first(add.err)}` };
   git(cwd, [...noHooks, 'reset', '-q', '--', '.hub'], env);
   let committed = false;
-  if (!git(cwd, ['diff', '--cached', '--quiet'], env).ok) {
-    const c = git(cwd, [...noHooks, '-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', '-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', 'commit', '--no-verify', '-m', message], env);
+  if (!git(cwd, [...noHooks, 'diff', '--cached', '--quiet', '--no-ext-diff', '--no-textconv'], env).ok) {
+    const c = git(cwd, [...noHooks, '-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', message], env);
     if (!c.ok) return { committed: false, sha: head(), note: `commit refused: ${first(c.err)}` };
     committed = true;
   }
   // Afterwards nothing but the hub's own folder may be left outside the commit.
-  const left = git(cwd, ['-c', 'core.fsmonitor=false', 'status', '--porcelain', '-uall', ...NOT_HUB_DIR], env);
+  const left = git(cwd, [...noHooks, '--no-optional-locks', 'status', '--porcelain', '-uall', ...NOT_HUB_DIR], env);
   if (!left.ok || left.out) return { committed, sha: head(), note: `the working tree is not clean after the checkpoint (${left.ok ? first(left.out).trim() : first(left.err)})` };
   return { committed, sha: head() };
 }
