@@ -21,6 +21,8 @@ test('cascadeModel: steps, verify state per step, and the one-line story', () =>
   assert.equal(m.rungs[1].repair, true); assert.match(m.rungs[1].who, /Sonnet дорабатывает/);
   const b = M.cascadeModel({ cascade: { ...good.cascade, rungs: [{ runId: 'rab12', role: 'executor', verifyPassed: true, blocked: 'weakens the checks' }] } });
   assert.equal(b.rungs[0].verify, 'blocked', 'a blocked rung is never shown as passed');
+  const hub = M.cascadeModel({ cascade: { ...good.cascade, rungs: [{ runId: 'rab12', role: 'executor', verifyPassed: false, blocked: 'checkpoint failed', hubSide: true }] } });
+  assert.equal(hub.rungs[0].verify, 'hub', 'a hub-side failure is not shown as the agent being blocked');
 });
 
 test('cascadeModel: hostile or malformed data is read by type, never thrown on or stringified', () => {

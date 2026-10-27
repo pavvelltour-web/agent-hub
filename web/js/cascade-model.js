@@ -8,7 +8,7 @@ const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 
 export const ROLE_RU = { executor: 'пишет', repair: 'дорабатывает по выводу проверки', 'stuck-review': 'разбирает, почему не выходит', fixer: 'правит' };
 export const STATUS_RU = { running: ['идёт', 'info'], solved: ['проверка прошла', 'ok'], stopped: ['остановлено', 'warn'] };
-export const VERIFY_RU = { passed: ['проверка прошла', 'ok'], failed: ['проверка красная', 'warn'], blocked: ['заблокировано', 'err'], none: ['без проверки', 'line'] };
+export const VERIFY_RU = { passed: ['проверка прошла', 'ok'], failed: ['проверка красная', 'warn'], blocked: ['заблокировано', 'err'], hub: ['не проверено: ошибка hub', 'warn'], none: ['без проверки', 'line'] };
 
 /** "Sonnet", "Opus", else a short plain name: never more than 24 safe characters of a model field. */
 export const modelName = (m) => { const s = str(m, 80); return /opus/i.test(s) ? 'Opus' : /sonnet/i.test(s) ? 'Sonnet' : /haiku/i.test(s) ? 'Haiku' : /fable/i.test(s) ? 'Fable' : /gpt/i.test(s) ? 'GPT' : s.replace(/[^\w.-]/g, '').slice(0, 24) || 'агент'; };
@@ -20,7 +20,7 @@ export function cascadeModel(raw) {
   const rungs = arr(c.rungs, 8).filter((r) => r && typeof r === 'object' && !Array.isArray(r)).map((r0) => {
     const r = obj(r0), role = r.role === 'stuck-review' || r.role === 'fixer' ? r.role : 'executor', repair = r.repair === true && role === 'executor';
     const blocked = str(r.blocked, 400);
-    const verify = blocked ? 'blocked' : role === 'stuck-review' ? 'none' : r.verifyPassed === true ? 'passed' : 'failed';
+    const verify = blocked ? (r.hubSide === true ? 'hub' : 'blocked') : role === 'stuck-review' ? 'none' : r.verifyPassed === true ? 'passed' : 'failed';
     return { runId: typeof r.runId === 'string' && RUN.test(r.runId) ? r.runId : '', role, repair, who: `${modelName(r.model)} ${ROLE_RU[repair ? 'repair' : role]}`, verify, blocked, note: str(r.note, 300), tail: str(r.tail, 4000) };
   });
   return { id: typeof c.id === 'string' && RUN.test(c.id) ? c.id : '', status: c.status, reason: str(c.reason, 400), card: str(c.card, 400), verify: arr(c.verify, 40).map((a) => str(a, 200)), rungs };

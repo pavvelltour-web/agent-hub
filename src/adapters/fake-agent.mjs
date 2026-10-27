@@ -56,7 +56,8 @@ if (scenario.startsWith('fixture:')) {
   }
 } else if (scenario === 'cascade-script') {
   // Cascade (src/run/cascade.test.ts): FAKE_CASCADE_SCRIPT is a JSON file, an array with one step per call, in call order:
-  // { write?: { <relative path>: <content> }, text?: string, login?: true, sleepMs?: number }. Each call appends {argv, prompt, cwd} to FAKE_CAPTURE_FILE and writes the files into its cwd.
+  // { git?: string[][], lockIndex?: true, write?: { <relative path>: <content> }, text?: string, login?: true, sleepMs?: number }
+  // (git: commands run in the cwd first; lockIndex: leave a git index.lock; `{{cwd}}` in a content is replaced by the cwd with forward slashes). Each call appends {argv, prompt, cwd} to FAKE_CAPTURE_FILE and writes the files into its cwd.
   const steps = JSON.parse(readFileSync(process.env.FAKE_CASCADE_SCRIPT, 'utf8'));
   const argv = process.argv.slice(2);
   const index = existsSync(process.env.FAKE_CAPTURE_FILE) ? readFileSync(process.env.FAKE_CAPTURE_FILE, 'utf8').split('\n').filter(Boolean).length : 0;
@@ -67,11 +68,14 @@ if (scenario.startsWith('fixture:')) {
   if (step.login) out({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login', usage: { input_tokens: 0, output_tokens: 0 } });
   else {
     const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { spawnSync } = await import('node:child_process');
+    for (const a of step.git ?? []) spawnSync('git', a, { cwd: process.cwd() });
     for (const [rel, content] of Object.entries(step.write ?? {})) {
       const abs = join(process.cwd(), rel);
       if (!abs.startsWith(process.cwd())) throw new Error('fake-agent: path outside cwd');
-      mkdirSync(dirname(abs), { recursive: true }); writeFileSync(abs, content);
+      mkdirSync(dirname(abs), { recursive: true }); writeFileSync(abs, content.replaceAll('{{cwd}}', process.cwd().split('\\').join('/')));
     }
+    if (step.lockIndex) { const gd = spawnSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: process.cwd(), encoding: 'utf8' }).stdout.trim(); writeFileSync(join(gd, 'index.lock'), ''); }
     const text = step.text ?? `step ${index} done`;
     out({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
     out({ type: 'result', subtype: 'success', is_error: false, result: text, usage: { input_tokens: 10, output_tokens: 5 } });

@@ -36,10 +36,10 @@ const ladder = (agent: 'claude' | 'codex' = 'claude'): Rung[] => [
   { role: 'fixer', agent, model: MODEL_ID.opus, effort: 'high', permission: 'edit' },
 ];
 
-interface Step { write?: Record<string, string>; text?: string; login?: boolean; sleepMs?: number }
+interface Step { git?: string[][]; lockIndex?: boolean; write?: Record<string, string>; text?: string; login?: boolean; sleepMs?: number }
 interface Rig { root: string; home: string; runs: RunManager; capture: () => { argv: string[]; prompt: string; cwd: string }[]; req: (task: string) => StartReq; approve: () => void; db: ReturnType<typeof openDb> }
 
-function rig(steps: Step[], o: { approved?: boolean } = {}): Rig {
+function rig(steps: Step[], o: { approved?: boolean; verify?: string[]; files?: Record<string, string> } = {}): Rig {
   const root = mkdtempSync(join(tmpdir(), 'hub-casc-'));
   const home = mkdtempSync(join(tmpdir(), 'hub-casc-home-'));
   const meta = mkdtempSync(join(tmpdir(), 'hub-casc-meta-'));
@@ -47,13 +47,14 @@ function rig(steps: Step[], o: { approved?: boolean } = {}): Rig {
   git(root, ['init', '-q', '-b', 'main']);
   writeFileSync(join(root, 'check.js'), CHECK); writeFileSync(join(root, 'impl.txt'), 'bad\n');
   mkdirSync(join(root, 'test')); writeFileSync(join(root, 'test', 'a.test.js'), TEST_FILE);
+  for (const [rel, text] of Object.entries(o.files ?? {})) { mkdirSync(dirname(join(root, rel)), { recursive: true }); writeFileSync(join(root, rel), text); }
   git(root, ['add', '-A']); gitc(root, ['commit', '-qm', 'init']);
   const script = join(meta, 'script.json'), cap = join(meta, 'capture.jsonl');
   writeFileSync(script, JSON.stringify(steps));
   const db = openDb(':memory:');
   const runs = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, env: { ...process.env, FAKE_SCENARIO: 'cascade-script', FAKE_CASCADE_SCRIPT: script, FAKE_CAPTURE_FILE: cap }, home, summarize: false });
   const head = (): string => git(root, ['rev-parse', 'HEAD']).out;
-  const approve = (): void => { approveVerify(root, root, head(), planVerify(root, root, head(), home, VERIFY).digest, home, VERIFY); };
+  const approve = (): void => { approveVerify(root, root, head(), planVerify(root, root, head(), home, o.verify ?? VERIFY).digest, home, o.verify ?? VERIFY); };
   if (o.approved !== false) approve();
   return { root, home, runs, db, approve,
     capture: () => (existsSync(cap) ? readFileSync(cap, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { argv: string[]; prompt: string; cwd: string }) : []),
@@ -241,4 +242,105 @@ test('verify approval and review-checks approval are separate: approving one nev
   assert.equal(planVerify(u.root, u.root, h2, u.home, VERIFY).approved, false, 'approving review checks did not approve verify');
   assert.equal(planVerify(u.root, u.root, h2, u.home, VERIFY).source, 'hub.json');
   assert.ok(!planVerify(u.root, u.root, h2, u.home, VERIFY).checks.some((c) => c.join(' ') === 'node scripts/security.mjs'));
+});
+
+// ---- the verify trust boundary (Opus review of 3.3/3.4): executed bytes must equal judged bytes ----
+const FAILING_PKG = JSON.stringify({ name: 'x', scripts: { test: 'node -e "process.exit(1)"' } });
+const NPM = ['npm', 'test'];
+const verifiedOf = (r: Rig, res: { rungs: { runId: string }[] }): (number | null | undefined)[] => res.rungs.map((x) => r.runs.get(x.runId)?.verifyPassed);
+
+test('B1: skip-worktree on the verify file cannot make a red project green (refused, and verify would run the committed bytes anyway)', async () => {
+  const r = rig([{ git: [['update-index', '--skip-worktree', 'check.js']], write: { 'impl.txt': 'bad\n', 'check.js': 'process.exit(0);\n' } }]);
+  const res = await go(r, 'skipwt');
+  assert.equal(res.solved, false, 'a hidden edit of the verify file never counts as solved');
+  assert.match(res.rungs[0]?.blocked ?? '', /skip-worktree|assume-unchanged/i);
+  assert.equal(verifiedOf(r, res)[0], 0, 'agent-caused: stored as not passed');
+});
+
+test('B1: an ignored .npmrc and a .hub/ preload cannot change what verify executes (verify runs a clean copy of the checkpoint)', async () => {
+  const r = rig([{ write: { '.gitignore': '.npmrc\n', '.hub/p.cjs': 'process.on("exit", () => { process.exitCode = 0; });', '.npmrc': 'node-options=--require={{cwd}}/.hub/p.cjs\n' } }, {}, { text: 'nothing to add' }, {}],
+    { verify: NPM, files: { 'package.json': FAILING_PKG } });
+  const res = await go(r, 'npmrc', { verify: NPM });
+  assert.equal(res.solved, false, 'the project is red: a file outside the commit must not turn it green');
+  assert.ok(res.rungs.every((x) => !x.verifyPassed));
+});
+
+test('B2: checkpoint does not swallow a failed git add: no commit and a note, never a silent "nothing to commit"', async () => {
+  const { checkpoint } = await import('./git.ts');
+  const d = mkdtempSync(join(tmpdir(), 'hub-cp-')); cleanup.push(d);
+  git(d, ['init', '-q', '-b', 'main']); writeFileSync(join(d, 'a.txt'), '1\n'); git(d, ['add', '-A']); gitc(d, ['commit', '-qm', 'i']);
+  const home = mkdtempSync(join(tmpdir(), 'hub-cp-home-')); cleanup.push(home);
+  writeFileSync(join(d, 'a.txt'), '2\n');
+  writeFileSync(join(d, '.git', 'index.lock'), '');          // `git add` fails: the index is locked
+  const cp = checkpoint(d, 'hub: test', { home });
+  assert.equal(cp.committed, false); assert.match(cp.note ?? '', /add|index|lock/i);
+  rmSync(join(d, '.git', 'index.lock'));
+  const ok = checkpoint(d, 'hub: test', { home });
+  assert.equal(ok.committed, true); assert.equal(ok.note, undefined); assert.equal(git(d, ['status', '--porcelain']).out, '');
+});
+
+test('B2 + S3: a checkpoint that cannot be taken is a hub-side failure: the cascade stops, verify_passed stays NULL (not charged to the model)', async () => {
+  const r = rig([{ lockIndex: true, write: { 'impl.txt': 'good\n' } }]);
+  const res = await go(r, 'locked');
+  assert.equal(res.solved, false);
+  assert.match(res.rungs[0]?.blocked ?? '', /checkpoint|commit/i);
+  assert.equal(res.rungs[0]?.hubSide, true);
+  assert.equal(verifiedOf(r, res)[0], null, 'hub-side failure: no verdict on the model');
+});
+
+test('B3 + S1: testEdits sees removed lines in a Cyrillic or quoted path, skip/only markers, snapshots and runner config', () => {
+  const d = mkdtempSync(join(tmpdir(), 'hub-casc-diff2-')); cleanup.push(d);
+  git(d, ['init', '-q', '-b', 'main']);
+  const at = (rel: string, text: string): void => { mkdirSync(dirname(join(d, rel)), { recursive: true }); writeFileSync(join(d, rel), text); };
+  at('tests/проверка.test.js', 'a(1)\na(2)\n'); at('tests/it\u0027s \u00e9.test.js', 'a(1)\n'); at('src/__snapshots__/x.test.ts.snap', 'exports[`a`] = `1`;\n');
+  at('jest.config.js', 'module.exports = {};\n'); at('src/x.test.ts', 'it("a", () => {})\n'); at('package.json', JSON.stringify({ name: 'x', jest: { a: 1 }, dependencies: {} }) + '\n'); at('src/code.ts', 'x\n');
+  git(d, ['add', '-A']); gitc(d, ['commit', '-qm', 'base']);
+  const base = git(d, ['rev-parse', 'HEAD']).out;
+  const after = (m: string): string => { git(d, ['add', '-A']); gitc(d, ['commit', '-qm', m]); return git(d, ['rev-parse', 'HEAD']).out; };
+  const reset = (): void => { git(d, ['reset', '-q', '--hard', base]); };
+  const V = ['npm', 'test'];
+  at('tests/проверка.test.js', 'a(1)\n');
+  assert.match(testEdits(d, base, after('cyr'), V)[0] ?? '', /проверка\.test\.js/); reset();
+  at('tests/it\u0027s \u00e9.test.js', '');
+  assert.match(testEdits(d, base, after('quote'), V).join('|'), /it's \u00e9\.test\.js/); reset();
+  for (const [i, line] of ['it.only("a", () => {})', 'fit("a", () => {})', 'fdescribe("a", () => {})', 'it.skip("a", () => {})'].entries()) { at('src/x.test.ts', `it("a", () => {})\n${line}\n`); assert.match(testEdits(d, base, after('m' + i), V).join('|'), /skip|only|focus/i, line); reset(); }
+  at('src/__snapshots__/x.test.ts.snap', 'exports[`a`] = `2`;\n');
+  assert.match(testEdits(d, base, after('snap'), V).join('|'), /x\.test\.ts\.snap/); reset();
+  at('jest.config.js', 'module.exports = {};\n// more\n');
+  assert.match(testEdits(d, base, after('cfg'), V).join('|'), /jest\.config\.js/, 'any change to runner config'); reset();
+  at('package.json', JSON.stringify({ name: 'x', jest: { a: 2 }, dependencies: {} }) + '\n');
+  assert.match(testEdits(d, base, after('pkgjest'), V).join('|'), /package\.json/, 'the jest key'); reset();
+  at('package.json', JSON.stringify({ name: 'x', jest: { a: 1 }, dependencies: { y: '1' } }) + '\n'); at('src/code.ts', 'x\ny\n'); at('tests/new.test.js', 'a(1)\n');
+  assert.deepEqual(testEdits(d, base, after('fine'), V), [], 'a new dependency, new code and a new test are fine');
+});
+
+test('S2: a verify pass does not outrank a rejected review; pending review and a passed review keep the verify score', async () => {
+  const { modelStats } = await import('../econ/econ.ts');
+  const { createReview } = await import('../review/store.ts');
+  const d = openDb(':memory:');
+  d.prepare("INSERT INTO run (id, agent, model, prompt, cwd, branch, started_at, ended_at, outcome, cls, verify_passed) VALUES ('p', 'claude', 'claude-sonnet-5-5', 'p', 'C:/w/p', 'hub/p/claude', '2026-10-14T10:00:00Z', '2026-10-14T10:05:00Z', 'review', 'implement', 1)").run();
+  const rv = (state: 'passed' | 'reconsider' | 'open', checks?: { ok: boolean }[]): void => {
+    d.prepare('DELETE FROM review').run();
+    const x = createReview(d, { runId: 'p', projectId: 1, baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), effort: 'quick', risk: 'low', round: 1, state });
+    if (checks) d.prepare('UPDATE review SET info_json = ? WHERE id = ?').run(JSON.stringify({ checks }), x.id);
+  };
+  const score = (): number => { const s = modelStats(d)['implement|sonnet'] as { n: number; score: number }; return s.score / s.n; };
+  assert.ok(Math.abs(score() - 0.9) < 1e-9, 'pending review: the verify result stands');
+  rv('passed'); assert.ok(Math.abs(score() - 0.9) < 1e-9, 'passed review');
+  rv('reconsider'); assert.ok(Math.abs(score() - 0.1) < 1e-9, 'reconsider caps a verify pass at the verify-fail value');
+  rv('open', [{ ok: true }, { ok: false }]); assert.ok(Math.abs(score() - 0.1) < 1e-9, 'a red gate check caps it too');
+  rv('open', [{ ok: true }]); assert.ok(Math.abs(score() - 0.9) < 1e-9, 'green checks do not');
+});
+
+test('notes: a stale running cascade reads as stopped; no empty model is stored; the fixer prompt redacts the reviewer text', async () => {
+  const r = rig([{ write: { 'impl.txt': 'a\n' } }, { write: { 'impl.txt': 'b\n' } }, { text: 'cause: key sk-' + 'Q1w2E3r4T5y6U7i8O9p0A1s2D3f4 is wrong' }, { write: { 'impl.txt': 'good\n' } }]);
+  const res = await go(r, 'notes', { ladder: ladder().map((x, i) => (i === 0 ? { ...x, model: '' } : x)) });
+  assert.equal(res.solved, true);
+  assert.notEqual(r.runs.get(res.rungs[0]!.runId)?.model, '', 'an empty model is NULL, then filled from the session');
+  assert.doesNotMatch(r.capture()[3]!.prompt, /sk-Q1w2/);
+  const f = join(r.home, 'cascades', `${res.rungs[0]!.runId}.json`);
+  const st = JSON.parse(readFileSync(f, 'utf8')); st.status = 'running'; st.startedAt = '2020-01-01T00:00:00.000Z'; delete st.endedAt;
+  writeFileSync(f, JSON.stringify(st));
+  const stale = readCascadeFor(r.home, res.rungs[0]!.runId);
+  assert.equal(stale?.status, 'stopped'); assert.match(stale?.reason ?? '', /stale/i);
 });

@@ -86,11 +86,22 @@ export const NOT_HUB_DIR = ['--', '.', ':(exclude).hub'];
 export function checkpoint(cwd: string, message: string, o: { home?: string; env?: NodeJS.ProcessEnv } = {}): { committed: boolean; sha: string; note?: string } {
   const env = o.env ?? minimalEnv();
   const noHooks = ['-c', `core.hooksPath=${noHooksDir(o.home ?? HUB_HOME)}`];
-  git(cwd, [...noHooks, '-c', 'core.fsmonitor=false', 'add', '-A', ...NOT_HUB_DIR], env);
+  const head = (): string => git(cwd, ['rev-parse', 'HEAD']).out;
+  const first = (t: string): string => t.split(/\r?\n/)[0] ?? '';
+  // A failed `git add` (locked index, a file git cannot read) must never look like "nothing to commit": the work would be missing from the commit.
+  const add = git(cwd, [...noHooks, '-c', 'core.fsmonitor=false', 'add', '-A', ...NOT_HUB_DIR], env);
+  if (!add.ok) return { committed: false, sha: head(), note: `git add failed: ${first(add.err)}` };
   git(cwd, [...noHooks, 'reset', '-q', '--', '.hub'], env);
-  if (git(cwd, ['diff', '--cached', '--quiet'], env).ok) return { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out };
-  const c = git(cwd, [...noHooks, '-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', '-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', 'commit', '--no-verify', '-m', message], env);
-  return c.ok ? { committed: true, sha: git(cwd, ['rev-parse', 'HEAD']).out } : { committed: false, sha: git(cwd, ['rev-parse', 'HEAD']).out, note: `commit refused: ${c.err.split('\n')[0] ?? ''}` };
+  let committed = false;
+  if (!git(cwd, ['diff', '--cached', '--quiet'], env).ok) {
+    const c = git(cwd, [...noHooks, '-c', 'user.name=agent-hub', '-c', 'user.email=agent-hub@localhost', '-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', 'commit', '--no-verify', '-m', message], env);
+    if (!c.ok) return { committed: false, sha: head(), note: `commit refused: ${first(c.err)}` };
+    committed = true;
+  }
+  // Afterwards nothing but the hub's own folder may be left outside the commit.
+  const left = git(cwd, ['-c', 'core.fsmonitor=false', 'status', '--porcelain', '-uall', ...NOT_HUB_DIR], env);
+  if (!left.ok || left.out) return { committed, sha: head(), note: `the working tree is not clean after the checkpoint (${left.ok ? first(left.out).trim() : first(left.err)})` };
+  return { committed, sha: head() };
 }
 
 /**

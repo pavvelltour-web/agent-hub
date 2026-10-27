@@ -59,7 +59,7 @@ export function verifyApprovalDialog({ projectId, verify, raw, onApproved }) {
     h('b.t-label', 'Команда'), h('pre.rv-pre', p.checks.map((c) => c.map(argVis).join(' ')).join('\n')),
     p.scripts.length ? [h('b.t-label', 'Скрипты package.json (все; «▶» — те, что запустятся)'), h('pre.rv-pre', p.scripts.map(([k, v]) => `${runs.has(k) ? '▶' : ' '} ${vis(k)}: ${vis(v)}`).join('\n'))] : null,
     p.files.length ? [h('b.t-label', 'Файлы, которые запустятся (отпечаток SHA-256)'), h('pre.rv-pre', p.files.map(([k, v]) => `${vis(k)}  ${v ?? 'нет в коммите'}`).join('\n'))] : null,
-    h('p.t-meta', 'Тесты и всё, что они подключают, в одобрение не входят. Если агент изменит скрипты или запускаемые файлы, каскад остановится и не засчитает результат.')];
+    h('p.t-meta', 'Проверка запускается в чистой копии коммита с работой агента (не в его рабочей папке); node_modules берётся из корня проекта. Если агент изменит скрипты, запускаемые файлы, тесты или настройки тестового раннера, спрячет файлы от git или результат не удастся прочитать, каскад остановится и не засчитает результат. Тесты и всё, что они подключают, в одобрение не входят.')];
   const approve = async () => {
     try { await api.post('/verify/approve', { projectId, verify, digest: p.digest, approved: true }); } catch { return; }
     toast('Проверка одобрена на этом компьютере', 'ok'); close(); onApproved();
