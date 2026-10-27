@@ -39,7 +39,7 @@ function start(projects, models, state) {
   let modes = [];
   async function drawWay() {
     modes = await api.get(`/workmodes?project=${pid}&agent=${s.agent === 'codex' ? 'codex' : 'claude'}`, true).catch(() => modes);
-    wayBox.replaceChildren(workModePicker(modes, s.workMode, (k) => { s.workMode = k; const m = modes.find((x) => x.id === k); if (m) s.cls = m.cls; drawWay(); if (s.agent === 'auto') ask(); }, s.depth, (d) => { s.depth = d; drawWay(); }));
+    wayBox.replaceChildren(workModePicker(modes, s.workMode, (k) => { s.workMode = k; const m = modes.find((x) => x.id === k); if (m) { s.cls = m.cls; clsTouched = true; clsSel.value = m.cls; } drawWay(); if (s.agent === 'auto') ask(); }, s.depth, (d) => { s.depth = d; drawWay(); }));
   }
 
   const drawProject = () => {
@@ -57,7 +57,7 @@ function start(projects, models, state) {
       h('div.row-flex', pills([['auto', 'Выбрать самому hub'], ['claude', 'Claude'], ['codex', 'Codex (GPT)']], s.agent, pickAgent, 'Кто работает'),
         s.agent === 'auto' ? null : h('div.field', h('select.select', { 'aria-label': 'Модель', onchange: (e) => { s.model = e.target.value; } }, [h('option', { value: '' }, 'Модель по умолчанию'), ...opts.map((g) => h('option', { value: g.id, selected: s.model === g.id }, g.name))])),
         s.agent === 'auto' ? null : h('div.field', h('select.select', { 'aria-label': 'Глубина мышления', onchange: (e) => { s.effort = e.target.value; } }, EFFORT.map(([v, t]) => h('option', { value: v, selected: s.effort === v }, v ? 'Мышление: ' + t.toLowerCase() : 'Мышление: авто'))))),
-      s.agent === 'auto' ? h('div.stack', h('div.field', h('select.select', { 'aria-label': 'Что за задача', onchange: (e) => { s.cls = e.target.value; ask(); } }, TASKS.map(([v, t]) => h('option', { value: v, selected: s.cls === v }, 'Задача: ' + t.toLowerCase())))), advice) : null);
+      s.agent === 'auto' ? advice : null);
   };
   async function ask() {
     const r = await api.post('/advise', { cls: s.cls }, true).catch(() => null);
@@ -70,7 +70,21 @@ function start(projects, models, state) {
       alt ? h('div.row-flex', h('span.t-meta', `Можно и ${agentName(alt.agent)}: ${alt.why}`), btn('Взять его', { kind: 'glass', class: 'btn-sm', onclick: () => { s.agent = alt.agent; s.model = shortModel(alt.agent, alt.model); s.effort = alt.effort; drawWho(); } })) : null);
   }
 
-  const ta = h('textarea.textarea', { rows: 3, placeholder: 'Например: «добавь в проект экспорт истории в JSON»', 'aria-label': 'Задача', 'data-autofocus': true });
+  // The task type: read from the text as it is typed (pre-filled), always editable. Below the confidence bar the hub asks instead of guessing.
+  let clsTouched = false, seq = 0, timer = 0;
+  const clsHint = h('span.t-meta', { role: 'status' });
+  const clsSel = h('select.select', { 'aria-label': 'Тип задачи', onchange: (e) => { clsTouched = true; setCls(e.target.value); clsHint.textContent = ''; } },
+    TASKS.map(([v, t]) => h('option', { value: v, selected: s.cls === v }, t)));
+  function setCls(v) { s.cls = v; clsSel.value = v; if (s.agent === 'auto') ask(); }
+  const detect = async (text) => {
+    const my = ++seq;
+    const r = text.trim().length < 6 ? null : await api.post('/classify', { prompt: text }, true).catch(() => null);
+    if (my !== seq || clsTouched) return;
+    if (!r) { clsHint.textContent = ''; return; }
+    if (r.confidence >= 0.6) { setCls(r.cls); clsHint.textContent = 'Тип определён по тексту (' + r.why + '). Можно поменять.'; }
+    else clsHint.textContent = 'Не понял по тексту, что это за задача. Сейчас выбрано «' + (TASKS.find(([v]) => v === s.cls) || [0, s.cls])[1] + '»: проверьте.';
+  };
+  const ta = h('textarea.textarea', { rows: 3, oninput: () => { clearTimeout(timer); timer = setTimeout(() => detect(ta.value), 450); }, placeholder: 'Например: «добавь в проект экспорт истории в JSON»', 'aria-label': 'Задача', 'data-autofocus': true });
   const go2 = () => {
     const t = ta.value.trim();
     if (!t) return toast('Напишите, что нужно сделать', 'err');
@@ -86,7 +100,7 @@ function start(projects, models, state) {
   drawProject(); drawWho(); drawWay(); ask();
   const step = (n, title, ...body) => h('div.step', h('span.step-n', n), h('div.stack.grow', h('b.t-label', title), ...body));
   return h('section.compose-hero.plane.stack', h('h2.t-title', 'Что делаем сегодня?'),
-    step('1', 'Где работаем', projBox), step('2', 'Кто работает', whoBox), step('3', 'Как работаем', wayBox), step('4', 'Что нужно сделать', ta),
+    step('1', 'Где работаем', projBox), step('2', 'Кто работает', whoBox), step('3', 'Как работаем', wayBox), step('4', 'Что нужно сделать', ta, h('div.row-flex', h('div.field', clsSel), clsHint)),
     h('div.row-flex', { style: { justifyContent: 'flex-end' } }, h('span.t-meta', 'Ctrl+Enter'), btn('Начать', { kind: 'primary', icon: 'send', disabled: !usable.length, onclick: go2 })));
 }
 

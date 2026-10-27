@@ -20,6 +20,7 @@ import { build, KINDS, render, type Format, type Kind } from '../diagram/index.t
 import { advise, MODEL_GUIDE, ROUTING, type LimitState, type TaskClass } from '../econ/advisor.ts';
 import { calibrate, costUsd, effortProfiles, estimate, modelStats, outcomes, PRICES_VERIFIED_AT, profileFromHistory } from '../econ/econ.ts';
 import { compareStrategies } from '../econ/strategies.ts';
+import { classify } from '../econ/classify.ts';
 import { agentOf, modelKey } from '../econ/router.ts';
 import { PRIORS, TAGS } from '../econ/priors.ts';
 import { buildCases, exportCases, NEVER_INCLUDED } from '../econ/cases.ts';
@@ -297,6 +298,7 @@ const ROUTES: [string, RegExp, Handler][] = [
       usage, routing: ROUTING, guide: MODEL_GUIDE, priors: { rows: PRIORS.priors, surcharges: PRIORS.surcharges }, pricesVerifiedAt: PRICES_VERIFIED_AT, profile: profileFromHistory(c.db),
     });
   }],
+  ['POST', /^\/api\/classify$/, (_c, { body }) => { const p = str(body['prompt']); return p ? ok(classify(p)) : bad(400, 'prompt required'); }],
   ['GET', /^\/api\/overhead$/, (c, { q }) => ok(startOverhead(c.db, num(q.get('project')) != null ? { projectId: num(q.get('project')) as number } : {}))],
   ['POST', /^\/api\/runs\/(\w+)\/rating$/, (c, { params, body }) => {
     const r = num(body['rating']);

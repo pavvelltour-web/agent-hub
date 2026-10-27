@@ -154,6 +154,13 @@ test('library lists local skills with token cost; scout proposes; diagrams rende
   assert.equal((await api('/api/nothing')).status, 404);
 });
 
+test('classify: the task text gives a type with a confidence; an empty prompt is refused', async () => {
+  const r = await api('/api/classify', { method: 'POST', body: { prompt: 'почини падающий тест' } });
+  assert.equal(r.status, 200); assert.equal(r.json.cls, 'debug'); assert.ok(r.json.confidence >= 0.6 && r.json.why);
+  assert.ok((await api('/api/classify', { method: 'POST', body: { prompt: 'посмотри на модуль' } })).json.confidence < 0.6);
+  assert.equal((await api('/api/classify', { method: 'POST', body: { prompt: '  ' } })).status, 400);
+});
+
 test('estimate vs actual: a classified run stores its estimate and /api/outcomes compares it with what was used', async () => {
   scenario.v = 'claude-ok'; env();
   const root = mkRepo();

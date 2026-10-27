@@ -100,7 +100,7 @@ export function planDialog({ title, r, apply, missing }) {
 // ---------- shared pieces for the start screen, models and settings ----------
 export const EFFORT = [['', 'Авто'], ['low', 'Быстро'], ['medium', 'Обычно'], ['high', 'Глубоко'], ['xhigh', 'Очень глубоко'], ['max', 'Максимум']];
 export const EFFORT_RU = { low: 'быстро', medium: 'обычно', high: 'глубоко', xhigh: 'очень глубоко', max: 'максимум' };
-export const TASKS = [['implement', 'Писать код'], ['plan', 'Придумать план'], ['debug', 'Найти ошибку'], ['review', 'Проверить чужой код'], ['mechanical', 'Рутина: переименовать, поправить текст'], ['summary', 'Короткий пересказ']];
+export const TASKS = [['implement', 'Писать код'], ['plan', 'Придумать план'], ['critical_adr', 'Важное решение, которое трудно отменить'], ['debug', 'Найти ошибку'], ['review', 'Проверить чужой код'], ['mechanical', 'Рутина: переименовать, поправить текст'], ['summary', 'Короткий пересказ']];
 export const modelName = (guide, agent, id) => (guide.find((g) => g.agent === agent && (g.id === id || (id && id.includes(g.id))))?.name) || id || 'по умолчанию';
 
 /** One agent: is it installed, is it signed in, and a button for the next step. */
