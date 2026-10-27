@@ -5,17 +5,20 @@ import { EFFORT_RU, limitCard, modelName, pageHead, pctText, sessionRow, shortMo
 const SHORT = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT' };
 const BALANCE = [[0.3, 'Только качество'], [0.6, 'Скорее качество'], [1, 'Баланс'], [2, 'Скорее цена'], [4, 'Только цена']];
 
-/** Quality (up) against price (right). The ideal is the top-left corner: best quality for nothing. The chosen model is the closest dot. */
+/** «Sonnet · глубоко»: a model together with the thinking depth it is offered at. */
+const pairName = (o) => (SHORT[o.family] || o.family) + (o.effort ? ' · ' + (EFFORT_RU[o.effort] || o.effort) : '');
+
+/** Quality (up) against price (right). The ideal is the top-left corner: best quality for nothing. Each dot is a model at its best thinking depth; the chosen pair is the closest dot. */
 function qualityMap(options) {
   const W = 420, H = 260, L = 44, B = 36, T = 14, R = 16;
   const qs = options.map((o) => o.quality), lo = Math.max(0, Math.min(...qs, 0.5) - 0.1), hi = 1;
   const x = (price) => L + price * (W - L - R), y = (q) => T + (1 - (q - lo) / (hi - lo)) * (H - T - B);
   const chosen = options.find((o) => o.chosen);
-  return svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'qmap', role: 'img', 'aria-label': 'Карта моделей: чем ближе точка к левому верхнему углу, тем лучше' },
+  return svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'qmap', role: 'img', 'aria-label': 'Карта моделей и глубины мышления: чем ближе точка к левому верхнему углу, тем лучше' },
     svgEl('rect', { x: L, y: T, width: W - L - R, height: H - T - B, class: 'qmap-frame' }),
     chosen ? svgEl('line', { x1: x(0), y1: y(1), x2: x(chosen.price), y2: y(chosen.quality), class: 'qmap-ray' }) : null,
     svgEl('circle', { cx: x(0), cy: y(1), r: 6, class: 'qmap-ideal' }), svgEl('text', { x: x(0) + 10, y: y(1) + 4, class: 'qmap-t' }, 'идеал'),
-    options.map((o, i) => { const near = options.slice(0, i).some((p) => Math.hypot(x(p.price) - x(o.price), y(p.quality) - y(o.quality)) < 18); return [svgEl('circle', { cx: x(o.price), cy: y(o.quality), r: o.chosen ? 8 : 6, class: 'qmap-dot' + (o.chosen ? ' chosen' : '') }), svgEl('text', { x: x(o.price) + 11, y: y(o.quality) + 4 + (near ? 15 : 0), class: 'qmap-t' + (o.chosen ? ' chosen' : '') }, SHORT[o.key] || o.key)]; }),
+    options.map((o, i) => { const near = options.slice(0, i).some((p) => Math.hypot(x(p.price) - x(o.price), y(p.quality) - y(o.quality)) < 18); return [svgEl('circle', { cx: x(o.price), cy: y(o.quality), r: o.chosen ? 8 : 6, class: 'qmap-dot' + (o.chosen ? ' chosen' : '') }), svgEl('text', { x: x(o.price) + (x(o.price) > W * 0.6 ? -11 : 11), y: y(o.quality) + 4 + (near ? 15 : 0), class: 'qmap-t' + (o.chosen ? ' chosen' : ''), 'text-anchor': x(o.price) > W * 0.6 ? 'end' : 'start' }, pairName(o))]; }),
     svgEl('text', { x: L, y: H - 10, class: 'qmap-a' }, '← дешевле'), svgEl('text', { x: W - R, y: H - 10, class: 'qmap-a', 'text-anchor': 'end' }, 'дороже →'),
     svgEl('text', { x: 6, y: T + 10, class: 'qmap-a' }, 'лучше'), svgEl('text', { x: 6, y: H - B - 2, class: 'qmap-a' }, 'хуже'));
 }
@@ -62,7 +65,7 @@ async function overview() {
         h('div.row-flex', chip(`≈ ${fmt.tok(tokens)}–${fmt.tok(tokensHi)} токенов`, 'line'), e.usd ? chip(`≈ $${e.usd.low}–$${e.usd.high}`, 'line') : null, e.percent ? chip(pctText(e.percent), 'line') : null, chip(e.confidence === 'low' ? 'прогноз грубый' : 'прогноз средней точности', e.confidence === 'low' ? 'warn' : 'ok')),
         e.notes.length ? h('details', h('summary.t-meta', 'Почему прогноз неточный'), h('ul.t-meta', { style: { margin: '6px 0 0', paddingLeft: '18px' } }, e.notes.map((n) => h('li', n)))) : null),
       c.options ? h('div.plate.card.tight.stack', h('b.t-label', 'Карта: качество и цена'), qualityMap(c.options), h('p.t-meta', rt.observedRuns >= 3 ? `Чем ближе точка к «идеалу», тем лучше выбор. Качество считается по вашим оценкам задач (учтено запусков: ${rt.observedRuns}), а где данных мало, берётся оценка автора.` : 'Чем ближе точка к «идеалу», тем лучше выбор. Пока качество — оценка автора: оценивайте задачи в чате («Получилось?»), и карта станет вашей.')) : null,
-      alt ? h('div.plate.card.tight.row-flex', h('span.t-meta', 'Запасной вариант:'), agentBadge(alt.agent, modelName(guide, alt.agent, shortModel(alt.agent, alt.model))), h('span.t-meta.grow', alt.why)) : null);
+      alt ? h('div.plate.card.tight.row-flex', h('span.t-meta', 'Запасной вариант:'), agentBadge(alt.agent, modelName(guide, alt.agent, shortModel(alt.agent, alt.model))), alt.effort ? chip('мышление: ' + (EFFORT_RU[alt.effort] || alt.effort), 'line') : null, h('span.t-meta.grow', alt.why)) : null);
   }
   ask();
 
@@ -81,6 +84,7 @@ async function overview() {
     h('section.group', sectionHead('Какая модель для чего'), h('div.grid-2', group('claude', 'Claude'), group('codex', 'GPT через Codex')),
       h('details.plane.card', { style: { marginTop: '12px' } }, h('summary.t-label', 'Как hub выбирает модель'), h('ol', { style: { margin: '10px 0 0', paddingLeft: '20px', display: 'grid', gap: '6px' } },
         h('li', 'По типу задачи: планы и проверка кода у Opus, обычная работа у Sonnet, пересказы у Haiku.'),
+        h('li', 'Глубина мышления тоже выбирается: Sonnet с глубоким мышлением для кода, быстрое мышление для пересказов. «Очень глубоко» почти не улучшает код, но стоит в 2–4 раза дороже, поэтому без ваших данных его не берут.'),
         h('li', 'Если правка касается безопасности, проверяет самая сильная модель.'),
         h('li', 'Если шаг не получается дважды, добавляется мышление; трижды — переход на Opus.'),
         h('li', 'Код, написанный Claude, проверяет GPT, и наоборот: чужие ошибки видно лучше.'),

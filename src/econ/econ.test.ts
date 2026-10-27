@@ -57,14 +57,14 @@ test('calibrate: prior for Codex, none for Claude; becomes measured with ≥5 in
 });
 
 test('advise: table, escalation ladder, security boundary, limit-aware switch, both limited', () => {
-  assert.deepEqual(pick(advise({ cls: 'implement' })), ['claude', 'claude-sonnet-5-5', 'medium', 'class:implement']);
+  assert.deepEqual(pick(advise({ cls: 'implement' })), ['claude', 'claude-sonnet-5-5', 'high', 'class:implement']);   // 3.1: the user's principle, Sonnet at high effort, replaces the old 'medium'
   assert.deepEqual(pick(advise({ cls: 'plan' })), ['claude', 'claude-opus-5-5', 'high', 'class:plan']);
   assert.equal(advise({ cls: 'critical_adr' }).effort, 'max');
   assert.deepEqual(pick(advise({ cls: 'implement', failures: 2 })), ['claude', 'claude-sonnet-5-5', 'high', 'ladder:sonnet-high']);
   assert.deepEqual(pick(advise({ cls: 'implement', failures: 3 })), ['claude', 'claude-opus-5-5', 'high', 'ladder:opus']);
   assert.equal(advise({ cls: 'implement', securityBoundary: true }).rule, 'security-boundary');
   const c = advise({ cls: 'implement', limits: { claude: { usedPercent: 97, reached: false }, codex: { usedPercent: 20, reached: false } } });
-  assert.deepEqual(pick(c), ['codex', 'gpt-6.1-sol', 'medium', 'limit:claude→codex']);
+  assert.deepEqual(pick(c), ['codex', 'gpt-6.1-sol', 'high', 'limit:claude→codex']);   // 3.1: implementation is routed at high effort on either vendor
   assert.equal(advise({ cls: 'implement', limits: { claude: { usedPercent: null, reached: true }, codex: { usedPercent: 99, reached: false } } }).rule, 'limit:both');
   assert.equal(advise({ cls: 'implement', limits: { claude: { usedPercent: 50, reached: false } } }).agent, 'claude');
 });
@@ -110,5 +110,5 @@ test('router: with no data the optimizer reproduces the author table; real resul
   // the map: top options with the chosen one marked, sorted by distance to the ideal
   const c = advise({ cls: 'implement' });
   assert.equal(c.options?.filter((o) => o.chosen).length, 1); assert.deepEqual(c.options?.map((o) => o.distance), [...(c.options ?? [])].map((o) => o.distance).sort((a, b) => a - b));
-  assert.equal(modelKey('gpt-6.1-sol'), 'gpt'); assert.equal(rank({ cls: 'plan' })[0]!.key, 'opus');
+  assert.equal(modelKey('gpt-6.1-sol'), 'gpt'); assert.equal(rank({ cls: 'plan' })[0]!.family, 'opus');   // 3.1: options are (model, effort) pairs, `family` is the model
 });

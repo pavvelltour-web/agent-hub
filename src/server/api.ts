@@ -18,7 +18,7 @@ import { effective } from '../core/plan.ts';
 import type { AgentId, RegistryEntry } from '../core/types.ts';
 import { build, KINDS, render, type Format, type Kind } from '../diagram/index.ts';
 import { advise, MODEL_GUIDE, ROUTING, type LimitState, type TaskClass } from '../econ/advisor.ts';
-import { calibrate, costUsd, estimate, modelStats, outcomes, PRICES_VERIFIED_AT, profileFromHistory } from '../econ/econ.ts';
+import { calibrate, costUsd, effortProfiles, estimate, modelStats, outcomes, PRICES_VERIFIED_AT, profileFromHistory } from '../econ/econ.ts';
 import { buildCases, exportCases, NEVER_INCLUDED } from '../econ/cases.ts';
 import { startOverhead } from '../econ/overhead.ts';
 import { readSessionEvents as readClaudeEvents, syncClaude, type SyncStats } from '../history/claude.ts';
@@ -74,7 +74,7 @@ function limitState(c: Ctx, agent: AgentId): (LimitState & { resetsAt: number | 
   return { usedPercent: stale ? null : l.usedPercent, reached: !stale && (l.usedPercent ?? 0) >= 100, resetsAt: l.resetsAt, windowMinutes: l.windowMinutes, source: l.source, ts: l.ts, stale, planType: l.planType };
 }
 /** What the user's own finished runs and preferences add to a model decision. */
-const learned = (c: Ctx): { stats: ReturnType<typeof modelStats>; priceWeight: number; explore: number } => { const r = loadUserConfig().routing ?? {}; return { stats: modelStats(c.db), priceWeight: Math.min(5, Math.max(0.2, r.priceWeight ?? 1)), explore: Math.min(0.3, Math.max(0, r.explore ?? 0)) }; };
+const learned = (c: Ctx): { stats: ReturnType<typeof modelStats>; effortProfiles: ReturnType<typeof effortProfiles>; priceWeight: number; explore: number } => { const r = loadUserConfig().routing ?? {}; return { stats: modelStats(c.db), effortProfiles: effortProfiles(c.db), priceWeight: Math.min(5, Math.max(0.2, r.priceWeight ?? 1)), explore: Math.min(0.3, Math.max(0, r.explore ?? 0)) }; };
 const limitsFor = (c: Ctx): Partial<Record<AgentId, LimitState>> => Object.fromEntries((['claude', 'codex'] as AgentId[]).map((a) => [a, limitState(c, a)]).filter(([, v]) => v)) as Partial<Record<AgentId, LimitState>>;
 
 const entryView = (e: RegistryEntry): Record<string, unknown> => ({ id: e.id, kind: e.kind, title: e.title, description: clip(e.description, 220), tokenCost: e.tokenCost, license: e.license ?? 'unknown', compat: e.compat, risk: e.risk, source: e.source.type, sourceVerified: e.sourceVerified, downloads: e.downloads ?? null, scan: e.scan ?? null, scope: e.scope ?? null, visibleTo: e.visibleTo ?? [], globalVisibleTo: e.globalVisibleTo ?? [] });
@@ -277,7 +277,7 @@ const ROUTES: [string, RegExp, Handler][] = [
     c.db.prepare('UPDATE run SET rating = ? WHERE id = ?').run(r, run.id);
     return ok({ ok: true });
   }],
-  ['GET', /^\/api\/routing$/, (c) => { const l = learned(c); const st = Object.values(l.stats).reduce((a, x) => a + x.n, 0); return ok({ priceWeight: l.priceWeight, explore: l.explore, observedRuns: st }); }],
+  ['GET', /^\/api\/routing$/, (c) => { const l = learned(c); const st = Object.entries(l.stats).reduce((a, [k, x]) => a + (k.split('|').length === 2 ? x.n : 0), 0);  /* per-model keys only: the per-pair keys count the same runs again */ return ok({ priceWeight: l.priceWeight, explore: l.explore, observedRuns: st }); }],
   ['POST', /^\/api\/routing$/, (_c, { body }) => {
     const pw = num(body['priceWeight']), ex = num(body['explore']);
     if ((pw != null && (pw < 0.2 || pw > 5)) || (ex != null && (ex < 0 || ex > 0.3))) return bad(400, 'priceWeight must be 0.2–5, explore 0–0.3');

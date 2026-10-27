@@ -196,7 +196,7 @@ Decision by the author: **Opus 5.5** for plans and hard architecture, **Sonnet 5
 
 ### 6.2 Effort policy
 
-- Default **medium** for implementation. **High** only for debugging, process/concurrency code (adapters, runner), security boundaries.
+- Default for implementation in the router (v0.2 P3.1, the user's principle) is **Sonnet at high**; effort is a routed dimension (model, effort), `xhigh` never wins for code without data. **High** also for debugging, process/concurrency code (adapters, runner), security boundaries.
 - **Highest** only for the 4 critical ADRs (C2).
 - **Low** for mechanical work.
 - Effort is re-tuned per class from first-try success data after 10 sessions per cell (the author's history shows effort level barely changes session size, so it must be justified by success, not assumed).

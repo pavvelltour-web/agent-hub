@@ -46,6 +46,33 @@ export function profileFromHistory(db: Db, agent?: string): Profile {
   return { n: rows.length, source: 'history', p50: at(0.5), p75: at(0.75), p90: at(0.9), mean: { uncachedIn: avg('u'), cachedIn: avg('c'), out: avg('o') } };
 }
 
+/** Runs needed before a measurement of one effort is trusted (same bar as the router's MIN_RUNS). */
+export const MIN_EFFORT_RUNS = 3;
+/**
+ * Token profile of one agent at one effort, from the hub's own finished runs (the run table records the effort the hub asked for) and, for sessions
+ * the hub did not start, the effort the agent logged (Codex logs it, Claude does not). Reviewer runs and interrupted runs are left out.
+ * Fewer than MIN_EFFORT_RUNS rows: the default profile, so callers fall back to the prior multiplier.
+ */
+export function effortProfile(db: Db, agent: string, effort: string): Profile {
+  const runs = db.prepare(`SELECT r.tokens_in AS tin, r.tokens_cached AS tc, r.tokens_out AS o FROM run r WHERE r.agent = ? AND lower(r.effort) = ? AND r.outcome IS NOT NULL AND r.outcome != 'interrupted' AND ${NOT_REVIEWER_SQL} AND (r.tokens_in IS NOT NULL OR r.tokens_out IS NOT NULL)`).all(agent, effort.toLowerCase()) as unknown as { tin: number | null; tc: number | null; o: number | null }[];
+  const sessions = db.prepare(`SELECT s.uncached_in AS u, s.cached_in AS c, s.out_tokens AS o FROM session s WHERE s.agent = ? AND lower(s.effort) = ? AND s.parent_id IS NULL AND s.msg_count >= 5 AND (s.uncached_in + s.cached_in) > 0 AND NOT EXISTS (SELECT 1 FROM run r WHERE r.agent = s.agent AND r.session_native_id = s.native_id)`).all(agent, effort.toLowerCase()) as unknown as { u: number; c: number; o: number }[];
+  const rows = [
+    ...runs.map((r) => ({ u: Math.max(0, (r.tin ?? 0) - (r.tc ?? 0)), c: r.tc ?? 0, o: r.o ?? 0 })),
+    ...sessions.map((r) => ({ u: r.u, c: r.c, o: r.o })),
+  ];
+  if (rows.length < MIN_EFFORT_RUNS) return DEFAULT_PROFILE;
+  const at = (p: number): Tokens => ({ uncachedIn: pct(rows.map((r) => r.u), p), cachedIn: pct(rows.map((r) => r.c), p), out: pct(rows.map((r) => r.o), p) });
+  const avg = (k: 'u' | 'c' | 'o'): number => rows.reduce((a, r) => a + r[k], 0) / rows.length;
+  return { n: rows.length, source: 'history', p50: at(0.5), p75: at(0.75), p90: at(0.9), mean: { uncachedIn: avg('u'), cachedIn: avg('c'), out: avg('o') } };
+}
+
+/** Measured profiles for the router, keyed `agent:effort`; only those with enough runs (the rest are left to the prior multiplier). */
+export function effortProfiles(db: Db): Record<string, Profile> {
+  const out: Record<string, Profile> = {};
+  for (const agent of ['claude', 'codex']) for (const e of ['low', 'medium', 'high', 'xhigh', 'max']) { const p = effortProfile(db, agent, e); if (p.source === 'history') out[`${agent}:${e}`] = p; }
+  return out;
+}
+
 // ---------- weekly-limit calibration ----------
 export interface Calib { lowMwPerPct: number; highMwPerPct: number; n: number; source: 'measured' | 'prior' | 'none' }
 export const CODEX_PRIOR: Calib = { lowMwPerPct: 1, highMwPerPct: 8, n: 0, source: 'prior' };
@@ -114,14 +141,16 @@ export function runScore(outcome: string | null, rating: number | null): number 
   if (outcome === 'done') return 0.7; if (outcome === 'failed') return 0;
   return null;
 }
+/** Keys `cls|model` (every effort together) and `cls|model|effort` (that pair only). */
 export function modelStats(db: Db): Record<string, { n: number; score: number }> {
-  const rows = db.prepare(`SELECT r.cls, r.model, r.outcome, r.rating, ${REVIEW_STATE_SQL} AS rstate FROM run r WHERE r.cls IS NOT NULL AND r.model IS NOT NULL AND r.outcome IS NOT NULL AND ${NOT_REVIEWER_SQL}`).all() as unknown as { cls: string; model: string; outcome: string; rating: number | null; rstate: string | null }[];
+  const rows = db.prepare(`SELECT r.cls, r.model, r.effort, r.outcome, r.rating, ${REVIEW_STATE_SQL} AS rstate FROM run r WHERE r.cls IS NOT NULL AND r.model IS NOT NULL AND r.outcome IS NOT NULL AND ${NOT_REVIEWER_SQL}`).all() as unknown as { cls: string; model: string; effort: string | null; outcome: string; rating: number | null; rstate: string | null }[];
   const out: Record<string, { n: number; score: number }> = {};
   for (const r of rows) {
     const sc = runScore(settledOutcome(r.outcome, r.rstate), r.rating); if (sc == null) continue;
     const m = canonicalModel(r.model) ?? r.model;
     const key = `${r.cls}|${/opus/i.test(m) ? 'opus' : /sonnet/i.test(m) ? 'sonnet' : /haiku/i.test(m) ? 'haiku' : /fable/i.test(m) ? 'fable' : 'gpt'}`;
-    const x = out[key] ?? { n: 0, score: 0 }; x.n++; x.score += sc; out[key] = x;
+    // per model (all efforts) and, when the run recorded its effort, per (model, effort) pair
+    for (const k of r.effort ? [key, `${key}|${r.effort.toLowerCase()}`] : [key]) { const x = out[k] ?? { n: 0, score: 0 }; x.n++; x.score += sc; out[k] = x; }
   }
   return out;
 }

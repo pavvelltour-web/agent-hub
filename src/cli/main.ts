@@ -22,7 +22,7 @@ import { testProject } from '../core/mcp-test.ts';
 import { pushGuardEnv } from '../run/git.ts';
 import { build, check, KINDS, render, type Format, type Kind } from '../diagram/index.ts';
 import { advise, ROUTING, type TaskClass } from '../econ/advisor.ts';
-import { calibrate, estimate, modelStats, profileFromHistory } from '../econ/econ.ts';
+import { calibrate, effortProfiles, estimate, modelStats, profileFromHistory } from '../econ/econ.ts';
 import { syncClaude } from '../history/claude.ts';
 import { syncCodex } from '../history/codex.ts';
 import { listProjects, listSessions, openDb, search } from '../history/store.ts';
@@ -233,7 +233,7 @@ async function cmdRun(a: Args, chat: boolean): Promise<void> {
   const rm = new RunManager(db);
   const root = projectArg(a, chat ? 1 : 2);
   const agent = (flag(a, 'agent') ?? 'auto') as AgentId | 'auto';
-  const stateOf = (): ReturnType<typeof advise> => advise({ cls: ((flag(a, 'class') ?? 'implement') in ROUTING ? flag(a, 'class') ?? 'implement' : 'implement') as TaskClass, stats: modelStats(db), limits: {} });
+  const stateOf = (): ReturnType<typeof advise> => advise({ cls: ((flag(a, 'class') ?? 'implement') in ROUTING ? flag(a, 'class') ?? 'implement' : 'implement') as TaskClass, stats: modelStats(db), effortProfiles: effortProfiles(db), limits: {} });
   let prev: string | undefined;
   const once = async (prompt: string): Promise<void> => {
     const ch = agent === 'auto' ? stateOf() : undefined;

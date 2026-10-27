@@ -1,7 +1,8 @@
 import type { AgentId } from '../core/types.ts';
-import { agentOf, EFFORT, MODEL_ID, modelKey, rank, type ModelStats, type Option, type TaskClass } from './router.ts';
+import type { Profile } from './econ.ts';
+import { agentOf, EFFORT, MODEL_ID, modelKey, rank, type EffortLevel, type ModelStats, type Option, type TaskClass } from './router.ts';
 
-export type { TaskClass, ModelStats, Option };
+export type { TaskClass, ModelStats, Option, EffortLevel };
 export interface Pick { agent: AgentId; model: string; effort: string }
 export interface Choice extends Pick { rule: string; reason: string; alt?: Pick & { why: string }; options?: (Option & { chosen: boolean })[] }
 
@@ -9,19 +10,24 @@ export interface Choice extends Pick { rule: string; reason: string; alt?: Pick 
 export const ROUTING: Record<TaskClass, { model: string; effort: string; reason: string }> = {
   plan: { model: 'claude-opus-5-5', effort: 'high', reason: 'Планы и архитектура: ошибка здесь стоит дороже всей сессии, поэтому самая сильная модель.' },
   critical_adr: { model: 'claude-opus-5-5', effort: 'max', reason: 'Решения, которые трудно отменить (безопасность, формат данных): максимум рассуждения.' },
-  implement: { model: 'claude-sonnet-5-5', effort: 'medium', reason: 'Код по готовому плану: самая дешёвая модель, которая справляется.' },
+  implement: { model: 'claude-sonnet-5-5', effort: 'high', reason: 'Код по готовому плану: Sonnet с глубоким мышлением. Дешевле Opus и надёжнее быстрого режима: меньше повторных попыток.' },
   debug: { model: 'claude-sonnet-5-5', effort: 'high', reason: 'Поиск причины ошибки: нужно больше рассуждения, чем для обычного кода.' },
   review: { model: 'claude-opus-5-5', effort: 'medium', reason: 'Проверка чужих правок: сильная модель находит больше ошибок.' },
   mechanical: { model: 'claude-sonnet-5-5', effort: 'low', reason: 'Переименования, форматирование, тексты: думать глубоко не нужно.' },
   summary: { model: 'claude-haiku-5-5', effort: 'low', reason: 'Краткие пересказы и карточки передачи: самая дешёвая модель.' },
 };
 
-const GPT_EFFORT: Record<string, string> = { low: 'low', medium: 'medium', high: 'high', max: 'high' };
+const GPT_EFFORT: Record<string, string> = { low: 'low', medium: 'medium', high: 'high', xhigh: 'high', max: 'high' };
+const EFFORT_RU: Record<EffortLevel, string> = { low: 'быстро', medium: 'обычно', high: 'глубоко', xhigh: 'очень глубоко', max: 'максимум' };
+const FAMILY_RU: Record<Option['family'], string> = { opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable', gpt: 'GPT' };
+/** «Sonnet · глубоко»: how a pair is named in plain Russian. */
+export const pairLabel = (o: { family: Option['family']; effort: EffortLevel }): string => `${FAMILY_RU[o.family]} · ${EFFORT_RU[o.effort]}`;
 
 export interface LimitState { usedPercent: number | null; reached: boolean }
 export interface AdviseIn {
   cls: TaskClass; securityBoundary?: boolean; failures?: number; limits?: Partial<Record<AgentId, LimitState>>; thresholdPercent?: number; codexModel?: string; implementedBy?: AgentId;
-  stats?: ModelStats;            // what the user's own finished runs say about quality
+  stats?: ModelStats;            // what the user's own finished runs say about quality (per model and per model+effort pair)
+  effortProfiles?: Record<string, Profile>;   // measured tokens per `agent:effort`; priced instead of the prior multiplier once there are >= 3 runs
   priceWeight?: number;          // 1 = default balance, <1 favours quality, >1 favours price
   explore?: number;              // share (0..0.3) of simple tasks used to try a less-measured model; 0 = never
   rand?: () => number;
@@ -52,9 +58,14 @@ export function advise(i: AdviseIn): Choice {
   const claudeFull = full(i.limits?.claude, th), codexFull = full(i.limits?.codex, th);
   const cl = left(i.limits?.claude), cx = left(i.limits?.codex);
   const scarce = { claude: cl != null && cx != null && cl < 35 && cx - cl >= 25 && !codexFull, codex: cl != null && cx != null && cx < 35 && cl - cx >= 25 && !claudeFull };
-  const ranked = rank({ cls: i.cls, ...(i.stats ? { stats: i.stats } : {}), ...(i.priceWeight != null ? { priceWeight: i.priceWeight } : {}), codexModel: gpt, ...(i.implementedBy ? { implementedBy: i.implementedBy } : {}), scarce });
+  const ranked = rank({ cls: i.cls, ...(i.stats ? { stats: i.stats } : {}), ...(i.effortProfiles ? { effortProfiles: i.effortProfiles } : {}), ...(i.priceWeight != null ? { priceWeight: i.priceWeight } : {}), codexModel: gpt, ...(i.implementedBy ? { implementedBy: i.implementedBy } : {}), scarce });
   const pickOf = (o: Option): { agent: AgentId; model: string; effort: string } => ({ agent: o.agent, model: o.model, effort: o.agent === 'codex' ? GPT_EFFORT[o.effort] ?? 'medium' : o.effort });
-  const withOpts = (c: Choice, chosen: Option | undefined): Choice => ({ ...c, options: ranked.slice(0, 5).map((o) => ({ ...o, chosen: !!chosen && o.key === chosen.key })) });
+  // the map shows the best effort of each model (the chosen pair stands in for its model), so five dots are five models, not five efforts of one
+  const withOpts = (c: Choice, chosen: Option | undefined): Choice => {
+    const best: Option[] = [];
+    for (const o of ranked) if (!best.some((b) => b.family === o.family)) best.push(chosen && chosen.family === o.family ? chosen : o);
+    return { ...c, options: best.slice(0, 5).map((o) => ({ ...o, chosen: !!chosen && o.key === chosen.key })) };
+  };
   const altFor = (win: AgentId): Choice['alt'] => {
     const other = ranked.find((o) => o.agent !== win);
     if (!other) return undefined;
@@ -66,10 +77,10 @@ export function advise(i: AdviseIn): Choice {
 
   // an agent out of limit is simply not an option
   const allowed = ranked.filter((o) => !(o.agent === 'claude' && claudeFull) && !(o.agent === 'codex' && codexFull));
-  let win: Option | undefined = forced && !claudeFull ? ranked.find((o) => MODEL_ID[o.key as Exclude<typeof o.key, 'gpt'>] === forced?.model) : allowed[0];
+  let win: Option | undefined = forced && !claudeFull ? ranked.find((o) => o.family !== 'gpt' && MODEL_ID[o.family] === forced?.model && o.effort === forced?.effort) ?? ranked.find((o) => o.family !== 'gpt' && MODEL_ID[o.family] === forced?.model) : allowed[0];
   if (forced && !claudeFull && win) {
     const c = { ...pickOf(win), model: forced.model, effort: forced.effort, rule: forced.rule, reason: forced.reason };
-    const o = { ...win, effort: forced.effort };
+    const o = { ...win, effort: forced.effort as EffortLevel };
     return withOpts({ ...c, ...(altFor('claude') ? { alt: altFor('claude') } : {}) }, o);
   }
   if (!win) win = allowed[0];
@@ -78,17 +89,17 @@ export function advise(i: AdviseIn): Choice {
   // optional exploration: on simple tasks sometimes try the option we know least about, so the router learns instead of guessing forever
   let rule = '', reason = '';
   if ((i.explore ?? 0) > 0 && EXPLORABLE.has(i.cls) && !i.securityBoundary && (i.rand ?? Math.random)() < Math.min(0.3, i.explore ?? 0)) {
-    const near = allowed.filter((o) => o !== win && o.distance - win!.distance <= 0.03 && o.runs < win!.runs + 3).sort((a, b) => a.runs - b.runs)[0];
+    const near = allowed.filter((o) => o.family !== win!.family && o.distance - win!.distance <= 0.03 && o.runs < win!.runs + 3).sort((a, b) => a.runs - b.runs)[0];
     if (near) { win = near; rule = 'explore'; reason = `Пробую эту модель на простой задаче: данных о ней мало, а выбор почти равнозначен. Так hub узнаёт, где можно сэкономить.`; }
   }
-  const tableWin = win.agent === 'claude' && win.model === base.model;
+  const tableWin = win.agent === 'claude' && win.model === base.model && win.effort === base.effort;
   if (!rule) {
     if (claudeFull) { rule = 'limit:claude→codex'; reason = `У Claude лимит кончился, у Codex есть запас. ${base.reason}`; }
     else if (codexFull && i.cls === 'review' && i.implementedBy === 'claude') { rule = 'limit:codex'; reason = 'Codex без запаса, поэтому ревью делает Claude.'; }
     else if (i.cls === 'review' && i.implementedBy && win.bonus > 0) { rule = 'cross-review'; reason = `Код писал ${i.implementedBy === 'claude' ? 'Claude' : 'Codex'}, поэтому проверяет ${win.agent === 'codex' ? 'GPT через Codex' : 'Claude'}: другая модель замечает то, что своя пропускает.`; }
     else if (win.agent === 'codex' && scarce.claude) { rule = 'balance'; reason = `У Claude осталось ${Math.round(cl ?? 0)}%, у Codex ${Math.round(cx ?? 0)}%: даю работу Codex, чтобы не выжечь лимит Claude.`; }
     else if (tableWin) { rule = `class:${i.cls}`; reason = base.reason; }
-    else { rule = 'optimizer'; reason = `Ближе всех к идеалу «хорошо и недорого»: качество ≈ ${pct(win.quality)}, цена ≈ ${pct(win.price)} от самой дорогой модели. ${win.measured ? `Считаю по ${win.runs} вашим запускам.` : 'Пока по оценке автора: ваших запусков этого типа мало.'}`; }
+    else { rule = 'optimizer'; reason = `${pairLabel(win)}: ближе всех к идеалу «хорошо и недорого», качество ≈ ${pct(win.quality)}, цена ≈ ${pct(win.price)} от самой дорогой модели. ${win.measured ? `Считаю по ${win.runs} вашим запускам.` : 'Пока по оценке автора: ваших запусков этого типа мало.'}`; }
   }
   const alt = altFor(win.agent);
   return withOpts({ ...pickOf(win), rule, reason, ...(alt ? { alt } : {}) }, win);

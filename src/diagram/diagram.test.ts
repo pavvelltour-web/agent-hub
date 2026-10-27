@@ -20,7 +20,7 @@ test('data diagram comes from the real SQL schema (tables, columns, references)'
 
 test('arch/stages/routing render in all three formats', () => {
   for (const k of ['arch', 'stages', 'routing'] as const) for (const f of ['ascii', 'mermaid', 'json'] as const) assert.ok(render(build(k), f).length > 50, `${k}/${f}`);
-  assert.match(render(build('routing'), 'ascii'), /implement\s+→ claude-sonnet-5-5\s+medium/);
+  assert.match(render(build('routing'), 'ascii'), /implement\s+→ claude-sonnet-5-5\s+high/);
   assert.match(render(build('stages'), 'ascii'), /1 Идея и контекст ─► 2 Вопросы к вам/);
 });
 

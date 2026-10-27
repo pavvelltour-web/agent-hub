@@ -1,6 +1,6 @@
 import { api, qs } from '../api.js';
 import { agentBadge, agentName, btn, chip, dialog, closeBtn, empty, field, fmt, h, icon, sectionHead, toast } from '../ui.js';
-import { go, linkProject, pageHead, pctText, runRow, sessionRow, shortModel, TASKS } from './common.js';
+import { EFFORT_RU, go, linkProject, pageHead, pctText, runRow, sessionRow, shortModel, TASKS } from './common.js';
 import { chatPanel } from './chat.js';
 import { historyPanel } from './history.js';
 import { reviewLink, reviewLinks } from './review.js';
@@ -83,7 +83,7 @@ async function tasks(id, o) {
   async function advise() {
     const r = await api.post('/advise', { cls: cls.value, securityBoundary: sec.checked }, true).catch(() => null);
     if (!r) return; choice = r.choice; const e = r.estimate;
-    adv.replaceChildren(h('div.row-flex', agentBadge(choice.agent, `${agentName(choice.agent)} · ${fmt.model(choice.model)}`)), h('p.t-meta', choice.reason),
+    adv.replaceChildren(h('div.row-flex', agentBadge(choice.agent, `${agentName(choice.agent)} · ${fmt.model(choice.model)}`), choice.effort ? chip('мышление: ' + (EFFORT_RU[choice.effort] || choice.effort), 'line') : null), h('p.t-meta', choice.reason),
       h('div.row-flex', e.usd ? chip(`≈ $${e.usd.low}–$${e.usd.high}`, 'line') : null, e.percent ? chip(pctText(e.percent), 'line') : chip('расход лимита пока не известен', 'warn')));
   }
   advise();
