@@ -75,6 +75,8 @@ export async function syncCodex(db: Db, codexDir = join(homedir(), '.codex')): P
         else if (l.type === 'event_msg' && p.type === 'token_count') {
           const lu = p.info?.last_token_usage;
           if (lu) usage.push({ ts: l.timestamp ?? null, model, u: { uncachedIn: Math.max(0, count(lu.input_tokens) - count(lu.cached_input_tokens)), cachedIn: count(lu.cached_input_tokens), out: count(lu.output_tokens), reasoning: count(lu.reasoning_output_tokens) } });
+          const sec = p.rate_limits?.secondary;
+          if (sec && l.timestamp) limits.push({ ts: l.timestamp, windowMinutes: fin(sec.window_minutes), usedPercent: fin(sec.used_percent), resetsAt: fin(sec.resets_at), planType: p.rate_limits?.plan_type ?? plan });
           const pr = p.rate_limits?.primary;
           if (pr && l.timestamp) { plan = p.rate_limits?.plan_type ?? plan; limits.push({ ts: l.timestamp, windowMinutes: fin(pr.window_minutes), usedPercent: fin(pr.used_percent), resetsAt: fin(pr.resets_at), planType: plan }); }
         } else if (l.type === 'response_item' && p.type === 'message' && (p.role === 'user' || p.role === 'assistant')) {

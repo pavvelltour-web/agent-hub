@@ -15,7 +15,7 @@ export type HubEvent =
   | { kind: 'context'; tokens: number; newIn?: number; cachedIn?: number; out?: number; mid?: string }   // size of the prompt of ONE model call (what the next call must carry), plus the split of that call; watched by the runner, never sent to the panel (it stores a `turn` row from it, ADR-024)
   | { kind: 'turn'; newIn: number; cachedIn: number; out: number; reasoning?: number; context: number; mid?: string }   // STORED form of `context` (Phase 7 trace and gauge); never emitted by an adapter
   | { kind: 'unknown'; type: string }
-  | { kind: 'limit'; reached: boolean; message: string; resetsAt?: string; usedPercent?: number }
+  | { kind: 'limit'; reached: boolean; message: string; resetsAt?: string; usedPercent?: number; windowMinutes?: number }
   | { kind: 'warn'; message: string }
   | { kind: 'error'; message: string; needsLogin?: boolean }
   | { kind: 'done'; ok: boolean };

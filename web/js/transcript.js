@@ -16,7 +16,7 @@ const familyOf = (name) => { const n = (typeof name === 'string' ? name : '').to
 const HEAD = 5;          // bash output lines shown before the expander
 const DIFF_HEAD = 8;     // diff lines shown before the expander
 const CHUNK = 300;       // lines added per expander click: a 64 KB body never lands in the DOM at once
-const OUTCOME = { done: 'Готово', review: 'На ревью', failed: 'Ошибка', limit: 'Остановлено лимитом', stopped: 'Остановлено вами', context: 'Продолжено в новой сессии', interrupted: 'Прервано' };
+const OUTCOME = { done: 'Готово', review: 'На ревью', failed: 'Ошибка', limit: 'Остановлено лимитом', stopped: 'Остановлено вами', guard: 'Остановлено защитой от лишних расходов', context: 'Продолжено в новой сессии', interrupted: 'Прервано' };
 const KIND = { add: 'новый файл', delete: 'удалён', update: 'изменён' };
 
 const plural = (n, [one, few, many]) => { const a = n % 10, b = n % 100; return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many; };

@@ -26,4 +26,11 @@ export function authStatus(id: AgentId, info: AgentInfo, runner: Runner = run, n
   if (runner === run) cache.set(id, { at: now, v });
   return v;
 }
+/** The same check made FROM a project folder (not cached): that is where an automatic run will start, and a folder's own Claude settings can change the answer. */
+export function authStatusIn(id: AgentId, info: AgentInfo, cwd: string, runner?: Runner): AuthInfo {
+  if (!info.installed || !info.path) return { loggedIn: null, how: '' };
+  const args = id === 'claude' ? ['auth', 'status'] : ['login', 'status'];
+  const r = runner ? runner(info.path, args) : (() => { const x = spawnSync(info.path as string, args, { encoding: 'utf8', timeout: 15_000, windowsHide: true, cwd }); return { status: x.status, stdout: (x.stdout ?? '') + (x.stderr ?? '') }; })();
+  return parseAuth(id, r);
+}
 export const forgetAuth = (id: AgentId): void => void cache.delete(id);

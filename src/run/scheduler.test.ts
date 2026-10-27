@@ -4,16 +4,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { APPROVAL_TTL_MS, MAX_STARTS_PER_DAY, MIN_LEFT_PCT, SAFETY_MARGIN_PCT, billingOk, startReqFor, suggestBeforeReset, validJob, type QueuedJob } from './scheduler.ts';
+import { APPROVAL_TTL_MS, MAX_STARTS_PER_DAY, MIN_LEFT_PCT, SAFETY_MARGIN_PCT, billingOk, projectSettingsProblem, startReqFor, suggestBeforeReset, validJob, type QueuedJob } from './scheduler.ts';
 import { startAutoLoop, hasPending } from './autouse-wire.ts';
-import { AutoScheduler, confirmWordFor, loadAuto, setEnabled, approveItem, cancelItem, saveAuto, projectKeyOf, type AutoDeps } from './autouse.ts';
+import { acquireLock, holdsLock, type LockDeps } from './autouse-lock.ts';
+import { AutoScheduler, confirmWordFor, loadAuto, loadAutoRaw, setEnabled, approveItem, cancelItem, saveAuto, projectKeyOf, type AutoDeps } from './autouse.ts';
 
 const web = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'js');
 const M = await import(pathToFileURL(join(web, 'autouse-model.js')).href) as { autoModel: (r: unknown) => any; suggestionLine: (s: any) => string; hoursText: (h: number) => string; confirmMatches: (a: unknown, b: unknown) => boolean };
 const NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
 const sec = NOW / 1000;
 const job = (over: Partial<QueuedJob> = {}): QueuedJob => ({ id: 'j1', kind: 'review-existing', projectId: 1, agent: 'codex', expectedPct: 12, writes: 'none', ...over });
-const lim = (used: number | null, resetsInH: number | null, over: Record<string, unknown> = {}) => ({ usedPercent: used, reached: false, resetsAt: resetsInH == null ? null : sec + resetsInH * 3600, ...over });
+const lim = (used: number | null, resetsInH: number | null, over: Record<string, unknown> = {}) => ({ usedPercent: used, reached: false, windowMinutes: 10080, resetsAt: resetsInH == null ? null : sec + resetsInH * 3600, ...over });
 
 // ---------- suggestBeforeReset (pure) ----------
 
@@ -68,7 +69,7 @@ test('suggestBeforeReset: write work is never on the main branch, and a job whos
 
 // ---------- opt-in, approval and the tick (injected clock, fake spawner, no timers) ----------
 
-function rig(opts: { now?: () => number; limits?: Record<string, unknown>; billing?: (a: string) => { ok: boolean; why?: string }; breaker?: (root: string) => string | null; live?: Set<string> } = {}) {
+function rig(opts: { now?: () => number; limits?: Record<string, unknown>; billing?: (a: string, root?: string) => { ok: boolean; why?: string }; breaker?: (root: string) => string | null; live?: Set<string> } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'hub-auto-'));
   const root = mkdtempSync(join(tmpdir(), 'hub-auto-root-'));
   const calls = { start: [] as { job: QueuedJob; root: string }[], stop: [] as string[] };
@@ -77,7 +78,7 @@ function rig(opts: { now?: () => number; limits?: Record<string, unknown>; billi
   const deps: AutoDeps = {
     home, now: opts.now ?? (() => clock),
     limits: () => (opts.limits ?? { codex: { ...lim(40, 6), ts: new Date(clock).toISOString() } }) as never,
-    billing: opts.billing ?? (() => ({ ok: true })),
+    billing: opts.billing ?? (() => ({ ok: true })), projectCheck: () => null,
     breaker: opts.breaker ?? (() => null),
     projectRoot: (id) => (id === 1 ? root : undefined),
     start: (j, r) => { calls.start.push({ job: j, root: r }); const runId = `rauto${calls.start.length}`; live.add(runId); return { runId }; },
@@ -264,13 +265,13 @@ test('the state file: hostile content never enables anything, is size-capped and
   try {
     const file = join(r.home, 'autouse.json');
     writeFileSync(file, JSON.stringify({ version: 1, projects: { x: { enabled: 'yes' }, y: { enabled: true, root: 5 }, z: 7 }, items: [{ status: 'approved', writes: 'main' }, 'x', null, { id: 'q', kind: 'missing-tests', writes: 'main', status: 'approved' }], starts: ['a', -1, 5] }));
-    const st = loadAuto(r.home);
+    const st = loadAutoRaw(r.home);
     assert.deepEqual(Object.values(st.projects).filter((p) => p.enabled), [], 'no row with a loose "enabled" counts');
     assert.equal(st.items.length, 0); assert.deepEqual(st.starts, [5]);
     writeFileSync(file, 'x'.repeat(2_000_000));
-    assert.deepEqual(loadAuto(r.home).items, []);
+    assert.deepEqual(loadAutoRaw(r.home).items, []);
     writeFileSync(file, '{not json');
-    assert.deepEqual(loadAuto(r.home).projects, {});
+    assert.deepEqual(loadAutoRaw(r.home).projects, {});
     saveAuto(r.home, { version: 1, projects: {}, items: [], starts: [] });
     assert.ok(existsSync(file)); assert.equal(JSON.parse(readFileSync(file, 'utf8')).version, 1);
   } finally { r.done(); }
@@ -318,6 +319,157 @@ test('panel data layer: a hostile answer is typed, unknown kinds and agents are 
   assert.equal(M.suggestionLine(p.suggestions[0]), 'До сброса Codex 9 ч, осталось 40 %: можно прогнать ревью старого кода');
   assert.equal(M.hoursText(0.4), '24 мин');
   assert.equal(M.confirmMatches(' Проект ', 'Проект'), true); assert.equal(M.confirmMatches('проект', 'Проект'), false); assert.equal(M.confirmMatches('', ''), false);
+});
+
+// ---------- review fix 3: the Claude settings of the project folder ----------
+
+const settingsDir = (files: Record<string, unknown | string>): string => {
+  const d = mkdtempSync(join(tmpdir(), 'hub-set-'));
+  mkdirSync(join(d, '.claude'), { recursive: true });
+  for (const [f, v] of Object.entries(files)) writeFileSync(join(d, '.claude', f), typeof v === 'string' ? v : JSON.stringify(v));
+  return d;
+};
+
+test('a scheduler-started Claude run reads only the USER settings (--setting-sources user); a Codex run gets no such flag', () => {
+  const c = startReqFor(job({ agent: 'claude' }), '/p'), x = startReqFor(job({ agent: 'codex' }), '/p');
+  assert.deepEqual(c.extraArgs, ['--setting-sources', 'user']);
+  assert.equal(x.extraArgs, undefined);
+  const t = startReqFor(job({ agent: 'claude', kind: 'missing-tests', writes: 'branch' }), '/p');
+  assert.deepEqual(t.extraArgs, ['--setting-sources', 'user']);
+});
+
+test('projectSettingsProblem: env, apiKeyHelper, hooks and an allow list in the project .claude settings are refused, with the reason; a plain folder is fine', () => {
+  const ok = (files: Record<string, unknown>): string | null => { const d = settingsDir(files); try { return projectSettingsProblem(d); } finally { rmSync(d, { recursive: true, force: true }); } };
+  assert.equal(ok({}), null);
+  assert.equal(ok({ 'settings.json': { model: 'opus', permissions: { deny: ['Bash(rm:*)'] }, env: {} } }), null, 'a deny list and an empty env are harmless');
+  assert.match(ok({ 'settings.json': { env: { ANTHROPIC_BASE_URL: 'http://x' } } }) ?? '', /env/);
+  assert.match(ok({ 'settings.local.json': { env: { ANTHROPIC_API_KEY: 'x' } } }) ?? '', /settings\.local\.json[\s\S]*env/);
+  assert.match(ok({ 'settings.json': { apiKeyHelper: 'get-key.sh' } }) ?? '', /apiKeyHelper/);
+  assert.match(ok({ 'settings.json': { hooks: { PreToolUse: [] } } }) ?? '', /hooks/);
+  assert.match(ok({ 'settings.json': { permissions: { allow: ['Bash(*)'] } } }) ?? '', /allow/);
+  assert.match(ok({ 'settings.json': '{bad json' }) ?? '', /не удалось прочитать/);
+  assert.match(ok({ 'settings.json': JSON.stringify({ pad: 'x'.repeat(300_000) }) }) ?? '', /не удалось прочитать/);
+  assert.equal(projectSettingsProblem(join(tmpdir(), 'hub-no-such-folder-xyz')), null, 'no folder, no settings');
+});
+
+test('tick: a project whose Claude settings could change billing or run commands is not started; the check runs for the folder the run will use; billing is asked with that folder', () => {
+  const r = rig();
+  try {
+    optIn(r); approve(r, { agent: 'claude' });
+    r.deps.limits = () => ({ claude: { ...lim(40, 6), ts: new Date(NOW).toISOString() } }) as never;
+    const asked: unknown[] = [];
+    r.deps.billing = (a, root) => { asked.push([a, root]); return { ok: true }; };
+    r.deps.projectCheck = (root, agent) => (agent === 'claude' ? `в ${root} есть .claude/settings.json с env` : null);
+    const rep = new AutoScheduler(r.deps).tick();
+    assert.equal(r.calls.start.length, 0); assert.ok(rep.skipped.some((x) => x.why === 'project-settings' && /env/.test(x.detail ?? '')));
+    assert.equal(loadAuto(r.home).items[0]!.status, 'approved', 'still waiting: the user can fix the folder');
+    r.deps.projectCheck = () => null;
+    new AutoScheduler(r.deps).tick();
+    assert.equal(r.calls.start.length, 1);
+    assert.deepEqual(asked.at(-1), ['claude', r.root], 'the subscription check is made for the folder of the run');
+  } finally { r.done(); }
+});
+
+// ---------- review fix 2: one scheduler per hub home ----------
+
+function lockRig() {
+  const r = rig();
+  let clock = NOW;
+  const alive = new Set<number>([1111, 2222]);
+  const lockOf = (pid: number): LockDeps => ({ home: r.home, pid, now: () => clock, alive: (p) => alive.has(p) });
+  const sched = (pid: number, calls: { start: QueuedJob[]; stop: string[] }, live: Set<string>) => new AutoScheduler({
+    ...r.deps, now: () => clock, pid, lock: { hold: () => holdsLock(lockOf(pid)) },
+    limits: () => ({ codex: { ...lim(40, 6), resetsAt: clock / 1000 + 6 * 3600, ts: new Date(clock).toISOString() } }) as never,
+    start: (j) => { calls.start.push(j); const id = `r${pid}x${calls.start.length}`; live.add(id); return { runId: id }; }, stop: (id) => { calls.stop.push(id); live.delete(id); },
+    runState: (id) => ({ live: live.has(id), outcome: live.has(id) ? null : 'review' }),
+  });
+  return { ...r, lockOf, alive, sched, advance: (ms: number) => { clock += ms; } };
+}
+
+test('the lock file is created exclusively; a second process cannot take a live, fresh lock; a dead or silent owner lock is taken over', () => {
+  const r = lockRig();
+  try {
+    assert.deepEqual(acquireLock(r.lockOf(1111)), { ok: true });
+    const second = acquireLock(r.lockOf(2222));
+    assert.equal(second.ok, false); assert.equal((second as { owner: number | null }).owner, 1111);
+    assert.equal(holdsLock(r.lockOf(1111)), true); assert.equal(holdsLock(r.lockOf(2222)), false);
+    r.alive.delete(1111);
+    assert.equal(holdsLock(r.lockOf(2222)), true, 'the owner is gone: its lock is stale');
+    assert.equal(holdsLock(r.lockOf(1111)), false, 'and the old owner no longer holds it');
+    r.alive.add(1111);
+    r.advance(3 * 60_000 + 1);
+    assert.equal(holdsLock(r.lockOf(1111)), true, 'an owner that stopped refreshing for 3 minutes (a reused pid looks alive) loses it');
+    assert.equal(holdsLock(r.lockOf(2222)), false);
+    writeFileSync(join(r.home, 'autouse.lock'), '{garbage');
+    assert.equal(holdsLock(r.lockOf(2222)), true, 'an unreadable lock is stale');
+  } finally { r.done(); }
+});
+
+test('two schedulers over one home: only the lock holder ticks; the other neither starts nor marks the run of the first one finished; items record the owner', () => {
+  const r = lockRig();
+  try {
+    optIn(r); approve(r); approve(r, { id: 'second' });
+    const a = { start: [] as QueuedJob[], stop: [] as string[] }, b = { start: [] as QueuedJob[], stop: [] as string[] }, liveA = new Set<string>(), liveB = new Set<string>();
+    const A = r.sched(1111, a, liveA), B = r.sched(2222, b, liveB);
+    A.tick();
+    assert.equal(a.start.length, 1); assert.equal(loadAuto(r.home).items.find((i) => i.status === 'started')!.ownerPid, 1111);
+    r.advance(60_000);
+    const rep = B.tick();
+    assert.equal(b.start.length, 0); assert.ok(rep.skipped.some((x) => x.why === 'not-owner'));
+    assert.equal(loadAuto(r.home).items.filter((i) => i.status === 'started').length, 1, 'B did not see the run of A as "not live" and did not start the next one');
+    r.advance(60_000); A.tick(); assert.equal(a.start.length, 1, 'A keeps ticking, one run at a time');
+    // A dies together with its run; B takes over, records the orphan as finished and may start the next item
+    r.alive.delete(1111); liveA.clear();
+    r.advance(60_000);
+    B.tick();
+    const items = loadAuto(r.home).items;
+    assert.equal(items.find((i) => i.ownerPid === 1111)!.status, 'finished');
+    assert.equal(b.start.length, 1); assert.equal(items.find((i) => i.ownerPid === 2222)!.status, 'started');
+  } finally { r.done(); }
+});
+
+// ---------- review notes: n1 (switching off or cancelling stops a live auto run), n7 (the opt-in follows the repo, not the folder) ----------
+
+test('n1: switching a project off stops its LIVE auto run through the stop function, and cancelling a started item stops it too', () => {
+  const r = rig();
+  try {
+    optIn(r); approve(r); approve(r, { id: 'second' });
+    const s = new AutoScheduler(r.deps); s.tick();
+    assert.equal(loadAuto(r.home).items.find((i) => i.status === 'started')!.runId, 'rauto1');
+    const stopped: string[] = [];
+    setEnabled(r.home, r.root, false, NOW, { stop: (id) => stopped.push(id) });
+    assert.deepEqual(stopped, ['rauto1']);
+    const items = loadAuto(r.home).items;
+    assert.equal(items.find((i) => i.id === 'j1')!.status, 'stopped'); assert.match(items.find((i) => i.id === 'j1')!.note ?? '', /выключили/);
+    assert.equal(items.find((i) => i.id === 'second')!.status, 'cancelled');
+    optIn(r); approve(r, { id: 'third' });
+    new AutoScheduler(r.deps).tick();
+    const started = loadAuto(r.home).items.find((i) => i.status === 'started')!;
+    assert.equal(cancelItem(r.home, started.id, NOW, (id) => stopped.push(id)), true);
+    assert.equal(stopped.at(-1), started.runId); assert.equal(loadAuto(r.home).items.find((i) => i.id === started.id)!.status, 'stopped');
+    assert.equal(cancelItem(r.home, started.id, NOW, (id) => stopped.push(id)), false, 'a finished item cannot be cancelled again');
+  } finally { r.done(); }
+});
+
+test('n7: the opt-in belongs to the repository, not the folder: a different repo at the same path drops it and cancels the approvals', () => {
+  const r = rig();
+  try {
+    let repo: string | null = 'first-commit-A';
+    r.deps.repoId = () => repo;
+    setEnabled(r.home, r.root, true, NOW, { repoId: 'first-commit-A' });
+    approveItem(r.home, job(), r.root, NOW, { repoId: 'first-commit-A' });
+    assert.throws(() => approveItem(r.home, job({ id: 'x' }), r.root, NOW, { repoId: 'first-commit-B' }), /другой репозиторий|repository/);
+    repo = 'first-commit-B';
+    const rep = new AutoScheduler(r.deps).tick();
+    assert.equal(r.calls.start.length, 0); assert.ok(rep.skipped.some((x) => x.why === 'repo-changed'));
+    const st = loadAuto(r.home);
+    assert.deepEqual(Object.keys(st.projects), [], 'the opt-in is gone'); assert.equal(st.items[0]!.status, 'cancelled');
+    repo = null;
+    setEnabled(r.home, r.root, true, NOW, { repoId: null });
+    approveItem(r.home, job({ id: 'again' }), r.root, NOW, { repoId: null });
+    new AutoScheduler(r.deps).tick();
+    assert.equal(r.calls.start.length, 1, 'switching it on again for the new repo works');
+  } finally { r.done(); }
 });
 
 void mkdirSync;

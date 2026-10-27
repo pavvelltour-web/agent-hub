@@ -11,6 +11,7 @@ process.env['USERPROFILE'] = base; process.env['HOME'] = base; process.env['AGEN
 mkdirSync(process.env['AGENT_HUB_HOME'], { recursive: true });
 const { CAP_RANGE, DAY_MS, DEFAULT_CAPS, FAILURE_COOLDOWN_MS, STOPS_WINDOW_MS, ackTrip, blockingTrips, capsProblem, chainDepth, effectiveCaps, evaluate, loadAcks, makeGuard, readFacts, readProjectCaps, runOver, sanitizeCaps } = await import('./breaker.ts');
 type Fact = import('./breaker.ts').Fact;
+const { sealFile } = await import('./integrity.ts');
 const { RunManager } = await import('./runner.ts');
 const { openDb, projectId } = await import('../history/store.ts');
 after(() => { try { rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* Windows */ } });
@@ -56,7 +57,7 @@ test('the user config is clamped into the ranges when read; the route refuses an
   assert.equal(sanitizeCaps({ sameFailureN: 3.9 }).sameFailureN, 3);
   assert.deepEqual(sanitizeCaps('x'), {}); assert.deepEqual(sanitizeCaps([1]), {});
   assert.equal(capsProblem({ runWeighted: 10 }), null);
-  assert.match(capsProblem({ runWeighted: 1e9 }) ?? '', /from 1 to 250/);
+  assert.match(capsProblem({ runWeighted: 1e9 }) ?? '', /from 1 to 75/);
   assert.match(capsProblem({ sameFailureN: 2.5 }) ?? '', /whole number/);
   assert.match(capsProblem({ nope: 1 }) ?? '', /unknown cap/);
   assert.match(capsProblem({ runUsd: '5' }) ?? '', /runUsd/);
@@ -163,9 +164,9 @@ test('acknowledgements: only same-failure and repeated-stops of a numeric projec
     assert.equal(ackTrip(home, 'day-cap', NOW), false); assert.equal(ackTrip(home, 'run-cap:r1', NOW), false); assert.equal(ackTrip(home, '../../x', NOW), false); assert.equal(ackTrip(home, 'same-failure:7; rm', NOW), false);
     assert.equal(ackTrip(home, 'same-failure:7', NOW), true); assert.equal(ackTrip(home, 'repeated-stops:8', NOW + 5), true);
     assert.deepEqual(loadAcks(home), { 'same-failure:7': NOW, 'repeated-stops:8': NOW + 5 });
-    writeFileSync(join(home, 'guardrails.json'), JSON.stringify({ acks: { 'day-cap': 1, 'same-failure:7': 'x', 'same-failure:9': -1, 'same-failure:10': 5 } }));
+    writeFileSync(join(home, 'guardrails.json'), JSON.stringify({ acks: { 'day-cap': 1, 'same-failure:7': 'x', 'same-failure:9': -1, 'same-failure:10': 5 } })); sealFile(home, 'guardrails.json');   // as if the hub had written it: this tests the validation, integrity.test.ts tests the seal
     assert.deepEqual(loadAcks(home), { 'same-failure:10': 5 });
-    writeFileSync(join(home, 'guardrails.json'), 'x'.repeat(200_000)); assert.deepEqual(loadAcks(home), {});
+    writeFileSync(join(home, 'guardrails.json'), 'x'.repeat(200_000)); sealFile(home, 'guardrails.json'); assert.deepEqual(loadAcks(home), {});
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -190,6 +191,22 @@ test('makeGuard.start: a tripped breaker refuses with a Russian reason, only for
     assert.match(g.start!({ agent: 'claude', prompt: 'x', projectRoot: b }) ?? '', /за сутки израсходовано/, 'the day cap is global');
     assert.equal(off.start!({ agent: 'claude', prompt: 'x', projectRoot: b }), null, 'only the user switched it off');
   } finally { for (const d of [home, a, b]) rmSync(d, { recursive: true, force: true }); }
+});
+
+test('n2: the ceiling of every cap is 3 times its default (10 times was a click away from "off in practice")', () => {
+  for (const k of Object.keys(CAP_RANGE) as (keyof typeof CAP_RANGE)[]) assert.equal(CAP_RANGE[k][1], 3 * (DEFAULT_CAPS as unknown as Record<string, number>)[k]!, k);
+  assert.equal(sanitizeCaps({ runWeighted: 250, stopsN: 20 }).runWeighted, 75);
+  assert.match(capsProblem({ dayWeighted: 361 }) ?? '', /from 1 to 360/);
+});
+
+test('n6: a live run deep in a continuation chain is stopped by usage(), not only listed', () => {
+  const db = openDb(':memory:'), home = mkdtempSync(join(base, 'h-'));
+  const ins = db.prepare('INSERT INTO run (id, project_id, agent, started_at, outcome, handoff_of) VALUES (?,?,?,?,?,?)');
+  for (let i = 0; i < 8; i++) ins.run(`c${i}`, 1, 'claude', new Date(NOW - (9 - i) * 60_000).toISOString(), i < 7 ? 'context' : null, i ? `c${i - 1}` : null);
+  const g = makeGuard({ db, home, now: () => NOW, userCaps: () => undefined, projectCaps: () => undefined });
+  assert.match(g.usage!({ runId: 'c7', projectRoot: 'x', weighted: 0, costUsd: null }) ?? '', /цепочка продолжений дошла до 8/);
+  assert.equal(g.usage!({ runId: 'c5', projectRoot: 'x', weighted: 0, costUsd: null }), null, 'the 6th run of a chain is still allowed');
+  assert.equal(g.usage!({ runId: 'nothing', projectRoot: 'x', weighted: 0, costUsd: null }), null);
 });
 
 test('makeGuard.usage: the per-run cap, then the day cap counting the other runs; a project file can only lower the caps', () => {
@@ -228,13 +245,13 @@ test('RunManager: the guard is ON when nothing is passed: three identical failur
   assert.doesNotThrow(() => off.start({ agent: 'claude', prompt: 'x', projectRoot: root }));
 });
 
-test('RunManager: a run that passes the per-run cap while it works is stopped by the hub: outcome stopped, one explaining warn, the process gone', async () => {
+test('RunManager: a run that passes the per-run cap while it works is stopped by the hub: outcome guard, one explaining warn, the process gone', async () => {
   const db = openDb(':memory:'), home = mkdtempSync(join(base, 'h-')), root = mkdtempSync(join(base, 'p-'));
   const guard = makeGuard({ db, home, userCaps: () => ({ runWeighted: 20 }), projectCaps: () => undefined });
   const rm = new RunManager(db, { exe: { claude: fakeExe, codex: fakeExe }, summarize: false, home, guard, env: { ...process.env, FAKE_SCENARIO: 'claude-heavy' } });
   const run = rm.start({ agent: 'claude', prompt: 'x', projectRoot: root, model: 'claude-sonnet-5-5' });
   await until(() => !rm.isLive(run.id) && !!rm.get(run.id)?.outcome);
-  assert.equal(rm.get(run.id)!.outcome, 'stopped');
+  assert.equal(rm.get(run.id)!.outcome, 'guard', 'a distinct outcome: counted as a failure for quality, not hidden as a manual stop');
   const warns = rm.events(run.id).filter((e) => e.kind === 'warn').map((e) => (e.data as { message: string }).message);
   assert.equal(warns.filter((w) => /остановлено защитой/.test(w)).length, 1);
   assert.ok(warns.some((w) => /условных млн токенов при пороге 20/.test(w)));
@@ -271,7 +288,7 @@ const G = await import(pathToFileURL(join(web, 'guard-model.js')).href) as { gua
 test('panel data layer: a hostile answer is typed; unknown trips are dropped; only a well-formed key can be acknowledged; text is plain', () => {
   assert.equal(G.guardModel(null), null); assert.equal(G.guardModel([]), null);
   const m = G.guardModel({ enabled: false, usage: { dayWeighted: 'x', dayUsd: 12.5 }, caps: { runWeighted: 25, runUsd: 'x' }, ranges: { runWeighted: { min: 1, max: 250 }, dayUsd: { min: 'a', max: 1 } }, notes: ['<b>n</b>‮', 5],
-    trips: [{ kind: 'same-failure', key: 'same-failure:7', ru: '<script>alert(1)</script>​', slug: '<img onerror=1>', ackable: true }, { kind: 'same-failure', key: '../../x', ru: 'x', ackable: true }, { kind: 'day-cap', key: 'day-cap', ru: 'cap', ackable: true },
+    tamper: [{ file: 'autouse.json‮', at: 'x' }, { file: 5 }, null], trips: [{ kind: 'same-failure', key: 'same-failure:7', ru: '<script>alert(1)</script>​', slug: '<img onerror=1>', ackable: true }, { kind: 'same-failure', key: '../../x', ru: 'x', ackable: true }, { kind: 'day-cap', key: 'day-cap', ru: 'cap', ackable: true },
       { kind: 'wipe', key: 'wipe', ru: 'x' }, { kind: 'chain', key: 'chain:start', ru: '' }, null, 'x'], review: { tightened: 'yes', flagReviewer: true, why: 'w‮', reviewEffort: 'rm -rf' } });
   assert.equal(m.enabled, false); assert.deepEqual(m.usage, { weighted: 0, usd: 12.5 });
   assert.equal(m.caps.runWeighted, 25); assert.equal(m.caps.runUsd, null); assert.deepEqual(m.ranges.runWeighted, { min: 1, max: 250 }); assert.equal(m.ranges.dayUsd, null);
@@ -279,5 +296,38 @@ test('panel data layer: a hostile answer is typed; unknown trips are dropped; on
   assert.ok(!/[​‮]/.test(m.trips[0].ru) && !/[‮]/.test(m.notes[0]) && !/[‮]/.test(m.review.why));
   assert.equal(m.review.tightened, false, 'the string "yes" is not true'); assert.equal(m.review.flag, true); assert.equal(m.review.effort, 'standard');
   assert.equal(G.effortText('deep'), 'глубокое');
+  assert.deepEqual(m.tamper, ['autouse.json'], 'tamper names are plain text; a non-string entry is dropped');
+  assert.deepEqual(G.guardModel({}).tamper, []);
   assert.equal(G.guardModel({}).enabled, true, 'an answer without the field is not "off"');
+});
+
+// ---------- review fix 7: a breaker stop has its own outcome and is never invisible ----------
+
+test('guard stops count: ten of them in an hour trip repeated-stops; three in a row are the same failure', () => {
+  const guards = Array.from({ length: 10 }, (_, i) => fact({ id: `g${i}`, outcome: 'guard', endedMs: NOW - (i + 1) * 5 * 60_000 + 4 * 60_000, sig: '(остановлено защитой)' }));
+  const stops = evaluate({ now: NOW, caps, facts: guards.slice(0, 5) });
+  assert.ok(stops.some((x) => x.kind === 'repeated-stops' && x.blocksStart), 'five guard stops within 45 minutes');
+  assert.ok(evaluate({ now: NOW, caps, facts: guards }).some((x) => x.kind === 'repeated-stops'), 'all ten');
+  assert.ok(evaluate({ now: NOW, caps, facts: guards.slice(0, 2) }).every((x) => x.kind !== 'repeated-stops'), 'two are not a loop');
+  const three = [0, 1, 2].map((i) => fact({ id: `s${i}`, outcome: 'guard', endedMs: NOW - (i + 1) * 60_000, sig: '(остановлено защитой)' }));
+  assert.ok(evaluate({ now: NOW, caps, facts: three }).some((x) => x.kind === 'same-failure'), 'three guard stops in a row');
+  assert.ok(evaluate({ now: NOW, caps, facts: [...three.slice(0, 2), fact({ id: 'u', outcome: 'stopped', endedMs: NOW - 3 * 60_000 }), ...three.slice(2)] }).some((x) => x.kind === 'same-failure'), 'a manual stop between them does not break the streak');
+  assert.ok(evaluate({ now: NOW, caps, facts: [...three, fact({ id: 'ok', outcome: 'review', endedMs: NOW - 30_000 })] }).every((x) => x.kind !== 'same-failure'), 'a success does');
+});
+
+test('guard outcome in the run table: a failure signature of its own, and the routing quality sees a failure', async () => {
+  const econ = await import('../econ/econ.ts');
+  const db = openDb(':memory:');
+  db.prepare("INSERT INTO run (id, project_id, agent, model, effort, started_at, ended_at, outcome, cls, tokens_in, tokens_cached, tokens_out) VALUES ('rg1', 1, 'claude', 'claude-sonnet-5-5', 'high', ?, ?, 'guard', 'implement', 100, 0, 50)").run(new Date(NOW - 600_000).toISOString(), new Date(NOW - 500_000).toISOString());
+  assert.equal(readFacts(db, NOW)[0]!.sig, '(остановлено защитой)');
+  assert.equal(econ.settledOutcome('guard', null), 'failed');
+  assert.equal(econ.runScore(econ.settledOutcome('guard', null), null), 0, 'a runaway run scores zero, like a failed one');
+  assert.equal(econ.modelStats(db)['implement|sonnet']?.n, 1); assert.equal(econ.modelStats(db)['implement|sonnet']?.score, 0);
+  const row = econ.outcomes(db).find((r: { cls: string }) => r.cls === 'implement')!;
+  assert.deepEqual([row.runs, row.failed, row.done], [1, 1, 0]);
+});
+
+test('the panel names the guard outcome in both label maps', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const f of ['views/common.js', 'transcript.js']) assert.match(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'web', 'js', f), 'utf8'), /guard: \[?'/, f);
 });

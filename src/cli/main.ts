@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { join, resolve } from 'node:path';
-import { authStatus } from '../adapters/auth.ts';
+import { authStatus, authStatusIn } from '../adapters/auth.ts';
 import { probeModes } from '../adapters/probe.ts';
 import { detectAgents } from '../adapters/locate.ts';
 import { loadTasks, parsePicks, runBench, summarize } from '../bench/bench.ts';
@@ -355,7 +355,7 @@ async function cmdUi(a: Args): Promise<void> {
   const s = await startServer({ db, runs }, { ...(flag(a, 'port') ? { port: Number(flag(a, 'port')) } : {}), ...(flag(a, 'token') ? { token: flag(a, 'token') as string } : {}) });
   out(`agent hub is running on loopback only.\nOpen: ${s.url}\n(the link contains a one-time token; stop with Ctrl+C)`);
   // 7.4 (ADR-025): the leftover-limit scheduler. It does nothing until the user switches a project on and approves a job in the panel; one pass a minute, only while this panel runs.
-  { const agents = detectAgents(); startAutoLoop(new AutoScheduler(realAutoDeps({ db, runs, auth: (id) => (agents[id].installed ? authStatus(id, agents[id]) : undefined) })), { home: runs.home, refresh: async () => { await syncClaude(db); await syncCodex(db); } }); }
+  { const agents = detectAgents(); startAutoLoop(new AutoScheduler(realAutoDeps({ db, runs, auth: (id, root) => (agents[id].installed ? (root ? authStatusIn(id, agents[id], root) : authStatus(id, agents[id])) : undefined) })), { home: runs.home, refresh: async () => { await syncClaude(db); await syncCodex(db); } }); }
   void (async () => { try { await syncClaude(db); await syncCodex(db); } catch { /* the UI also has a manual sync button */ } })();
   if (a.flags['no-open'] !== true) {
     if (process.platform === 'win32') spawn('rundll32', ['url.dll,FileProtocolHandler', s.url], { detached: true, stdio: 'ignore' }).unref();

@@ -207,7 +207,7 @@ export class RunManager {
       if (e.kind === 'usage') { tokIn += e.uncachedIn + e.cachedIn; cached += e.cachedIn; tokOut += e.out; cost += e.costUsd ?? 0; this.db.prepare('UPDATE run SET tokens_in = ?, tokens_cached = ?, tokens_out = ?, cost_usd = ? WHERE id = ?').run(tokIn, cached, tokOut, cost || null, id); guardCheck(); }
       if (e.kind === 'limit') {
         if (e.reached) limit = e;
-        if (e.usedPercent != null) addLimit(this.db, { agent: req.agent, ts: row.ts, windowMinutes: null, usedPercent: e.usedPercent, resetsAt: e.resetsAt ? Math.floor(Date.parse(e.resetsAt) / 1000) : null, planType: null, source: 'cli-event' });
+        if (e.usedPercent != null) addLimit(this.db, { agent: req.agent, ts: row.ts, windowMinutes: e.windowMinutes ?? null, usedPercent: e.usedPercent, resetsAt: e.resetsAt ? Math.floor(Date.parse(e.resetsAt) / 1000) : null, planType: null, source: 'cli-event' });
       }
       if (e.kind === 'error') this.db.prepare('UPDATE run SET error = ? WHERE id = ?').run(e.message.slice(0, 500), id);
       this.subs.get(id)?.forEach((cb) => cb(row));
@@ -255,7 +255,7 @@ export class RunManager {
       if (ctxStop) this.pendingHandover.set(id, { cancelled: false });   // set in the same step as the delete below: Stop never finds the run in neither map
       this.live.delete(id);
       lean?.cleanup();
-      const outcome = limit ? 'limit' : ctxStop ? 'context' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
+      const outcome = limit ? 'limit' : ctxStop ? 'context' : guardStopped ? 'guard' : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
       this.db.prepare('UPDATE run SET outcome = ?, ended_at = ? WHERE id = ?').run(outcome, new Date().toISOString(), id);
       // A reviewer has no work to hand over, and its projectRoot is the task folder: a card there would be committed into the branch.
       if (outcome === 'limit' && limit && reviewer) emit({ kind: 'warn', message: 'reviewer stopped on a usage limit: no handoff card (the review round fails and can be run again)' });

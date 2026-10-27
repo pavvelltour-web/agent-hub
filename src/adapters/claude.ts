@@ -1,7 +1,7 @@
 import { redact } from '../lib/redact.ts';
 import { locate } from './locate.ts';
 import { claudeModeArgs } from './modes.ts';
-import { asInput, editDiff, resultEvent, safe, thinkingEvent } from './event-utils.ts';
+import { asInput, claudeWindowMinutes, editDiff, resultEvent, safe, thinkingEvent } from './event-utils.ts';
 import { clip, type AgentAdapter, type HubEvent } from './types.ts';
 
 const LOGIN = /not logged in|\/login|invalid api key|authentication/i;
@@ -33,7 +33,7 @@ export const claudeAdapter: AgentAdapter = {
   },
 };
 
-type ClaudeLine = { type?: string; subtype?: string; session_id?: string; model?: string; message?: { id?: unknown; content?: Block[]; usage?: Record<string, number> }; parent_tool_use_id?: string | null; event?: { type?: string; delta?: { type?: string; text?: string } }; is_error?: boolean; result?: string; duration_ms?: number; usage?: Record<string, number>; total_cost_usd?: number; rate_limit_info?: { status?: string; utilization?: number; resetsAt?: number } };
+type ClaudeLine = { type?: string; subtype?: string; session_id?: string; model?: string; message?: { id?: unknown; content?: Block[]; usage?: Record<string, number> }; parent_tool_use_id?: string | null; event?: { type?: string; delta?: { type?: string; text?: string } }; is_error?: boolean; result?: string; duration_ms?: number; usage?: Record<string, number>; total_cost_usd?: number; rate_limit_info?: { status?: string; utilization?: number; resetsAt?: number; rateLimitType?: unknown } };
 
 function parseLine(line: unknown): HubEvent[] {
   if (!line || typeof line !== 'object' || Array.isArray(line)) return [];
@@ -80,7 +80,7 @@ function parseLine(line: unknown): HubEvent[] {
       if (l.rate_limit_info) {
         // Shape not verified live (the CLI on this PC was not logged in); handled defensively.
         const r = l.rate_limit_info;
-        out.push({ kind: 'limit', reached: r.status === 'rejected', message: `status: ${r.status ?? 'unknown'}`, ...(r.utilization != null ? { usedPercent: Math.round(r.utilization * 100) } : {}), ...(r.resetsAt ? { resetsAt: new Date(r.resetsAt * 1000).toISOString() } : {}) });
+        out.push({ kind: 'limit', reached: r.status === 'rejected', message: `status: ${r.status ?? 'unknown'}`, ...(r.utilization != null ? { usedPercent: Math.round(r.utilization * 100) } : {}), ...(r.resetsAt ? { resetsAt: new Date(r.resetsAt * 1000).toISOString() } : {}), ...(claudeWindowMinutes(r.rateLimitType) ? { windowMinutes: claudeWindowMinutes(r.rateLimitType) as number } : {}) });
       }
       break;
     case 'result': {

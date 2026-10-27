@@ -182,8 +182,13 @@ export const usageByModel = (db: Db, sinceIso?: string): ModelUsage[] => db.prep
 export interface LimitRow { agent: string; ts: string; windowMinutes: number | null; usedPercent: number | null; resetsAt: number | null; planType: string | null; source: string }
 export const latestLimit = (db: Db, agent: string): LimitRow | undefined => db.prepare('SELECT agent, ts, window_minutes AS windowMinutes, used_percent AS usedPercent, resets_at AS resetsAt, plan_type AS planType, source FROM limit_snapshot WHERE agent = ? ORDER BY ts DESC, id DESC LIMIT 1').get(agent) as unknown as LimitRow | undefined;
 
+/** The newest reading of ONE window length (a null length is its own kind): readings of different windows (5 h and weekly) live side by side. */
+export const latestLimitOfWindow = (db: Db, agent: string, windowMinutes: number | null): LimitRow | undefined => db.prepare(`SELECT agent, ts, window_minutes AS windowMinutes, used_percent AS usedPercent, resets_at AS resetsAt, plan_type AS planType, source FROM limit_snapshot WHERE agent = ? AND ${windowMinutes == null ? 'window_minutes IS NULL' : 'window_minutes = ?'} ORDER BY ts DESC, id DESC LIMIT 1`).get(...(windowMinutes == null ? [agent] : [agent, windowMinutes])) as unknown as LimitRow | undefined;
+/** The newest reading whose window is at least `minMinutes` long (the weekly one): a newer 5-hour reading does not hide it. A reading with no window length never counts. */
+export const latestLimitMin = (db: Db, agent: string, minMinutes: number): LimitRow | undefined => db.prepare('SELECT agent, ts, window_minutes AS windowMinutes, used_percent AS usedPercent, resets_at AS resetsAt, plan_type AS planType, source FROM limit_snapshot WHERE agent = ? AND window_minutes >= ? ORDER BY ts DESC, id DESC LIMIT 1').get(agent, minMinutes) as unknown as LimitRow | undefined;
+
 export const addLimit = (db: Db, l: Omit<LimitRow, 'ts'> & { ts: string }): void => {
-  const last = latestLimit(db, l.agent);
+  const last = latestLimitOfWindow(db, l.agent, l.windowMinutes);
   if (last && last.usedPercent === l.usedPercent && last.resetsAt === l.resetsAt && last.windowMinutes === l.windowMinutes) return;
   db.prepare('INSERT INTO limit_snapshot (agent, ts, window_minutes, used_percent, resets_at, plan_type, source) VALUES (?,?,?,?,?,?,?)').run(l.agent, l.ts, l.windowMinutes, l.usedPercent, l.resetsAt, l.planType, l.source);
 };

@@ -11,6 +11,8 @@ export function guardLine(m) {
   if (!m) return null;
   const rows = [];
   if (!m.enabled) rows.push(h('div.alert.warn', { role: 'status' }, icon('alert'), h('div.stack', { style: { flex: 1 } }, h('b', 'Защита от лишних запусков выключена вами'), h('span', 'Ничто не остановит запуск, который тратит слишком много или повторяет одну и ту же ошибку. Включить обратно можно в настройках.'))));
+  if (m.tamper.length) rows.push(h('div.alert.err', { role: 'alert' }, icon('alert'), h('div.stack', { style: { flex: 1 } }, h('b', 'Файл настроек изменён не hub: проверьте'), h('span', `Изменено не через панель: ${m.tamper.join(', ')}. Автозапуск по остатку лимита выключен, защита работает с обычными порогами, подтверждения не действуют. Если это были вы, сбросьте и включите нужное заново.`),
+    h('div.row-flex', btn('Проверил(а): сбросить', { kind: 'glass', onclick: async () => { try { await api.post('/integrity/reset', {}); location.reload(); } catch { /* toast */ } } })))));
   for (const t of m.trips) {
     rows.push(h('div.alert.err', { role: 'alert' }, icon('alert'), h('div.stack', { style: { flex: 1 } }, h('b', 'Защита остановила запуски'), h('span', (t.slug ? t.slug + ': ' : '') + t.ru),
       t.ackable ? h('div.row-flex', btn('Понятно, продолжить', { kind: 'glass', onclick: async () => { try { await api.post('/guardrails/ack', { key: t.key }); location.reload(); } catch { /* toast */ } } })) : null)));

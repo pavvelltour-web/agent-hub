@@ -96,12 +96,19 @@ export function sanitizeEvent(raw: HubEvent): HubEvent {
     }
     case 'unknown': return { kind: 'unknown', type: text(e['type'], 60, '(none)') };
     case 'limit': {
-      const p = e['usedPercent'], r = e['resetsAt'];
-      return { kind: 'limit', reached: e['reached'] === true, message: text(e['message'], 2000), ...(typeof r === 'string' && r.length <= 64 && Number.isFinite(Date.parse(r)) ? { resetsAt: r } : {}), ...(typeof p === 'number' && Number.isFinite(p) ? { usedPercent: p } : {}) };
+      const p = e['usedPercent'], r = e['resetsAt'], wm = e['windowMinutes'];
+      return { kind: 'limit', reached: e['reached'] === true, message: text(e['message'], 2000), ...(typeof r === 'string' && r.length <= 64 && Number.isFinite(Date.parse(r)) ? { resetsAt: r } : {}), ...(typeof p === 'number' && Number.isFinite(p) ? { usedPercent: p } : {}), ...(typeof wm === 'number' && Number.isInteger(wm) && wm > 0 && wm <= 525_600 ? { windowMinutes: wm } : {}) };
     }
     case 'warn': return { kind: 'warn', message: text(e['message'], 2000) };
     case 'error': return { kind: 'error', message: text(e['message'], 2000), ...(e['needsLogin'] === true ? { needsLogin: true } : {}) };
     case 'done': return { kind: 'done', ok: e['ok'] === true };
     default: return { kind: 'unknown', type: text(e['kind'], 60, '(none)') };
   }
+}
+
+/** Window length of a Claude `rate_limit_event` (`rateLimitType`). NOT verified live (the CLI here is not signed in): an unknown or missing type gives no length, and a reading with no length is never used as weekly. */
+export function claudeWindowMinutes(type: unknown): number | undefined {
+  if (type === 'five_hour') return 300;
+  if (typeof type === 'string' && /^seven_day(_[a-z]+)?$/.test(type)) return 10080;
+  return undefined;
 }

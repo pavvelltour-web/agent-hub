@@ -10,6 +10,7 @@ mkdirSync(process.env['AGENT_HUB_HOME'], { recursive: true });
 const { startServer } = await import('./server.ts');
 const { openDb, projectId, addLimit } = await import('../history/store.ts');
 const { RunManager } = await import('../run/runner.ts');
+const { saveAuto, loadAuto, projectKeyOf, setEnabled: setAutoEnabled } = await import('../run/autouse.ts');
 
 const db = openDb(':memory:');
 const runs = new RunManager(db, { summarize: false, home: process.env['AGENT_HUB_HOME'] as string });
@@ -167,7 +168,8 @@ test('guardrails: GET shows the protection ON with the documented caps, the rang
   const r = await get('/api/guardrails');
   assert.equal(r.status, 200); assert.equal(r.json.enabled, true);
   assert.deepEqual(r.json.caps, r.json.defaults); assert.equal(r.json.caps.runWeighted, 25);
-  assert.deepEqual(r.json.ranges.sameFailureN, { min: 2, max: 10 });
+  assert.deepEqual(r.json.ranges.sameFailureN, { min: 2, max: 9 }, 'the ceiling is 3 times the default, not 10');
+  assert.deepEqual([r.json.ranges.runWeighted.max, r.json.ranges.dayUsd.max], [75, 450]);
   assert.equal(typeof r.json.usage.dayWeighted, 'number'); assert.deepEqual(Object.keys(r.json.review.window).sort(), ['accepted', 'findings', 'rejectedFindings', 'reopened']);
   assert.equal(r.json.review.reviewEffort, 'standard'); assert.equal(r.json.review.tightened, false);
   rmSync(join(root, 'hub.json'));
@@ -179,7 +181,7 @@ test('guardrails: every change needs a click; caps outside their range or unknow
   assert.equal((await post('/api/guardrails', ok1, {})).status, 403);
   assert.equal((await post('/api/guardrails', ok1, { origin })).status, 403);
   assert.equal((await post('/api/guardrails', { caps: { runWeighted: 1e9 } })).status, 400);
-  assert.match((await post('/api/guardrails', { caps: { runWeighted: 1e9 } })).json.error, /runWeighted must be a number from 1 to 250/);
+  assert.match((await post('/api/guardrails', { caps: { runWeighted: 1e9 } })).json.error, /runWeighted must be a number from 1 to 75/);
   assert.equal((await post('/api/guardrails', { caps: { sameFailureN: 2.5 } })).status, 400);
   assert.equal((await post('/api/guardrails', { caps: { nope: 1 } })).status, 400);
   assert.equal((await post('/api/guardrails', { caps: 'x' })).status, 400);
@@ -221,4 +223,48 @@ test('guardrails: a trip is listed with the project name; only a repeated failur
   assert.equal((await get('/api/guardrails')).json.trips.length > 0, true, 'still tripped');
   assert.equal((await post('/api/guardrails/ack', { key: t.key })).status, 200);
   assert.ok((await get('/api/guardrails')).json.trips.every((x: { kind: string }) => x.kind !== 'same-failure'), 'the user looked: the trip is gone');
+});
+
+// ---------- review fixes: notes, tamper, stop on switch-off / cancel ----------
+
+test('n5: GET /api/guardrails explains what hub.json asked for and did not get', async () => {
+  writeFileSync(join(root, 'hub.json'), JSON.stringify({ guardrails: { enabled: false, runWeighted: 70, dayUsd: 10 } }));
+  const g = (await get('/api/guardrails')).json;
+  assert.equal(g.enabled, true);
+  assert.ok(g.notes.some((n: string) => /hub\.json/.test(n) && /не может/.test(n)), JSON.stringify(g.notes));
+  assert.ok(g.notes.some((n: string) => /runWeighted/.test(n) && /выше ваших/.test(n)), 'a number above the user caps is named');
+  assert.ok(!g.notes.some((n: string) => /dayUsd/.test(n)), 'a tighter number is not a complaint');
+  rmSync(join(root, 'hub.json'));
+});
+
+test('tamper: a settings file changed behind the hub is listed, needs a click to reset, and the reset leaves everything off', async () => {
+  const home = process.env['AGENT_HUB_HOME'] as string;
+  setAutoEnabled(home, root, true, Date.now());
+  writeFileSync(join(home, 'autouse.json'), JSON.stringify({ version: 1, projects: {}, items: [], starts: [] }));      // not through the hub
+  const g = (await get('/api/guardrails')).json;
+  assert.deepEqual(g.tamper.map((t: { file: string }) => t.file), ['autouse.json']);
+  assert.equal((await get(`/api/autouse?project=${pid}`)).json.projects[0].enabled, false, 'a file the hub did not write is not read');
+  assert.equal((await post('/api/integrity/reset', {}, {})).status, 403);
+  assert.equal((await post('/api/integrity/reset', {})).status, 200);
+  assert.deepEqual((await get('/api/guardrails')).json.tamper, []);
+  assert.equal((await get(`/api/autouse?project=${pid}`)).json.projects[0].enabled, false);
+});
+
+test('n1: cancelling a started item and switching a project off both stop the live run', async () => {
+  const home = process.env['AGENT_HUB_HOME'] as string;
+  const key = projectKeyOf(root);
+  const stopped: string[] = [];
+  const realStop = runs.stop.bind(runs);
+  (runs as unknown as { stop: (id: string) => boolean }).stop = (id: string) => { stopped.push(id); return realStop(id); };
+  try {
+    setAutoEnabled(home, root, true, Date.now());
+    const mk = (id: string, runId: string) => ({ id, kind: 'review-existing' as const, projectId: pid as number, agent: 'codex' as const, expectedPct: 3, writes: 'none' as const, projectKey: key, projectRoot: root, approvedAt: Date.now(), status: 'started' as const, runId, startedAt: Date.now() });
+    const st = loadAuto(home); st.items.push(mk('au11111111', 'rlive1'), mk('au22222222', 'rlive2')); saveAuto(home, st);
+    assert.equal((await post('/api/autouse/cancel', { id: 'au11111111' })).status, 200);
+    assert.deepEqual(stopped, ['rlive1']);
+    assert.equal(loadAuto(home).items.find((i) => i.id === 'au11111111')!.status, 'stopped');
+    assert.equal((await post('/api/autouse/enable', { projectId: pid, enabled: false })).status, 200);
+    assert.deepEqual(stopped, ['rlive1', 'rlive2']);
+    assert.equal(loadAuto(home).items.find((i) => i.id === 'au22222222')!.status, 'stopped');
+  } finally { (runs as unknown as { stop: unknown }).stop = realStop; }
 });

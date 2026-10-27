@@ -25,6 +25,7 @@ export function guardModel(raw) {
       const x = obj(t);
       return { kind: x.kind, key: typeof x.key === 'string' ? x.key.slice(0, 60) : '', ru: plain(x.ru, 320), slug: plain(x.slug, 80), ackable: x.ackable === true && typeof x.key === 'string' && ACK_KEY.test(x.key) };
     }).filter((t) => KINDS.has(t.kind) && t.ru),
+    tamper: (Array.isArray(r.tamper) ? r.tamper : []).slice(0, 4).map((t) => plain(obj(t).file, 60)).filter(Boolean),
     caps: capMap(r.caps), defaults: capMap(r.defaults), notes: (Array.isArray(r.notes) ? r.notes : []).slice(0, 5).map((x) => plain(x, 240)).filter(Boolean),
     ranges: Object.fromEntries(CAP_KEYS.map((k) => { const x = obj(obj(r.ranges)[k]); return [k, fin(x.min) && fin(x.max) ? { min: x.min, max: x.max } : null]; })),
     review: { tightened: rv.tightened === true, flag: rv.flagReviewer === true, why: plain(rv.why, 400), effort: Object.hasOwn(EFFORT_RU, rv.reviewEffort) ? rv.reviewEffort : 'standard' },

@@ -1,7 +1,7 @@
 // The data layer of the run trace page. Plain JS, no DOM: the hostile-data rules are tested in node (src/run/trace-model.test.ts).
 // Everything from the server is read by type and never stringified (`String(x)` on `{toString: 1}` throws); names are shown with invisible,
 // bidi and control characters turned into visible escapes so a tool name cannot hide its real text. The page draws all of it with textContent (ADR-012).
-const OUTCOMES = new Set(['done', 'review', 'failed', 'limit', 'stopped', 'context', 'interrupted']);
+const OUTCOMES = new Set(['done', 'review', 'failed', 'limit', 'stopped', 'guard', 'context', 'interrupted']);
 const AGENTS = new Set(['claude', 'codex']);
 const RUN_ID = /^r[0-9a-z]{2,40}$/;
 const MAX_TURNS = 200, MAX_TOOLS = 100, MAX_SLOW = 10;

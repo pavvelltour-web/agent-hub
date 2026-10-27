@@ -72,9 +72,9 @@ export function effortProfiles(db: Db): Record<string, Profile> {
 export interface Calib { lowMwPerPct: number; highMwPerPct: number; n: number; source: 'measured' | 'prior' | 'none' }
 export const CODEX_PRIOR: Calib = { lowMwPerPct: 1, highMwPerPct: 8, n: 0, source: 'prior' };
 
-/** Weighted Mtok per 1% of the weekly limit, from consecutive limit snapshots of one window. Needs ≥5 usable intervals, else the (wide) prior. */
+/** Weighted Mtok per 1% of the weekly limit, from consecutive WEEKLY limit snapshots (a window of 6 days or more; a 5-hour percent or a reading with no window length is not a share of the week) of one window. Needs ≥5 usable intervals, else the (wide) prior. */
 export function calibrate(db: Db, agent: string): Calib {
-  const snaps = db.prepare('SELECT ts, used_percent AS p, resets_at AS r FROM limit_snapshot WHERE agent = ? AND used_percent IS NOT NULL ORDER BY ts').all(agent) as unknown as { ts: string; p: number; r: number }[];
+  const snaps = db.prepare('SELECT ts, used_percent AS p, resets_at AS r FROM limit_snapshot WHERE agent = ? AND used_percent IS NOT NULL AND window_minutes >= 8640 ORDER BY ts').all(agent) as unknown as { ts: string; p: number; r: number }[];
   const ratios: number[] = [];
   for (let i = 1; i < snaps.length; i++) {
     const a = snaps[i - 1] as (typeof snaps)[number], b = snaps[i] as (typeof snaps)[number];
@@ -119,6 +119,7 @@ const round1 = (x: number): number => Math.round(x * 10) / 10;
  * Conservative on purpose: a branch is not a success until the gate passes it, and only a dead end counts against the model.
  */
 export function settledOutcome(outcome: string | null, reviewState: string | null | undefined): string | null {
+  if (outcome === 'guard') return 'failed';   // the circuit breaker stopped a runaway run (ADR-026): for quality, routing and the forecast that is a failure, never an invisible stop
   if (outcome !== 'review') return outcome;
   return reviewState === 'passed' ? 'done' : reviewState === 'reconsider' ? 'failed' : 'review';
 }

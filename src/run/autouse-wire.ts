@@ -3,21 +3,24 @@ import type { AgentId } from '../core/types.ts';
 import { limitSnapshots } from '../econ/limits.ts';
 import type { Db } from '../history/store.ts';
 import { blockingTrips } from './breaker.ts';
-import { AutoScheduler, loadAuto, type AutoDeps } from './autouse.ts';
-import type { RunManager } from './runner.ts';
-import { billingOk, startReqFor, type LimitAt } from './scheduler.ts';
+import { holdsLock, pidAlive } from './autouse-lock.ts';
+import { AutoScheduler, loadAuto, repoIdOf, type AutoDeps } from './autouse.ts';
+import { agentEnv, type RunManager } from './runner.ts';
+import { billingOk, projectSettingsProblem, startReqFor, type LimitAt } from './scheduler.ts';
 
 /** The real effects of the scheduler (ADR-025): the run goes through `RunManager.start`, like every other run (worktree branch, review gate, guardrails, limit checks). */
-export function realAutoDeps(o: { db: Db; runs: RunManager; auth: (agent: AgentId) => AuthInfo | undefined; env?: NodeJS.ProcessEnv; breaker?: (root: string) => string | null }): AutoDeps {
+export function realAutoDeps(o: { db: Db; runs: RunManager; auth: (agent: AgentId, root?: string) => AuthInfo | undefined; env?: NodeJS.ProcessEnv; breaker?: (root: string) => string | null }): AutoDeps {
   const { db, runs } = o;
   return {
-    home: runs.home, now: Date.now,
+    home: runs.home, now: Date.now, pid: process.pid, repoId: repoIdOf,
+    lock: { hold: () => holdsLock({ home: runs.home, pid: process.pid, now: Date.now, alive: pidAlive }) },
     limits: () => {
       const out: Partial<Record<AgentId, LimitAt>> = {};
-      for (const [a, l] of Object.entries(limitSnapshots(db)) as [AgentId, NonNullable<ReturnType<typeof limitSnapshots>[AgentId]>][]) out[a] = { usedPercent: l.usedPercent, reached: l.reached, resetsAt: l.resetsAt, ts: l.ts };
+      for (const [a, l] of Object.entries(limitSnapshots(db)) as [AgentId, NonNullable<ReturnType<typeof limitSnapshots>[AgentId]>][]) out[a] = { usedPercent: l.usedPercent, reached: l.reached, resetsAt: l.resetsAt, ts: l.ts, windowMinutes: l.windowMinutes };
       return out;
     },
-    billing: (agent) => billingOk(agent, o.auth(agent), o.env ?? process.env),
+    billing: (agent, root) => billingOk(agent, o.auth(agent, root), agentEnv(o.env ?? process.env)),   // the environment the run itself will get
+    projectCheck: (root, agent) => (agent === 'claude' ? projectSettingsProblem(root) : null),
     breaker: o.breaker ?? ((root) => blockingTrips(db, runs.home, root)[0]?.ru ?? null),   // the circuit breaker of ADR-026 (the start itself is checked again by the RunManager)
     projectRoot: (id) => (db.prepare('SELECT root FROM project WHERE id = ?').get(id) as { root: string } | undefined)?.root,
     start: (job, root) => ({ runId: runs.start(startReqFor(job, root)).id }),

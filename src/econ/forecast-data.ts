@@ -1,5 +1,5 @@
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import type { AgentId } from '../core/types.ts';
 import type { Db } from '../history/store.ts';
 import { advise, type LimitState } from './advisor.ts';
@@ -16,7 +16,7 @@ const readSmall = (root: string, file: string): string | undefined => {
     const st = lstatSync(file);
     if (!st.isFile() || st.isSymbolicLink() || st.size > MAX_FILE) return undefined;   // a link or junction could point out of the project
     const rel = relative(realpathSync(root), realpathSync(file));
-    if (rel.startsWith('..') || rel.split(sep).includes('..')) return undefined;
+    if (rel.startsWith('..') || rel.split(sep).includes('..') || isAbsolute(rel)) return undefined;   // a path on another drive comes back absolute from `relative`
     return readFileSync(file, 'utf8');
   } catch { return undefined; }
 };
@@ -50,7 +50,7 @@ export function runSamples(db: Db): RunSample[] {
     const mw = weighted(t);
     if (!(mw > 0)) continue;
     const own = typeof r.cost === 'number' && Number.isFinite(r.cost) && r.cost > 0 ? r.cost : null;
-    out.push({ cls: r.cls as TaskClass, agent: r.agent, mw, score: runScore(settled, r.rating, r.verify, gateRejected(r.rstate, r.rinfo)), costUsd: own ?? costUsd(canonicalModel(r.model), t) });
+    out.push({ cls: r.cls as TaskClass, agent: r.agent, mw, score: runScore(settled, r.rating, r.verify, gateRejected(r.rstate, r.rinfo)), costUsd: own ?? costUsd(canonicalModel(r.model), t), costMeasured: own != null });
   }
   return out;
 }

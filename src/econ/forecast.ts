@@ -18,7 +18,8 @@ import { agentOf, modelKey, PRIOR, type TaskClass } from './router.ts';
 export type Label = 'measured' | 'estimated' | 'unknown';
 export interface Range { p50: number; p90: number; label: Label }
 export type Basis = 'measured' | 'mixed' | 'estimated';
-export interface RunSample { cls: TaskClass; agent: AgentId; mw: number; score: number | null; costUsd: number | null }
+/** `costMeasured`: the cost is the one the run itself recorded. A cost the hub computed from the price table (`costMeasured` false or absent) is an estimate and never counts as measured. */
+export interface RunSample { cls: TaskClass; agent: AgentId; mw: number; score: number | null; costUsd: number | null; costMeasured?: boolean }
 export interface LimitIn { usedPercent: number | null; reached: boolean; resetsAt?: number | null; windowMinutes?: number | null }
 export interface ForecastIn {
   tasks: { title: string; cls: TaskClass }[]; history: OutcomeRow[]; samples?: RunSample[];
@@ -114,7 +115,7 @@ function modelFor(cls: TaskClass, pick: { agent: AgentId; model: string }, sampl
   else p = PRIOR[cls][modelKey(pick.model)];
   const pSuccess = Math.min(0.98, Math.max(0.02, Number.isFinite(p) ? p : 0.5));
   // dollars per weighted Mtok: measured from runs that recorded a cost, else the price table at the default profile, else unknown
-  const costed = mine.filter((x) => x.costUsd != null && Number.isFinite(x.costUsd) && (x.costUsd as number) >= 0);
+  const costed = mine.filter((x) => x.costMeasured === true && x.costUsd != null && Number.isFinite(x.costUsd) && (x.costUsd as number) >= 0);
   let usdPerMw: number | null = null, usdMeasured = false;
   if (costed.length >= MIN_CLASS_SAMPLES) { usdPerMw = costed.reduce((a, x) => a + (x.costUsd as number), 0) / costed.reduce((a, x) => a + x.mw, 0); usdMeasured = true; }
   else { const c = costUsd(pick.model, DEFAULT_PROFILE.p50); usdPerMw = c == null ? null : c / weighted(DEFAULT_PROFILE.p50); }
@@ -160,7 +161,10 @@ export function forecast(o: ForecastIn): Forecast {
   const mwPerPct: Record<string, { lo: number; hi: number } | undefined> = Object.fromEntries(agents.map((a) => [a, usable(o.calib?.[a]) ? { lo: o.calib[a].lowMwPerPct, hi: o.calib[a].highMwPerPct } : undefined]));
   const pct: Record<string, Float64Array> = Object.fromEntries(agents.map((a) => [a, new Float64Array(trials)]));
   const weeksTrial = new Float64Array(trials);
-  const weekly = agents.filter((a) => mwPerPct[a] && !(o.limits?.[a]?.windowMinutes != null && (o.limits[a]?.windowMinutes as number) < 6 * 1440));
+  /** A limit reading is the WEEKLY one only when its window length is known and at least 6 days; a missing length is not weekly (its percent is not a share of the week). */
+  const isWeekly = (a: AgentId): boolean => { const m = o.limits?.[a]?.windowMinutes; return typeof m === 'number' && Number.isFinite(m) && m >= 6 * 1440; };
+  const shortWindow = (a: AgentId): boolean => { const m = o.limits?.[a]?.windowMinutes; return typeof m === 'number' && Number.isFinite(m) && m < 6 * 1440; };
+  const weekly = agents.filter((a) => mwPerPct[a] && !shortWindow(a));
 
   for (let t = 0; t < trials; t++) {
     const mu = new Map<TaskClass, number>();
@@ -181,7 +185,7 @@ export function forecast(o: ForecastIn): Forecast {
       if (!r) continue;
       (pct[a] as Float64Array)[t] = (mw[a] as Float64Array)[t]! / (r.lo + (r.hi - r.lo) * rnd());
     }
-    for (const a of weekly) wk = Math.max(wk, weeksFor((pct[a] as Float64Array)[t] as number, o.limits?.[a], nowSec));
+    for (const a of weekly) wk = Math.max(wk, weeksFor((pct[a] as Float64Array)[t] as number, isWeekly(a) ? o.limits?.[a] : undefined, nowSec));
     weeksTrial[t] = wk;
   }
 
@@ -203,13 +207,14 @@ export function forecast(o: ForecastIn): Forecast {
   for (const a of agents) {
     const l = o.limits?.[a];
     if (l?.reached || (l?.usedPercent != null && l.usedPercent >= 95)) risk.push(`лимит ${AGENT_RU[a]} почти исчерпан: ${l?.reached ? 'достигнут' : `использовано ${Math.round(l?.usedPercent ?? 0)} %`}`);
+    else if (mwPerPct[a] && !shortWindow(a) && !isWeekly(a)) risk.push(`окно лимита ${AGENT_RU[a]} неизвестно: сколько осталось от недельного лимита, не ясно, недели посчитаны по полному окну`);
     else if (mwPerPct[a] && l?.usedPercent == null) risk.push(`сколько осталось от лимита ${AGENT_RU[a]}, неизвестно: недели посчитаны по полному окну`);
     if (l?.windowMinutes != null && l.windowMinutes < 6 * 1440) risk.push(`лимит ${AGENT_RU[a]} не недельный (окно ${Math.round(l.windowMinutes / 60)} ч): недели по нему не считаются`);
   }
   let weeks: Range | null = null;
   if (weekly.length) {
     const s = sorted(weeksTrial);
-    const knownLeft = weekly.every((a) => o.limits?.[a]?.usedPercent != null);
+    const knownLeft = weekly.every((a) => isWeekly(a) && o.limits?.[a]?.usedPercent != null);
     weeks = { p50: round(at(s, 0.5), 2), p90: round(at(s, 0.9), 2), label: knownLeft && weekly.every((a) => limitPct[a]?.label === 'measured') ? 'measured' : 'estimated' };
     const skipped = agents.filter((a) => mwPerPct[a] && !weekly.includes(a));
     if (skipped.length) risk.push(`недели посчитаны без ${skipped.map((a) => AGENT_RU[a]).join(' и ')}`);

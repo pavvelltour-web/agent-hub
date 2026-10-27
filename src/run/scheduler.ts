@@ -1,3 +1,5 @@
+import { lstatSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { AgentId } from '../core/types.ts';
 import { MODEL_ID } from '../econ/router.ts';
 import type { StartReq } from './runner.ts';
@@ -10,7 +12,9 @@ import type { StartReq } from './runner.ts';
 export type JobKind = 'review-existing' | 'missing-tests' | 'graph-refresh';
 export interface QueuedJob { id: string; kind: JobKind; projectId: number; agent: AgentId; expectedPct: number; writes: 'none' | 'branch' }
 /** A limit reading as the scheduler needs it. `resetsAt` is epoch seconds. `ts` (ISO) is when the reading was taken: a reading older than `MAX_LIMIT_AGE_SEC` is unknown. */
-export interface LimitAt { usedPercent: number | null; reached: boolean; resetsAt?: number | null; ts?: string | null }
+export interface LimitAt { usedPercent: number | null; reached: boolean; resetsAt?: number | null; ts?: string | null; /** length of the window this percent is a share of; unknown or shorter than 6 days = not the weekly limit = unknown */ windowMinutes?: number | null }
+/** A window of at least this many minutes is the weekly one (same number as `WEEKLY_MIN_MINUTES` in econ/limits.ts, kept here so this file stays free of the database). */
+export const WEEKLY_MIN = 6 * 1440;
 
 /** Under this much of the limit left nothing is suggested. */
 export const MIN_LEFT_PCT = 20;
@@ -44,9 +48,10 @@ export function validJob(x: unknown): x is QueuedJob {
     && (j['writes'] === 'none' || j['writes'] === 'branch') && j['writes'] === KIND_WRITES[j['kind']];
 }
 
-/** Share of the limit left, or null when it is not known now: no reading, a nonsense percent, the limit reached, no future reset time, or a reading too old. */
+/** Share of the WEEKLY limit left, or null when it is not known now: no reading, a window that is not known to be weekly (the expected percent of a job is a share of the week), a nonsense percent, the limit reached, no future reset time, or a reading too old. */
 export function leftPct(l: LimitAt | undefined, nowMs: number, maxAgeSec = MAX_LIMIT_AGE_SEC): number | null {
   if (!l || l.reached) return null;
+  if (typeof l.windowMinutes !== 'number' || !Number.isFinite(l.windowMinutes) || l.windowMinutes < WEEKLY_MIN) return null;
   const used = l.usedPercent;
   if (typeof used !== 'number' || !Number.isFinite(used) || used < 0 || used > 100) return null;
   if (typeof l.resetsAt !== 'number' || !Number.isFinite(l.resetsAt) || l.resetsAt * 1000 <= nowMs) return null;
@@ -105,6 +110,31 @@ export function billingOk(agent: AgentId, auth: { loggedIn: boolean | null; how:
   return { ok: true };
 }
 
+// ---------- the project's own Claude settings ----------
+/**
+ * A scheduler-started Claude run starts in the PROJECT folder, where Claude Code would apply `.claude/settings.json` and `settings.local.json`: their `env` can set an API key or a
+ * base URL, `apiKeyHelper` switches billing, `hooks` and a permissions `allow` list run commands unattended. The run is started with `--setting-sources user` (only the user's own settings;
+ * NOT verified live: the CLI here is not signed in), and on top of that a folder whose settings carry any of these is refused, with the reason. null = nothing found.
+ * Codex's project config (`.codex/`) is NOT checked here.
+ */
+export function projectSettingsProblem(root: string): string | null {
+  for (const name of ['settings.json', 'settings.local.json']) {
+    const file = join(root, '.claude', name);
+    let st;
+    try { st = lstatSync(file); } catch { continue; }   // no such file: nothing to worry about
+    let j: unknown;
+    try { if (!st.isFile() || st.isSymbolicLink() || st.size > 200_000) throw new Error('not a small regular file'); j = JSON.parse(readFileSync(file, 'utf8')); } catch { return `.claude/${name}: не удалось прочитать, поэтому неизвестно, что в нём`; }
+    const o = j && typeof j === 'object' && !Array.isArray(j) ? (j as Record<string, unknown>) : {};
+    const filled = (v: unknown): boolean => (Array.isArray(v) ? v.length > 0 : !!v && typeof v === 'object' ? Object.keys(v).length > 0 : v !== undefined && v !== null && v !== '');
+    if (filled(o['env'])) return `.claude/${name} задаёт env (там могут быть ключ API или адрес сервера)`;
+    if (filled(o['apiKeyHelper'])) return `.claude/${name} задаёт apiKeyHelper (он меняет способ оплаты)`;
+    if (filled(o['hooks'])) return `.claude/${name} содержит hooks (команды запустились бы без присмотра)`;
+    const perm = o['permissions'] && typeof o['permissions'] === 'object' ? (o['permissions'] as Record<string, unknown>) : {};
+    if (filled(perm['allow'])) return `.claude/${name} разрешает команды заранее (permissions.allow)`;
+  }
+  return null;
+}
+
 // ---------- what a job asks the RunManager for ----------
 const REVIEW_PROMPT = 'Read-only review of the EXISTING code of this project (not a diff). Look for bugs that are already there: logic errors, unhandled error paths, unsafe handling of input, races, resource leaks. Start with the riskiest modules and go deep rather than wide. Do not edit, create or delete any file and do not run a command that changes files. Answer as: FINDINGS: file:line — issue (most serious first, at most 20 lines), then SUMMARY: two sentences.';
 const TESTS_PROMPT = 'Find the source files changed in the last 7 days (git log --since=7.days --name-only). For those that have no tests, add tests only: new test files or additions to existing test files. Do not change any non-test code. Use the test command the project already has and run it; if the project has no test setup, stop and say so. Keep each test small and about one behaviour.';
@@ -118,6 +148,8 @@ const safeId = (s: string): string => (/^[A-Za-z0-9]{1,24}$/.test(s) ? s : 'x');
 export function startReqFor(j: QueuedJob, projectRoot: string): StartReq {
   if (!STARTABLE[j.kind]) throw new Error(`${j.kind} is not started by the scheduler`);
   const model = j.agent === 'claude' ? { model: MODEL_ID.sonnet } : {};
-  if (j.kind === 'review-existing') return { agent: j.agent, prompt: REVIEW_PROMPT, projectRoot, task: `auto-review-${safeId(j.id)}`, permission: 'plan', mode: 'chat', workMode: 'review', cls: 'review', effort: 'high', ...model };
-  return { agent: j.agent, prompt: TESTS_PROMPT, projectRoot, task: `auto-tests-${safeId(j.id)}`, permission: 'edit', mode: 'task', workMode: 'task', cls: 'implement', effort: 'high', ...model };
+  // Claude reads only the USER's settings here, not the project's (see projectSettingsProblem). `extraArgs` is internal-only StartReq: it is set by this file, never from a request.
+  const sources = j.agent === 'claude' ? { extraArgs: ['--setting-sources', 'user'] } : {};
+  if (j.kind === 'review-existing') return { agent: j.agent, prompt: REVIEW_PROMPT, projectRoot, task: `auto-review-${safeId(j.id)}`, permission: 'plan', mode: 'chat', workMode: 'review', cls: 'review', effort: 'high', ...model, ...sources };
+  return { agent: j.agent, prompt: TESTS_PROMPT, projectRoot, task: `auto-tests-${safeId(j.id)}`, permission: 'edit', mode: 'task', workMode: 'task', cls: 'implement', effort: 'high', ...model, ...sources };
 }

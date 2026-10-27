@@ -1,17 +1,20 @@
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectAgents } from '../adapters/locate.ts';
-import { authStatus } from '../adapters/auth.ts';
-import { loadUserConfig, saveUserConfig } from '../core/registry.ts';
+import { authStatus, authStatusIn } from '../adapters/auth.ts';
+import { HUB_HOME, loadUserConfig, saveUserConfig } from '../core/registry.ts';
+import { sealGuardrailsConfig } from '../run/integrity.ts';
 import type { AgentId } from '../core/types.ts';
 import { calibrate, estimate, profileFromHistory } from '../econ/econ.ts';
 import { projectForecast } from '../econ/forecast-data.ts';
 import { limitSnapshots } from '../econ/limits.ts';
 import { MODEL_ID } from '../econ/router.ts';
+import { tamperList, resetTamper } from '../run/integrity.ts';
 import { guardrails, reviewWindow } from '../review/guardrails.ts';
-import { CAP_RANGE, DEFAULT_CAPS, NUM_KEYS, DAY_MS, ackTrip, auditGuard, capsProblem, effectiveCaps, evaluate, loadAcks, readFacts, sanitizeCaps, userCapsRaw } from '../run/breaker.ts';
-import { approveItem, cancelItem, confirmWordFor, isEnabled, loadAuto, newItemId, projectKeyOf, setEnabled, type AutoItem } from '../run/autouse.ts';
-import { APPROVAL_TTL_MS, KIND_RU, KIND_WRITES, MAX_HOURS_TO_RESET, MAX_STARTS_PER_DAY, MIN_LEFT_PCT, SAFETY_MARGIN_PCT, STARTABLE, billingOk, leftPct, suggestBeforeReset, type JobKind, type LimitAt, type QueuedJob } from '../run/scheduler.ts';
+import { readProjectCaps, CAP_RANGE, DEFAULT_CAPS, NUM_KEYS, DAY_MS, ackTrip, auditGuard, capsProblem, effectiveCaps, evaluate, loadAcks, readFacts, sanitizeCaps, userCapsRaw } from '../run/breaker.ts';
+import { approveItem, cancelItem, repoIdOf, confirmWordFor, isEnabled, loadAuto, newItemId, projectKeyOf, setEnabled, type AutoItem } from '../run/autouse.ts';
+import { APPROVAL_TTL_MS, KIND_RU, KIND_WRITES, MAX_HOURS_TO_RESET, MAX_STARTS_PER_DAY, MIN_LEFT_PCT, SAFETY_MARGIN_PCT, STARTABLE, billingOk, projectSettingsProblem, leftPct, suggestBeforeReset, type JobKind, type LimitAt, type QueuedJob } from '../run/scheduler.ts';
+import { agentEnv } from '../run/runner.ts';
 import type { Ctx, Handler, Res } from './api.ts';
 
 /**
@@ -23,7 +26,7 @@ const ok = (json: unknown): Res => ({ status: 200, json });
 const bad = (status: number, error: string): Res => ({ status, json: { error } });
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) : s);
 const rootOfProject = (c: Ctx, id: number): string | undefined => (c.db.prepare('SELECT root FROM project WHERE id = ?').get(id) as { root: string } | undefined)?.root;
-const needClick = bad(403, 'this needs a click in the panel');
+const needClick = bad(403, 'this must come from the panel itself (same-origin request from its own code)');
 
 const isJobKind = (x: unknown): x is JobKind => typeof x === 'string' && Object.prototype.hasOwnProperty.call(KIND_RU, x);
 const AGENT_NAMES: Record<AgentId, string> = { claude: 'Claude', codex: 'Codex' };
@@ -43,13 +46,15 @@ function projectAuto(c: Ctx, p: { id: number; root: string; slug: string }, st: 
   const enabled = isEnabled(st, p.root), key = projectKeyOf(p.root);
   const snaps = limitSnapshots(c.db, now);
   const limits: Partial<Record<AgentId, LimitAt>> = {};
-  for (const a of ['claude', 'codex'] as AgentId[]) { const l = snaps[a]; if (l) limits[a] = { usedPercent: l.usedPercent, reached: l.reached, resetsAt: l.resetsAt, ts: l.ts }; }
+  for (const a of ['claude', 'codex'] as AgentId[]) { const l = snaps[a]; if (l) limits[a] = { usedPercent: l.usedPercent, reached: l.reached, resetsAt: l.resetsAt, ts: l.ts, windowMinutes: l.windowMinutes }; }
   const info = (c.agents ?? detectAgents)();
   const suggestions: Suggestion[] = [];
   const blocked: { agent: AgentId; why: string }[] = [];
   if (enabled) {
     for (const agent of ['claude', 'codex'] as AgentId[]) {
-      const bill = billingOk(agent, info[agent].installed ? (c.auth ?? authStatus)(agent, info[agent]) : undefined, process.env);
+      const bill = billingOk(agent, info[agent].installed ? (c.auth ?? ((id, i) => authStatusIn(id, i, p.root)))(agent, info[agent]) : undefined, agentEnv(process.env));
+      const settings = bill.ok && agent === 'claude' ? projectSettingsProblem(p.root) : null;   // the folder's own Claude settings can change billing or run commands
+      if (settings) { blocked.push({ agent, why: settings }); continue; }
       if (!bill.ok) { blocked.push({ agent, why: bill.why ?? 'подписка не подтверждена' }); continue; }
       const pct = jobPct(c, agent);
       if (pct == null) { blocked.push({ agent, why: REASON_RU.estimate }); continue; }
@@ -82,7 +87,7 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     return ok({ enough: r.forecast.enough, reason: r.forecast.reason, tasks: { open: t.tasks.length, done: t.done, total: t.total, guessed: t.guessed, truncated: t.truncated, files: t.files }, forecast: r.forecast, sampleRuns: r.sampleRuns });
   }],
 
-  // 7.4 (ADR-025): the leftover-limit scheduler. OPT-IN per project, OFF by default. Every POST needs a user click (`meta.userAction`) on top of the cookie, Host and Origin checks.
+  // 7.4 (ADR-025): the leftover-limit scheduler. OPT-IN per project, OFF by default. Every POST needs `meta.userAction` (a request made by the panel's own code, not proof of a human click) on top of the cookie, Host and Origin checks.
   ['GET', /^\/api\/autouse$/, (c, { q }) => {
     const now = Date.now(), st = loadAuto(c.runs.home);
     const one = q.get('project') != null && /^\d+$/.test(q.get('project') as string) ? Number(q.get('project')) : null;
@@ -102,7 +107,7 @@ export const phase7Routes: [string, RegExp, Handler][] = [
       if (typeof body['confirm'] !== 'string' || body['confirm'].normalize('NFC').trim() !== confirmWordFor(root)) return bad(400, 'type the folder name of the project to confirm');
       if (!existsSync(root)) return bad(400, 'project folder is missing on disk');
     }
-    try { setEnabled(c.runs.home, root, body['enabled'], Date.now()); } catch (e) { return bad(400, (e as Error).message); }
+    try { setEnabled(c.runs.home, root, body['enabled'], Date.now(), { stop: (rid) => void c.runs.stop(rid), repoId: repoIdOf(root) }); } catch (e) { return bad(400, (e as Error).message); }
     audit(c, { action: body['enabled'] ? 'autouse-enable' : 'autouse-disable', root });
     return ok({ enabled: body['enabled'] });
   }],
@@ -121,7 +126,7 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     const offer = projectAuto(c, { id, root, slug: '' }, st, now).suggestions.find((s) => s.kind === kind && s.agent === agent);
     if (!offer) return bad(409, 'not available now: the limit, the reset time or the subscription check does not allow it');
     try {
-      const item = approveItem(c.runs.home, { id: newItemId(), kind, projectId: id, agent, expectedPct: offer.expectedPct, writes: KIND_WRITES[kind] }, root, now);
+      const item = approveItem(c.runs.home, { id: newItemId(), kind, projectId: id, agent, expectedPct: offer.expectedPct, writes: KIND_WRITES[kind] }, root, now, { repoId: repoIdOf(root) });
       audit(c, { action: 'autouse-approve', root, kind, agent });
       return ok({ item: itemView(item) });
     } catch (e) { return bad(400, (e as Error).message); }
@@ -130,16 +135,21 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     if (!meta?.userAction) return needClick;
     const id = typeof body['id'] === 'string' && /^au[0-9a-f]{8}$/.test(body['id']) ? body['id'] : undefined;
     if (!id) return bad(400, 'bad id');
-    return cancelItem(c.runs.home, id) ? ok({ cancelled: true }) : bad(404, 'nothing to cancel');
+    return cancelItem(c.runs.home, id, Date.now(), (rid) => void c.runs.stop(rid)) ? ok({ cancelled: true }) : bad(404, 'nothing to cancel');
   }],
-  // ---- 7.5 (ADR-026): guardrails, the circuit breaker. Reading is open to the panel; every change needs a user click, like 7.4. A project's hub.json is never consulted here.
+  // ---- 7.5 (ADR-026): guardrails, the circuit breaker. Reading is open to the panel; every change needs `meta.userAction`, like 7.4. A project's hub.json is never consulted here.
   ['GET', /^\/api\/guardrails$/, (c) => {
     const now = Date.now(), { caps } = effectiveCaps(userCapsRaw());
+    loadAuto(c.runs.home);   // reading it is what notices a file the hub did not write
+    // what each project's hub.json asked for and did not get (a project can only tighten)
+    const notes: string[] = [];
+    for (const p of (c.db.prepare('SELECT root, slug FROM project ORDER BY id').all() as unknown as { root: string; slug: string }[]).slice(0, 30)) { const pr = readProjectCaps(p.root); if (pr) for (const n of effectiveCaps(userCapsRaw(), pr).notes) notes.push(`${p.slug}: ${n}`); }
     const facts = readFacts(c.db, now), day = facts.filter((f) => now - f.startedMs < DAY_MS);
     const slug = (id: number | undefined): string => (id == null ? '' : (c.db.prepare('SELECT slug FROM project WHERE id = ?').get(id) as { slug: string } | undefined)?.slug ?? '');
     const win = reviewWindow(c.db, now), g = guardrails(win);
     const nums = (x: Record<string, unknown>): Record<string, number> => Object.fromEntries(NUM_KEYS.map((k) => [k, x[k] as number]));
     return ok({
+      notes: notes.slice(0, 8), tamper: tamperList([c.runs.home, HUB_HOME]).map((t) => ({ file: t.file, at: t.at })),
       enabled: caps.enabled, caps: nums(caps as unknown as Record<string, unknown>), defaults: nums(DEFAULT_CAPS as unknown as Record<string, unknown>), ranges: Object.fromEntries(NUM_KEYS.map((k) => [k, { min: CAP_RANGE[k][0], max: CAP_RANGE[k][1] }])),
       usage: { dayWeighted: Math.round(day.reduce((a, f) => a + f.w, 0) * 100) / 100, dayUsd: Math.round(day.reduce((a, f) => a + (f.usd ?? 0), 0) * 100) / 100 },
       trips: evaluate({ now, facts, caps, acks: loadAcks(c.runs.home) }).slice(0, 8).map((t) => ({ kind: t.kind, key: t.key, ru: t.ru, blocksStart: t.blocksStart, ackable: t.ackable, ...(t.projectId != null ? { projectId: t.projectId, slug: slug(t.projectId) } : {}) })),
@@ -165,6 +175,7 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     else if (body['enabled'] !== undefined) return bad(400, 'enabled: true or false');
     if (!did) return bad(400, 'nothing to change: send caps, enabled or reset');
     saveUserConfig({ ...cfg, guardrails: next });
+    sealGuardrailsConfig(HUB_HOME);   // what the route saved is what the hub will trust (integrity.ts)
     auditGuard(c.runs.home, { action: `guardrails-${did}`, ...(body['caps'] !== undefined ? { caps: body['caps'] } : {}) });
     return ok({ ok: true });
   }],
@@ -173,6 +184,13 @@ export const phase7Routes: [string, RegExp, Handler][] = [
     const key = typeof body['key'] === 'string' ? body['key'] : '';
     if (!ackTrip(c.runs.home, key, Date.now())) return bad(400, 'only a repeated failure or repeated stops can be acknowledged');
     auditGuard(c.runs.home, { action: 'guardrails-ack', key });
+    return ok({ ok: true });
+  }],
+  // The user looked at a settings file the hub did not write: drop what it held (switches OFF, caps back to the defaults, no acknowledgement stands). Needs the same panel request as every switch.
+  ['POST', /^\/api\/integrity\/reset$/, (c, { meta }) => {
+    if (!meta?.userAction) return needClick;
+    resetTamper([c.runs.home], HUB_HOME);
+    auditGuard(c.runs.home, { action: 'integrity-reset' });
     return ok({ ok: true });
   }],
 ];

@@ -88,11 +88,24 @@ test('forecast: weeks come from the limit left and the reset; a window that is n
 test('forecast: dollars only with a priced model, and a measured cost beats a guess', () => {
   const priced = forecast(base());
   assert.ok(priced.usd && priced.usd.p50 > 0 && priced.usd.label === 'estimated', 'priced from the price table: an estimate');
-  const withCost = forecast(base({ samples: spread('implement', 9).map((s) => ({ ...s, costUsd: s.mw * 0.5 })) }));
+  const withCost = forecast(base({ samples: spread('implement', 9).map((s) => ({ ...s, costUsd: s.mw * 0.5, costMeasured: true })) }));
+  const computed = forecast(base({ samples: spread('implement', 16).map((s) => ({ ...s, costUsd: s.mw * 0.5, costMeasured: false })) }));
+  assert.equal(computed.usd!.label, 'estimated', 'a cost the hub computed from the price table is not a measured one, however many runs have it');
+  const unflagged = forecast(base({ samples: spread('implement', 16).map((s) => ({ ...s, costUsd: s.mw * 0.5 })) }));
+  assert.equal(unflagged.usd!.label, 'estimated', 'no flag, no claim');
   assert.equal(withCost.usd!.label, 'measured');
   const unknown = forecast(base({ route: () => ({ agent: 'claude', model: 'claude-mystery-9' }), samples: spread('implement', 9) }));
   assert.equal(unknown.usd, null);
   assert.ok(unknown.risk.some((r) => /Цена модели claude-mystery-9 не проверена/.test(r)));
+});
+
+test('forecast: weeks are "measured" only when the limit reading is KNOWN to be a weekly window; a missing or short window length is not weekly', () => {
+  const w = (windowMinutes: number | null | undefined) => forecast(base({ limits: { claude: { ...limits.claude, windowMinutes } } }));
+  assert.equal(w(10080).weeks!.label, 'measured');
+  const none = w(undefined), nul = w(null);
+  for (const f of [none, nul]) { assert.equal(f.weeks!.label, 'estimated', 'no window length: the percent left is not trusted'); assert.ok(f.risk.some((r) => /окно лимита Claude неизвестно/.test(r))); }
+  assert.equal(w(300).weeks, null, 'a 5 h window gives no weeks');
+  assert.equal(w(8639).weeks, null, 'just under 6 days is a short window');
 });
 
 test('forecast: a failed sample adds a cascade rung, so lower success means more cost', () => {
@@ -125,6 +138,12 @@ test('model layer: reads a hostile answer by type and writes plain Russian', () 
   assert.ok(forecastLine(m).includes('14') && /35[–-]60 %/.test(forecastLine(m)) && /Claude/.test(forecastLine(m)));
   assert.ok(m.risk.every((r: string) => !/[‮]/.test(r)), 'bidi characters are stripped');
   assert.deepEqual(m.risk.length, 1);
+});
+
+test('readProjectTasks: a link or a path that the other drive makes absolute is not read (isAbsolute after relative)', async () => {
+  const { isAbsolute, relative } = await import('node:path');
+  const win = relative('C:/proj', 'D:/x');
+  if (process.platform === 'win32') assert.equal(isAbsolute(win), true, 'on Windows relative() between drives returns an absolute path, which passes a ".." test');
 });
 
 test('readProjectTasks: reads tasks.md and specs/*/tasks.md inside the folder, ignores a link out of it', async () => {

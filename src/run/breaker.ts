@@ -1,7 +1,8 @@
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
-import { loadUserConfig } from '../core/registry.ts';
+import { HUB_HOME, loadUserConfig } from '../core/registry.ts';
+import { GUARDRAILS_FILE, fileState, guardrailsConfigTrusted, recordTamper, sealFile } from './integrity.ts';
 import { weighted } from '../econ/econ.ts';
 import type { Db } from '../history/store.ts';
 import { pathKey } from '../lib/paths.ts';
@@ -10,7 +11,7 @@ import type { StartReq } from './runner.ts';
 /**
  * Guardrails, the circuit breaker (Phase 7.5, ADR-026). Runaway protection that STOPS runs and says why: one run over a token or cost cap, a day over its caps, the same failure again
  * and again, a continuation chain that keeps growing, runs stopped over and over. ON by default with conservative numbers.
- * Who can change it: only the user's own global config (`guardrails` in `<hub home>/config.json`, written by `POST /api/guardrails` after a click). A project's `hub.json` may only
+ * Who can change it: only the user's own global config (`guardrails` in `<hub home>/config.json`, written by `POST /api/guardrails`, which needs a request from the panel's own code). A project's `hub.json` may only
  * TIGHTEN a cap (the smaller number wins) and can never switch the protection off or raise a number; a request body to any run route is never read for it. The state is derived from the
  * run table (nothing to get out of sync) plus the user's acknowledgements. `evaluate` is pure (clock and rows are arguments), so tests use no timers.
  */
@@ -21,8 +22,8 @@ type NumKey = Exclude<keyof Caps, 'enabled'>;
  * 0.7, so a run cap of 25 is about five times a heavy run, a day cap of 120 about twenty-three of them. Dollars are API-equivalent (a subscription is not billed that way): 40 per run, 150 per day.
  */
 export const DEFAULT_CAPS: Caps = { enabled: true, runWeighted: 25, runUsd: 40, dayWeighted: 120, dayUsd: 150, sameFailureN: 3, chainMax: 6, stopsN: 4 };
-/** What `POST /api/guardrails` accepts per cap: a number outside is refused, not clamped; the stored config is clamped into it when read (a hand-edited file cannot lift a cap past the ceiling). */
-export const CAP_RANGE: Record<NumKey, [number, number]> = { runWeighted: [1, 250], runUsd: [1, 400], dayWeighted: [1, 1200], dayUsd: [1, 1500], sameFailureN: [2, 10], chainMax: [2, 20], stopsN: [2, 20] };
+/** What `POST /api/guardrails` accepts per cap (the ceiling is 3 times the default: loosening further than that is not something one click should do): a number outside is refused, not clamped; the stored config is clamped into it when read (a hand-edited file cannot lift a cap past the ceiling). */
+export const CAP_RANGE: Record<NumKey, [number, number]> = { runWeighted: [1, 75], runUsd: [1, 120], dayWeighted: [1, 360], dayUsd: [1, 450], sameFailureN: [2, 9], chainMax: [2, 18], stopsN: [2, 12] };
 export const NUM_KEYS = Object.keys(CAP_RANGE) as NumKey[];
 const WHOLE: ReadonlySet<NumKey> = new Set(['sameFailureN', 'chainMax', 'stopsN']);
 /** The same failure within this long of the last one still blocks new starts in that project; the user can acknowledge it earlier. */
@@ -76,7 +77,16 @@ export function readProjectCaps(root: string): unknown {
     return isObj(v) ? v : undefined;
   } catch { return undefined; }
 }
-export const userCapsRaw = (): unknown => (loadUserConfig() as { guardrails?: unknown }).guardrails;
+/**
+ * The user's own caps, but only the ones the hub's route saved (their hash is sealed, integrity.ts). Anything else in `guardrails` (an unattended agent or a hand edit changed it)
+ * is IGNORED: the defaults apply, so a change that would switch the protection off leaves it ON, and the change is recorded and shown until the user resets.
+ */
+export const userCapsRaw = (): unknown => {
+  const g = (loadUserConfig() as { guardrails?: unknown }).guardrails;
+  if (guardrailsConfigTrusted(HUB_HOME, g)) return g;
+  recordTamper(HUB_HOME, GUARDRAILS_FILE);
+  return undefined;
+};
 
 // ---------- facts from the run table ----------
 export interface Fact { id: string; projectId: number | null; startedMs: number; endedMs: number | null; outcome: string | null; w: number; usd: number | null; sig: string; handoffOf: string | null }
@@ -89,7 +99,7 @@ export function readFacts(db: Db, now: number): Fact[] {
     .all(new Date(now - FACT_WINDOW_MS).toISOString()) as unknown as { id: string; pid: number | null; s: string; e: string | null; outcome: string | null; tin: number | null; tc: number | null; tout: number | null; cost: number | null; error: string | null; parent: string | null }[];
   return rows.map((r) => {
     const cached = r.tc ?? 0, t = Date.parse(r.s), te = r.e ? Date.parse(r.e) : NaN;
-    return { id: r.id, projectId: r.pid, startedMs: Number.isFinite(t) ? t : 0, endedMs: Number.isFinite(te) ? te : null, outcome: r.outcome, w: weighted({ uncachedIn: Math.max(0, (r.tin ?? 0) - cached), cachedIn: cached, out: r.tout ?? 0 }), usd: fin(r.cost) && r.cost >= 0 ? r.cost : null, sig: signature(r.error), handoffOf: r.parent };
+    return { id: r.id, projectId: r.pid, startedMs: Number.isFinite(t) ? t : 0, endedMs: Number.isFinite(te) ? te : null, outcome: r.outcome, w: weighted({ uncachedIn: Math.max(0, (r.tin ?? 0) - cached), cachedIn: cached, out: r.tout ?? 0 }), usd: fin(r.cost) && r.cost >= 0 ? r.cost : null, sig: r.outcome === 'guard' ? '(остановлено защитой)' : signature(r.error), handoffOf: r.parent };
   });
 }
 
@@ -112,6 +122,9 @@ export function chainDepth(facts: Fact[], handoffOf: string | null | undefined):
   return n;
 }
 
+/** A failed run, or one the circuit breaker itself stopped: both are the model going wrong, and a runaway must not become invisible by being stopped. */
+const isFail = (f: Fact): boolean => f.outcome === 'failed' || f.outcome === 'guard';
+
 export function evaluate(o: { now: number; facts: Fact[]; caps: Caps; acks?: Record<string, number>; start?: { handoffOf?: string | null } }): Trip[] {
   const { now, facts, caps } = o, acks = o.acks ?? {}, trips: Trip[] = [];
   if (!caps.enabled) return trips;
@@ -127,12 +140,12 @@ export function evaluate(o: { now: number; facts: Fact[]; caps: Caps; acks?: Rec
     const keyF = `same-failure:${pid}`, keyS = `repeated-stops:${pid}`;
     const done = fs.filter((f) => f.endedMs !== null && f.outcome !== null && f.outcome !== 'interrupted' && f.outcome !== 'stopped' && (f.endedMs as number) > (acks[keyF] ?? 0)).sort((a, b) => (b.endedMs as number) - (a.endedMs as number));
     const newest = done[0];
-    if (newest && newest.outcome === 'failed' && now - (newest.endedMs as number) < FAILURE_COOLDOWN_MS) {
+    if (newest && isFail(newest) && now - (newest.endedMs as number) < FAILURE_COOLDOWN_MS) {
       let n = 0;
-      for (const f of done) { if (f.outcome !== 'failed' || f.sig !== newest.sig) break; n++; }
+      for (const f of done) { if (!isFail(f) || f.sig !== newest.sig) break; n++; }
       if (n >= caps.sameFailureN) trips.push({ kind: 'same-failure', key: keyF, ru: `одна и та же ошибка ${n} раза подряд («${newest.sig.slice(0, 60)}»): запуски в этом проекте остановлены, пока вы не посмотрите, что случилось`, blocksStart: true, stop: [], projectId: pid, ackable: true });
     }
-    const stops = fs.filter((f) => (f.outcome === 'context' || f.outcome === 'limit') && f.endedMs !== null && now - (f.endedMs as number) < STOPS_WINDOW_MS && (f.endedMs as number) > (acks[keyS] ?? 0));
+    const stops = fs.filter((f) => (f.outcome === 'context' || f.outcome === 'limit' || f.outcome === 'guard') && f.endedMs !== null && now - (f.endedMs as number) < STOPS_WINDOW_MS && (f.endedMs as number) > (acks[keyS] ?? 0));
     if (stops.length >= caps.stopsN) trips.push({ kind: 'repeated-stops', key: keyS, ru: `${stops.length} остановок за час из-за контекста или лимита: запуски в этом проекте остановлены, пока вы не посмотрите, что происходит`, blocksStart: true, stop: [], projectId: pid, ackable: true });
   }
   for (const f of live) { const d = chainDepth(facts, f.handoffOf); if (f.handoffOf && d + 1 > caps.chainMax) trips.push({ kind: 'chain', key: `chain:${f.id}`, ru: `цепочка продолжений дошла до ${d + 1} запусков подряд (порог ${caps.chainMax}): остановлено`, blocksStart: false, stop: [f.id], ackable: false }); }
@@ -145,6 +158,7 @@ const ACK_KEY = /^(same-failure|repeated-stops):\d{1,9}$/;
 const ackFile = (home: string): string => join(home, 'guardrails.json');
 export function loadAcks(home: string): Record<string, number> {
   const out: Record<string, number> = {};
+  if (fileState(home, 'guardrails.json') === 'changed') { recordTamper(home, 'guardrails.json'); return out; }   // forged acknowledgements clear nothing
   try {
     if (statSync(ackFile(home)).size > 100_000) return out;
     const raw = JSON.parse(readFileSync(ackFile(home), 'utf8')) as { acks?: unknown };
@@ -158,7 +172,7 @@ export function ackTrip(home: string, key: string, now: number): boolean {
   const acks = loadAcks(home); acks[key] = now;
   mkdirSync(home, { recursive: true });
   const f = ackFile(home), tmp = `${f}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ acks }), 'utf8'); renameSync(tmp, f);
+  writeFileSync(tmp, JSON.stringify({ acks }), 'utf8'); renameSync(tmp, f); sealFile(home, 'guardrails.json');
   return true;
 }
 /** An append-only line for every change of the protection itself (who: the panel; what; when). */
@@ -201,6 +215,9 @@ export function makeGuard(o: GuardOpts): RunGuard {
       if (!caps.enabled) return null;
       const one = runOver(caps, i.weighted, i.costUsd);
       if (one) return one;
+      // a continuation chain that grew past the cap is stopped here too (the trip list alone only describes it)
+      const parent = (o.db.prepare('SELECT handoff_of AS p FROM run WHERE id = ?').get(i.runId) as { p: string | null } | undefined)?.p;
+      if (parent) { const d = chainDepth(facts(now), parent); if (d + 1 > caps.chainMax) return `цепочка продолжений дошла до ${d + 1} запусков подряд при пороге ${caps.chainMax}`; }
       const others = facts(now).filter((f) => f.id !== i.runId && now - f.startedMs < DAY_MS);
       const dw = others.reduce((a, f) => a + f.w, 0) + i.weighted, du = others.reduce((a, f) => a + (f.usd ?? 0), 0) + (i.costUsd ?? 0);
       if (dw > caps.dayWeighted) return `за сутки израсходовано ${mw(dw)} условных млн токенов при пороге ${mw(caps.dayWeighted)}`;

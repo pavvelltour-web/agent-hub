@@ -37,7 +37,7 @@ writeFileSync(rollout,
   L({ type: 'response_item', timestamp: '2026-10-21T08:00:04Z', payload: { type: 'function_call', name: 'shell', arguments: '{"command":"npm test"}' } }) +
   L({ type: 'response_item', timestamp: '2026-10-21T08:00:05Z', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Адаптер готов, тест падает.' }] } }) +
   L({ type: 'event_msg', timestamp: '2026-10-21T08:00:06Z', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 1000, cached_input_tokens: 800, output_tokens: 60, reasoning_output_tokens: 20 } }, rate_limits: { plan_type: 'prolite', primary: { used_percent: 70, window_minutes: 10080, resets_at: 1793091834 } } } }));
-writeFileSync(rolloutSub, L({ type: 'session_meta', timestamp: '2026-10-21T08:01:00Z', payload: { id: 'T2', cwd: 'C:\\Users\\u\\Desktop\\AmpliCore-worktrees\\001-x' } }) + L({ type: 'event_msg', timestamp: '2026-10-21T08:01:01Z', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 500, cached_input_tokens: 0, output_tokens: 5 } }, rate_limits: { plan_type: 'prolite', primary: { used_percent: 71, window_minutes: 10080, resets_at: 1793091834 } } } }));
+writeFileSync(rolloutSub, L({ type: 'session_meta', timestamp: '2026-10-21T08:01:00Z', payload: { id: 'T2', cwd: 'C:\\Users\\u\\Desktop\\AmpliCore-worktrees\\001-x' } }) + L({ type: 'event_msg', timestamp: '2026-10-21T08:01:01Z', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 500, cached_input_tokens: 0, output_tokens: 5 } }, rate_limits: { plan_type: 'prolite', primary: { used_percent: 71, window_minutes: 10080, resets_at: 1793091834 }, secondary: { used_percent: 12, window_minutes: 300, resets_at: 1792300000 } } } }));
 const st = new DatabaseSync(join(codexDir, 'state_5.sqlite'));
 st.exec('CREATE TABLE threads (id TEXT, rollout_path TEXT, cwd TEXT, title TEXT, source TEXT, created_at INTEGER, updated_at INTEGER); CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);');
 st.prepare('INSERT INTO threads VALUES (?,?,?,?,?,?,?)').run('T1', `\\\\?\\${rollout}`, '\\\\?\\C:\\Users\\u\\Desktop\\AmpliCore', 'Адаптер Codex', 'vscode', 1792000000, 1792000100);
@@ -83,6 +83,13 @@ test('usage by model and weekly limit snapshot come from Codex logs; dedupes ide
   assert.equal(u[0]?.model, 'gpt-6.1-sol'); assert.equal(u[0]?.cachedIn, 800); assert.equal(u[0]?.uncachedIn, 200);
   const lim = latestLimit(db, 'codex')!;
   assert.equal(lim.usedPercent, 71); assert.equal(lim.windowMinutes, 10080); assert.equal(lim.planType, 'prolite');
+});
+
+test('Codex: BOTH rate-limit windows are stored side by side, told apart by their window length (not by the names primary/secondary)', async () => {
+  const db = openDb(':memory:');
+  await syncCodex(db, codexDir);
+  const rows = db.prepare("SELECT window_minutes AS w, used_percent AS p FROM limit_snapshot WHERE agent = 'codex' AND ts = '2026-10-21T08:01:01Z' ORDER BY w").all() as unknown as { w: number; p: number }[];
+  assert.deepEqual(rows.map((r) => [r.w, r.p]), [[300, 12], [10080, 71]]);
 });
 
 test('re-sync is idempotent and appended lines are picked up incrementally', async () => {

@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync
 import { join, resolve } from 'node:path';
 import type { AgentId } from '../core/types.ts';
 import { isSecretPath, pathKey } from '../lib/paths.ts';
+import { fileState, hasTamper, recordTamper, sealFile } from './integrity.ts';
+import { git } from './git.ts';
 import { APPROVAL_TTL_MS, MAX_STARTS_PER_DAY, SAFETY_MARGIN_PCT, STARTABLE, eligibility, leftPct, validJob, type LimitAt, type QueuedJob, type Why } from './scheduler.ts';
 
 /**
@@ -13,8 +15,9 @@ import { APPROVAL_TTL_MS, MAX_STARTS_PER_DAY, SAFETY_MARGIN_PCT, STARTABLE, elig
  */
 export type Status = 'approved' | 'started' | 'finished' | 'stopped' | 'expired' | 'cancelled' | 'failed-to-start';
 const STATUSES = new Set<string>(['approved', 'started', 'finished', 'stopped', 'expired', 'cancelled', 'failed-to-start']);
-export interface AutoItem extends QueuedJob { projectKey: string; projectRoot: string; approvedAt: number; status: Status; runId?: string; startedAt?: number; endedAt?: number; outcome?: string; note?: string }
-export interface AutoProject { enabled: boolean; at: number; root: string }
+export interface AutoItem extends QueuedJob { projectKey: string; projectRoot: string; approvedAt: number; status: Status; runId?: string; /** the process that started it (only the holder of the lock ticks) */ ownerPid?: number; startedAt?: number; endedAt?: number; outcome?: string; note?: string }
+/** `repo`: the first-commit sha of the repository the user switched this folder on for (null: not a git repository). The opt-in follows the REPOSITORY: a different one at the same path drops it. */
+export interface AutoProject { enabled: boolean; at: number; root: string; repo?: string }
 export interface AutoState { version: 1; projects: Record<string, AutoProject>; items: AutoItem[]; starts: number[] }
 
 const FILE = 'autouse.json', MAX_BYTES = 512 * 1024, MAX_ITEMS = 200, MAX_STARTS = 100, KEEP_MS = 14 * 86400_000, DAY_MS = 86400_000;
@@ -34,7 +37,24 @@ export const confirmWordFor = (root: string): string => (root.split(/[\\/]+/).fi
 const emptyState = (): AutoState => ({ version: 1, projects: {}, items: [], starts: [] });
 
 /** Read and validate. Never throws: a missing, oversized or malformed file is an empty state (everything off), a bad row is dropped on its own. */
+/** The first commit of the repository at `root` (the identity of the repo, not of the folder); null when it is not a git repository or has no commit. */
+export function repoIdOf(root: string): string | null {
+  const r = git(root, ['rev-list', '--max-parents=0', 'HEAD']);
+  const first = r.ok ? r.out.split(/\r?\n/).map((l) => l.trim()).filter((l) => /^[0-9a-f]{40}$/.test(l)).sort()[0] : undefined;
+  return first ?? null;
+}
+
+/**
+ * The state the hub wrote. A file the hub did not write (its hash does not match the seal, or it was never sealed) is NOT read: everything reads as OFF, the change is recorded
+ * once and the panel says so until the user resets (integrity.ts). This is tamper evidence, not a hard boundary.
+ */
 export function loadAuto(home: string): AutoState {
+  if (fileState(home, FILE) === 'changed') { recordTamper(home, FILE); return emptyState(); }
+  return loadAutoRaw(home);
+}
+
+/** Read and validate without the integrity gate (the validation itself is tested through this). Never throws. */
+export function loadAutoRaw(home: string): AutoState {
   const out = emptyState();
   try {
     const file = join(home, FILE);
@@ -45,13 +65,14 @@ export function loadAuto(home: string): AutoState {
       for (const [k, v] of Object.entries(projects as Record<string, unknown>).slice(0, 200)) {
         const p = v as Record<string, unknown> | null;
         // `enabled` must be the boolean true, with the root it was switched on for, and the key must be that root's key: nothing loose switches a project on
-        if (p && typeof p === 'object' && p['enabled'] === true && typeof p['root'] === 'string' && fin(p['at']) && pathKey(p['root']) === k) out.projects[k] = { enabled: true, at: p['at'], root: p['root'] };
+        if (p && typeof p === 'object' && p['enabled'] === true && typeof p['root'] === 'string' && fin(p['at']) && pathKey(p['root']) === k) out.projects[k] = { enabled: true, at: p['at'], root: p['root'], ...(typeof p['repo'] === 'string' && /^[0-9A-Za-z._-]{1,80}$/.test(p['repo']) ? { repo: p['repo'] } : {}) };
       }
     }
     for (const x of (Array.isArray(raw['items']) ? raw['items'] : []).slice(-MAX_ITEMS)) {
       const i = x as Record<string, unknown> | null;
       if (!validJob(x) || !i || typeof i['projectKey'] !== 'string' || typeof i['projectRoot'] !== 'string' || !fin(i['approvedAt']) || typeof i['status'] !== 'string' || !STATUSES.has(i['status'])) continue;
       const it: AutoItem = { id: x.id, kind: x.kind, projectId: x.projectId, agent: x.agent, expectedPct: x.expectedPct, writes: x.writes, projectKey: i['projectKey'] as string, projectRoot: i['projectRoot'] as string, approvedAt: i['approvedAt'] as number, status: i['status'] as Status };
+      if (typeof i['ownerPid'] === 'number' && Number.isSafeInteger(i['ownerPid']) && i['ownerPid'] > 0) it.ownerPid = i['ownerPid'];
       if (typeof i['runId'] === 'string' && /^r[0-9a-z]{2,40}$/.test(i['runId'])) it.runId = i['runId'];
       for (const k of ['startedAt', 'endedAt'] as const) if (fin(i[k])) it[k] = i[k] as number;
       if (typeof i['outcome'] === 'string') it.outcome = clip(oneLine(i['outcome']), 40);
@@ -70,32 +91,38 @@ export function saveAuto(home: string, st: AutoState, now = Date.now()): void {
   const file = join(home, FILE), tmp = `${file}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`;
   writeFileSync(tmp, JSON.stringify({ version: 1, projects: st.projects, items, starts: st.starts.filter((t) => now - t < 2 * DAY_MS).slice(-MAX_STARTS) }, null, 1), 'utf8');
   renameSync(tmp, file);
+  sealFile(home, FILE);   // the hub just wrote it: remember what it looks like
 }
 
 export const isEnabled = (st: AutoState, root: string): boolean => st.projects[projectKeyOf(root)]?.enabled === true;
 
 /**
- * The per-project switch. Only the route that carries a user click calls this with `true` (it checks the typed folder name first). Turning it off cancels every approval
+ * The per-project switch. Only the route that requires `meta.userAction` (a request from the panel's own code) calls this with `true` (it checks the typed folder name first). Turning it off cancels every approval
  * that had not started, so switching it on again later starts from nothing.
  */
-export function setEnabled(home: string, root: string, enabled: boolean, now: number): AutoState {
+export function setEnabled(home: string, root: string, enabled: boolean, now: number, o: { stop?: (runId: string) => void; repoId?: string | null } = {}): AutoState {
   const st = loadAuto(home), key = projectKeyOf(root);
   if (enabled) {
     if (isSecretPath(root) || !existsSync(root) || !statSync(root).isDirectory()) throw new Error('this folder cannot be switched on');
-    st.projects[key] = { enabled: true, at: now, root };
+    st.projects[key] = { enabled: true, at: now, root, ...(typeof o.repoId === 'string' ? { repo: o.repoId } : {}) };
   } else {
     delete st.projects[key];
-    for (const i of st.items) if (i.projectKey === key && i.status === 'approved') { i.status = 'cancelled'; i.endedAt = now; }
+    for (const i of st.items) {
+      if (i.projectKey !== key) continue;
+      if (i.status === 'approved') { i.status = 'cancelled'; i.endedAt = now; }
+      else if (i.status === 'started') { stopRun(i, o.stop, 'проект выключили: запуск остановлен', now); }   // switching off also stops the run that is live
+    }
   }
   saveAuto(home, st, now);
   return st;
 }
 
 /** Store a user-approved job. The project must be switched on; the job must be valid (a known kind, `writes` as the kind allows, a known percent). */
-export function approveItem(home: string, job: QueuedJob, root: string, now: number): AutoItem {
+export function approveItem(home: string, job: QueuedJob, root: string, now: number, o: { repoId?: string | null } = {}): AutoItem {
   if (!validJob(job)) throw new Error('not a valid job');
   const st = loadAuto(home), key = projectKeyOf(root);
   if (!st.projects[key]?.enabled) throw new Error('the project is not enabled for this');
+  if ('repoId' in o && (st.projects[key]?.repo ?? null) !== (o.repoId ?? null)) throw new Error('в этой папке теперь другой репозиторий (the repository changed): включите заново');
   if (st.items.some((i) => i.id === job.id)) throw new Error('this approval already exists');
   const item: AutoItem = { id: job.id, kind: job.kind, projectId: job.projectId, agent: job.agent, expectedPct: job.expectedPct, writes: job.writes, projectKey: key, projectRoot: root, approvedAt: now, status: 'approved' };
   st.items.push(item);
@@ -104,11 +131,18 @@ export function approveItem(home: string, job: QueuedJob, root: string, now: num
 }
 export const newItemId = (): string => `au${randomBytes(4).toString('hex')}`;
 
-/** Cancel an approval that has not started. */
-export function cancelItem(home: string, id: string, now = Date.now()): boolean {
+/** Stop a started auto run through the normal stop path and record it. */
+function stopRun(i: AutoItem, stop: ((runId: string) => void) | undefined, note: string, now: number): void {
+  if (i.runId) try { stop?.(i.runId); } catch { /* the run is gone */ }
+  i.status = 'stopped'; i.endedAt = now; i.note = note;
+}
+
+/** Cancel an approval that has not started, or stop one that is running (through `stop`, the normal stop path). */
+export function cancelItem(home: string, id: string, now = Date.now(), stop?: (runId: string) => void): boolean {
   const st = loadAuto(home), it = st.items.find((i) => i.id === id);
-  if (!it || it.status !== 'approved') return false;
-  it.status = 'cancelled'; it.endedAt = now;
+  if (!it || (it.status !== 'approved' && it.status !== 'started')) return false;
+  if (it.status === 'started') stopRun(it, stop, 'вы отменили: запуск остановлен', now);
+  else { it.status = 'cancelled'; it.endedAt = now; }
   saveAuto(home, st, now);
   return true;
 }
@@ -118,13 +152,20 @@ export interface AutoDeps {
   home: string; now: () => number;
   limits: () => Partial<Record<AgentId, LimitAt>>;
   /** Is this agent on a subscription (not a paid key)? See billingOk. */
-  billing: (agent: AgentId) => { ok: boolean; why?: string };
+  billing: (agent: AgentId, root?: string) => { ok: boolean; why?: string };
+  /** A reason when the project folder's own settings could change billing or run commands for this agent, else null (see projectSettingsProblem). */
+  projectCheck?: (root: string, agent: AgentId) => string | null;
   /** The circuit breaker (7.5): a reason when starts are blocked for this folder, else null. */
   breaker: (root: string) => string | null;
   projectRoot: (projectId: number) => string | undefined;
   /** Starts the run through the RunManager; may throw (guardrail, too many runs, a folder that is not a git repository). */
   start: (job: QueuedJob, root: string) => { runId: string };
   stop: (runId: string) => void;
+  /** The identity of the repository at a folder (see repoIdOf). Absent: not checked. */
+  repoId?: (root: string) => string | null;
+  /** The lock that makes one process the only scheduler over this home (autouse-lock.ts), and this process's pid. Absent: no lock (tests of one instance). */
+  lock?: { hold: () => boolean };
+  pid?: number;
   runState: (runId: string) => { live: boolean; outcome: string | null };
 }
 export interface TickReport { started: { itemId: string; runId: string }[]; stopped: { itemId: string; why: string }[]; skipped: { itemId?: string; why: string; detail?: string }[]; expired: string[] }
@@ -138,7 +179,9 @@ export class AutoScheduler {
   /** One pass: drop old approvals, look after the run that is live (stop it under the margin), and start at most ONE approved item if everything allows it. */
   tick(): TickReport {
     const d = this.d, now = d.now(), rep: TickReport = { started: [], stopped: [], skipped: [], expired: [] };
+    if (d.lock && !d.lock.hold()) { rep.skipped.push({ why: 'not-owner' }); return rep; }   // another process is the scheduler: this one neither starts nor judges its runs
     const st = loadAuto(d.home);
+    if (hasTamper(d.home, FILE)) { rep.skipped.push({ why: 'tamper' }); return rep; }
     let dirty = false;
     for (const i of st.items) if (i.status === 'approved' && now - i.approvedAt > APPROVAL_TTL_MS) { i.status = 'expired'; i.endedAt = now; rep.expired.push(i.id); dirty = true; }
 
@@ -166,15 +209,24 @@ export class AutoScheduler {
       if (!STARTABLE[it.kind]) { rep.skipped.push({ itemId: it.id, why: 'not-startable' }); continue; }
       const root = d.projectRoot(it.projectId);
       if (!root || !existsSync(root) || projectKeyOf(root) !== it.projectKey) { it.status = 'cancelled'; it.endedAt = now; it.note = 'папка проекта изменилась или пропала'; dirty = true; rep.skipped.push({ itemId: it.id, why: 'project-moved' }); continue; }
+      if (d.repoId && (st.projects[it.projectKey]?.repo ?? null) !== d.repoId(root)) {
+        delete st.projects[it.projectKey];
+        for (const x of st.items) if (x.projectKey === it.projectKey && x.status === 'approved') { x.status = 'cancelled'; x.endedAt = now; x.note = 'в папке другой репозиторий'; }
+        dirty = true; rep.skipped.push({ itemId: it.id, why: 'repo-changed' }); continue;
+      }
       const e = eligibility(toJob(it), { limits, queue: [], now });
       if (!e.ok) { rep.skipped.push({ itemId: it.id, why: (e as { why: Why }).why }); continue; }
-      const b = d.billing(it.agent);
+      const pc = d.projectCheck?.(root, it.agent);
+      if (pc) { rep.skipped.push({ itemId: it.id, why: 'project-settings', detail: pc }); continue; }
+      const b = d.billing(it.agent, root);
       if (!b.ok) { rep.skipped.push({ itemId: it.id, why: 'billing', ...(b.why ? { detail: b.why } : {}) }); continue; }
       const br = d.breaker(root);
       if (br) { rep.skipped.push({ itemId: it.id, why: 'breaker', detail: br }); continue; }
+      if (fileState(d.home, FILE) !== 'ok') { rep.skipped.push({ itemId: it.id, why: 'tamper' }); break; }   // checked again right before the start
       dirty = true;
       try {
         const r = d.start(toJob(it), root);
+        if (d.pid !== undefined) it.ownerPid = d.pid;
         it.status = 'started'; it.runId = r.runId; it.startedAt = now; st.starts.push(now);
         rep.started.push({ itemId: it.id, runId: r.runId });
       } catch (err) { it.status = 'failed-to-start'; it.endedAt = now; it.note = clip(oneLine((err as Error).message), 200); rep.skipped.push({ itemId: it.id, why: 'start-failed', detail: it.note }); }

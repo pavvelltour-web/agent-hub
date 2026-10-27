@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { pathKey } from '../lib/paths.ts';
 import { git } from './git.ts';
 import { RunManager } from './runner.ts';
-import { AutoScheduler, approveItem, loadAuto, setEnabled } from './autouse.ts';
+import { AutoScheduler, approveItem, loadAuto, repoIdOf, setEnabled } from './autouse.ts';
 import { realAutoDeps } from './autouse-wire.ts';
 import { addLimit, openDb, projectId } from '../history/store.ts';
 
@@ -34,8 +34,8 @@ function rig() {
 
 test('real effects: an approved review runs as a read-only review thread through the RunManager; an approved test job gets a worktree branch, not the main folder', async () => {
   const { runs, pid, sched, now } = rig();
-  setEnabled(home, repo, true, now);
-  approveItem(home, { id: 'auaaaaaaaa', kind: 'review-existing', projectId: pid, agent: 'codex', expectedPct: 3, writes: 'none' }, repo, now);
+  setEnabled(home, repo, true, now, { repoId: repoIdOf(repo) });
+  approveItem(home, { id: 'auaaaaaaaa', kind: 'review-existing', projectId: pid, agent: 'codex', expectedPct: 3, writes: 'none' }, repo, now, { repoId: repoIdOf(repo) });
   approveItem(home, { id: 'aubbbbbbbb', kind: 'missing-tests', projectId: pid, agent: 'codex', expectedPct: 3, writes: 'branch' }, repo, now);
   const first = sched.tick();
   assert.equal(first.started.length, 1);
@@ -56,10 +56,31 @@ test('real effects: an approved review runs as a read-only review thread through
 
 test('real effects: with the toggle off nothing is started even when an approval is on disk', async () => {
   const { runs, pid, sched, now } = rig();
-  setEnabled(home, repo, true, now);
+  setEnabled(home, repo, true, now, { repoId: repoIdOf(repo) });
   approveItem(home, { id: 'aucccccccc', kind: 'review-existing', projectId: pid, agent: 'codex', expectedPct: 3, writes: 'none' }, repo, now);
   setEnabled(home, repo, false, now);   // cancels it; and a hand-written "approved" row would still not run without the switch
   const before = runs.list().length;
   const rep = sched.tick();
   assert.equal(rep.started.length, 0); assert.equal(runs.list().length, before);
+});
+
+test('real git: the opt-in belongs to the repository: delete .git and make another repository at the same path, and the opt-in is dropped', async () => {
+  const { now } = rig();
+  const dir = join(base, 'swap'); mkdirSync(dir);
+  const init = (text: string): void => { git(dir, ['init', '-q', '-b', 'main']); writeFileSync(join(dir, 'a.txt'), text); git(dir, ['add', '-A']); git(dir, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', text]); };
+  init('one');
+  const a = repoIdOf(dir);
+  assert.match(a ?? '', /^[0-9a-f]{40}$/);
+  const db2 = openDb(':memory:'); const rm2 = new RunManager(db2, { exe: { claude: fakeExe, codex: fakeExe }, summarize: false, home, env: { ...process.env, FAKE_SCENARIO: 'claude-trace' } });
+  const p2 = projectId(db2, dir) as number;
+  addLimit(db2, { agent: 'codex', ts: new Date(now).toISOString(), windowMinutes: 10080, usedPercent: 30, resetsAt: Math.floor(now / 1000) + 5 * 3600, planType: null, source: 'manual' });
+  const s2 = new AutoScheduler(realAutoDeps({ db: db2, runs: rm2, auth: () => ({ loggedIn: true, how: 'ChatGPT' }), env: {} }));
+  setEnabled(home, dir, true, now, { repoId: a });
+  approveItem(home, { id: 'audddddddd', kind: 'review-existing', projectId: p2, agent: 'codex', expectedPct: 3, writes: 'none' }, dir, now, { repoId: a });
+  rmSync(join(dir, '.git'), { recursive: true, force: true }); rmSync(join(dir, 'a.txt'));
+  init('another repository');
+  assert.notEqual(repoIdOf(dir), a, 'a different first commit');
+  const rep = s2.tick();
+  assert.equal(rep.started.length, 0); assert.ok(rep.skipped.some((x) => x.why === 'repo-changed'));
+  assert.deepEqual(Object.keys(loadAuto(home).projects), []); assert.equal(rm2.list().length, 0);
 });
