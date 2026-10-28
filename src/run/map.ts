@@ -3,6 +3,7 @@ import { HANDOFF_AT } from '../econ/context.ts';
 import type { Db } from '../history/store.ts';
 import { redact } from '../lib/redact.ts';
 import { listCascades } from './cascade.ts';
+import { goalOf } from './goal.ts';
 import { REVIEWER_MODE } from './runner.ts';
 
 /**
@@ -29,13 +30,7 @@ const MAX_ROWS = 2000, DEFAULT_MAX = 300, GOAL_MAX = 200;
 
 interface Row { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sid: string | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; mode: string | null; parentRun: string | null; spawnReason: string | null }
 
-/** The user's own words: the mode rules block, a mode's prefix and a slash command the hub added are not part of the goal. Redacted, one line, clipped. */
-export function goalOf(prompt: string | null, prefixes: string[] = []): string {
-  let t = String(prompt ?? '').replace(/\[mode rules: [^\]\n]*\][\s\S]*?\[end mode rules\]\s*/g, '');
-  for (const p of prefixes) if (p) t = t.split(p).join('');
-  t = redact(t.replace(/^\s*\/(?:autopilot\s+\w+\s+\w+|grill-me)\s+/, '')).replace(/\s+/g, ' ').trim();
-  return t.length > GOAL_MAX ? `${t.slice(0, GOAL_MAX)}…` : t;
-}
+export { goalOf };
 
 const statusOf = (r: Row): MapNode['status'] => {
   if (r.endedAt == null) return 'running';

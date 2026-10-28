@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,4 +87,25 @@ test('asking the orchestrator about a native node sends the text to the run that
   const ok = await api('/api/map/message', { method: 'POST', body: { runId: 'rparent', about: 'sub:rparent:tk1', text: 'why did you stop?' }, click: true });
   assert.equal(ok.status, 200, JSON.stringify(ok.json));
   assert.match(ok.json.run.prompt, /^Regarding your sub-agent "tk1": why did you stop\?$/);
+});
+
+test('GET /api/journal previews what would be written into specs/; POST /api/journal/apply needs the click, the shown digest and writes only specs/<task>/steps.md', async () => {
+  const { appendStep } = await import('../run/journal.ts');
+  const home = runs.home;
+  appendStep(home, String(pid), 'T77', { at: new Date().toISOString(), kind: 'start', runId: 'r77', agent: 'claude', model: 'claude-sonnet-5-5', goal: 'Build the export' });
+  assert.equal((await api('/api/journal')).status, 400);
+  assert.equal((await api(`/api/journal?projectId=${pid}&task=../x`)).status, 400);
+  assert.equal((await api('/api/journal?projectId=999&task=T77')).status, 404);
+  const pv = (await api(`/api/journal?projectId=${pid}&task=T77`)).json;
+  assert.equal(pv.entries.length, 1); assert.match(pv.markdown, /^# Steps/); assert.equal(pv.plan.path, 'specs/T77/steps.md'); assert.equal(pv.plan.action, 'create'); assert.match(pv.plan.digest, /^[0-9a-f]{64}$/);
+  assert.equal(existsSync(join(root, 'specs')), false, 'the preview writes nothing');
+  const body = { projectId: pid, task: 'T77', digest: pv.plan.digest, approved: true };
+  assert.equal((await api('/api/journal/apply', { method: 'POST', body })).status, 403, 'a cookie alone is not enough');
+  assert.equal((await api('/api/journal/apply', { method: 'POST', body: { ...body, approved: false }, click: true })).status, 400);
+  assert.equal((await api('/api/journal/apply', { method: 'POST', body: { ...body, digest: 'f'.repeat(64) }, click: true })).status, 409, 'the journal changed since it was shown');
+  const ok = await api('/api/journal/apply', { method: 'POST', body, click: true });
+  assert.equal(ok.status, 200, JSON.stringify(ok.json)); assert.ok(ok.json.backupId);
+  assert.match(readFileSync(join(root, 'specs', 'T77', 'steps.md'), 'utf8'), /Build the export/);
+  appendStep(home, String(pid), 'T77', { at: new Date().toISOString(), kind: 'end', runId: 'r77', agent: 'claude', model: null, goal: 'Build the export', outcome: 'done' });
+  assert.equal((await api('/api/journal/apply', { method: 'POST', body, click: true })).status, 409, 'an old digest no longer applies');
 });

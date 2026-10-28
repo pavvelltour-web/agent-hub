@@ -19,6 +19,9 @@ import { sanitizeEvent } from '../adapters/event-utils.ts';
 import { CONTEXT_CHAIN_MAX, HANDOFF_AT, contextChainDepth, handoffMode, hubOwnsFolder } from '../econ/context.ts';
 import { costUsd as priceUsd, weighted } from '../econ/econ.ts';
 import { makeGuard, type RunGuard } from './breaker.ts';
+import { goalOf } from './goal.ts';
+import { appendStep, type JournalKind } from './journal.ts';
+import { isSafeName } from '../lib/paths.ts';
 
 export interface StartReq {
   agent: AgentId; prompt: string; projectRoot: string; task?: string; model?: string; effort?: string; permission?: Permission;
@@ -127,6 +130,7 @@ export class RunManager {
       this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type, permission, work_mode, base_sha, parent_run, spawn_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(id, projectId(this.db, req.projectRoot), req.agent, req.model || null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode, baseSha ?? null, req.parentRunId?.slice(0, 80) ?? null, req.spawnReason?.slice(0, 120) ?? null);
     });
+    this.step(req.parentRunId ? 'spawn' : req.handoffOf ? 'handoff' : 'start', id, undefined, req.parentRunId ? `${req.spawnReason ?? 'spawned'} for run ${req.parentRunId}` : undefined);
 
     // How many sessions of this chain were already stopped for context size (a fresh session after a context stop is `handoffOf` the stopped one).
     const ctxDepth = contextChainDepth((rid) => this.get(rid), req.handoffOf);
@@ -259,6 +263,7 @@ export class RunManager {
       lean?.cleanup();
       const outcome = limit ? 'limit' : ctxStop ? 'context' : guardStopped ? (guardNeutral ? 'guard-stop' : 'guard') : entry.stopped ? 'stopped' : events.some((e) => e.kind === 'error') || !events.some((e) => e.kind === 'done' && e.ok) ? 'failed' : branch ? 'review' : 'done';   // work on a task branch is not "done" until the review gate lets it through
       this.db.prepare('UPDATE run SET outcome = ?, ended_at = ? WHERE id = ?').run(outcome, new Date().toISOString(), id);
+      if (!req.parentRunId) this.step('end', id, outcome);
       // A reviewer has no work to hand over, and its projectRoot is the task folder: a card there would be committed into the branch.
       if (outcome === 'limit' && limit && reviewer) emit({ kind: 'warn', message: 'reviewer stopped on a usage limit: no handoff card (the review round fails and can be run again)' });
       else if (outcome === 'limit' && limit) await handover('limit_reached', limit.resetsAt);
@@ -293,7 +298,17 @@ export class RunManager {
   }
 
   /** Record what the verify command said about a run: true = passed (1), false = failed (0). NULL (never set) means none ran. Quality scoring reads it (econ `runScore`). */
-  setVerified(id: string, passed: boolean): void { this.db.prepare('UPDATE run SET verify_passed = ? WHERE id = ?').run(passed ? 1 : 0, id); }
+  setVerified(id: string, passed: boolean): void { this.db.prepare('UPDATE run SET verify_passed = ? WHERE id = ?').run(passed ? 1 : 0, id); this.step('verify', id, passed ? 'passed' : 'failed'); }
+
+  /** One line in the step journal (ADR-027): a task of a hub branch is journaled under that task, anything else under `chat`. The journal never breaks a run. */
+  private step(kind: JournalKind, id: string, outcome?: string, goal?: string): void {
+    try {
+      const r = this.get(id);
+      if (!r || r.projectId == null) return;
+      const task = r.branch?.match(/^hub\/([^/]+)\//)?.[1] ?? 'chat';
+      appendStep(this.home, String(r.projectId), isSafeName(task) ? task : 'chat', { at: new Date().toISOString(), kind, runId: id, agent: r.agent, model: r.model, goal: goal ?? goalOf(r.prompt), ...(outcome ? { outcome } : {}) });
+    } catch { /* a journal that cannot be written must never stop a run */ }
+  }
 
   stop(id: string): boolean {
     const r = this.live.get(id);

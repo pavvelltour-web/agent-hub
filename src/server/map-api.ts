@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
+import { relative } from 'node:path';
 import { graphStatus } from '../core/graph.ts';
+import { applyPlan } from '../core/plan.ts';
 import type { AgentId } from '../core/types.ts';
+import { isSafeName } from '../lib/paths.ts';
+import { planJournalWrite, readJournal, renderSteps } from '../run/journal.ts';
 import { buildFullMap } from '../run/map.ts';
 import { REVIEWER_MODE } from '../run/runner.ts';
 import type { Ctx, Handler, Res } from './api.ts';
@@ -54,4 +59,30 @@ export const mapRoutes: [string, RegExp, Handler][] = [
     if (!root) return bad(400, 'the run has no project folder');
     try { return ok({ run: c.runs.start({ agent: run.agent as AgentId, prompt, projectRoot: root, resumeRunId: runId }) }); } catch (e) { return bad(400, (e as Error).message); }
   }],
+
+  // The step journal: a preview of what would be written into the project's specs/, and the approved write (digest of the shown text, backup and undo as for any plan).
+  ['GET', /^\/api\/journal$/, (c: Ctx, { q }) => {
+    const found = journalTarget(c, q.get('projectId'), q.get('task'));
+    if ('error' in found) return found.error;
+    const j = readJournal(c.runs.home, String(found.id), found.task);
+    const plan = planJournalWrite(found.root, found.task, j.entries), ch = plan.changes[0];
+    return ok({ entries: j.entries, truncated: j.truncated, markdown: renderSteps(j.entries), plan: ch ? { path: relative(found.root, ch.path).replace(/\\/g, '/'), action: ch.action, digest: digestOf(ch.after) } : null });
+  }],
+  ['POST', /^\/api\/journal\/apply$/, (c: Ctx, { body, meta }) => {
+    if (!meta?.userAction) return needClick;
+    if (body['approved'] !== true) return bad(400, 'approve needs approved: true');
+    const found = journalTarget(c, typeof body['projectId'] === 'number' ? String(body['projectId']) : null, typeof body['task'] === 'string' ? body['task'] : null);
+    if ('error' in found) return found.error;
+    const plan = planJournalWrite(found.root, found.task, readJournal(c.runs.home, String(found.id), found.task).entries);
+    if (typeof body['digest'] !== 'string' || body['digest'] !== digestOf(plan.changes[0]?.after ?? '')) return bad(409, 'the journal changed since you looked at it; review it again');
+    try { const r = applyPlan(plan, { approved: true }); return ok({ written: r.written.map((w) => relative(found.root, w).replace(/\\/g, '/')), backupId: r.backupId }); } catch (e) { return bad(400, (e as Error).message); }
+  }],
 ];
+
+const digestOf = (text: string): string => createHash('sha256').update(text).digest('hex');
+function journalTarget(c: Ctx, pq: string | null, task: string | null): { id: number; root: string; task: string } | { error: Res } {
+  if (!pq || !/^\d+$/.test(pq)) return { error: bad(400, 'projectId required') };
+  if (!task || !isSafeName(task)) return { error: bad(400, 'task: letters, digits, dot, dash, underscore') };
+  const p = c.db.prepare('SELECT root FROM project WHERE id = ?').get(Number(pq)) as { root: string } | undefined;
+  return p ? { id: Number(pq), root: p.root, task } : { error: bad(404, 'project not found') };
+}
