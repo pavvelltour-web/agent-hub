@@ -34,17 +34,23 @@ The common thread: a person running several agents cannot see **who is doing wha
 
 ## What "interact" can mean
 
+**[user]** (2026-10-28, second message): sub-agents are shown separately, and so are background processes and the like. So the map has distinct node kinds, each drawn differently:
+
 | Node kind | Source | Observe | Message it | Stop it |
 |---|---|---|---|---|
 | **Hub-owned run** (cascade rung, review reviewer, handoff continuation, chat or task run) | `run` table | yes, live | **yes**: a follow-up message resumes that run's own session (same agent), existing `resume` path | yes (existing stop) |
 | **Native sub-agent** (a Task call inside a run) | events of the parent run | yes, read-only | **no, not directly**: the CLI gives no channel to a running sub-agent. The drawer offers "ask the orchestrator about this", which sends a message into the parent run that names the sub-agent | only by stopping the parent |
+| **Background process of an agent** (a shell the agent started with `run_in_background`, and its output reads) | tool events of the parent run **[inferred]**: the `tool` event carries the input; the real shape was never seen on a signed-in CLI | status and output so far | no | read-only; "ask the orchestrator to stop it" |
+| **Hub background job** (graph update, scheduler job of the leftover-limit feature) | hub's own state (`src/core/graph.ts`, the scheduler's state file) | yes | no | yes, through the existing controls (single-flight graph update, switch-off and cancel of a scheduled item) |
+| **MCP server started for a run** | the run's lean tool plan (ADR-020) | which servers, from the plan | no | stops with the run |
 
 **[call]** I will not pretend a direct channel exists for native sub-agents. This is the one point most likely to differ from what the user pictured.
 
 ## The Map
 
 - **[call]** Layout: top-down tree drawn as SVG in the existing panel (plain ES modules, `h()` DOM builder, no library, ADR-010/012). Orchestrator = the root run of a task chain; children placed by `handoff_of`, `resume_of`, cascade rung order and review round; native sub-agents attached to the run that called them.
-- Edge label = the reason: `escalation after failed verify`, `review hunter`, `review verifier`, `handoff: limit`, `handoff: context 250K`, `native sub-agent`.
+- Edge label = the reason: `escalation after failed verify`, `review hunter`, `review verifier`, `handoff: limit`, `handoff: context 250K`, `native sub-agent`, `background shell`, `hub job`.
+- Kinds look different (shape and glyph, not only colour): orchestrator and hub runs are rounded cards; native sub-agents are smaller cards on a dashed edge; background processes and hub jobs are pill-shaped with a spinner glyph while running; MCP servers sit in a row under their run.
 - Node shows: agent glyph, model, effort, status chip, a context bar (used / limit, from `turn` rows), cost, one-line goal.
 - **Animations [call]:** a moving dash on the edge of a live run; a soft pulse on a running node; a short settle when a node finishes; green/red state change. All CSS, tokens from `design/tokens.css`, and `prefers-reduced-motion` turns them off. Verified in all four themes and at 375 px (AGENTS.md rule).
 - Live updates reuse the existing SSE stream; the map polls the tree endpoint only when no run is live.
@@ -55,6 +61,17 @@ The common thread: a person running several agents cannot see **who is doing wha
 - **[call]** An append-only journal per task in the hub data folder (`journal/<project>/<task>.jsonl`): time, step kind, run id, agent, model, goal line, outcome, links to the log. Redacted with the existing redactor; bounded size.
 - A rendered `steps.md` preview in the panel. **"Write into the project"** produces a plan for `specs/<task>/steps.md` (and, when a task finishes, proposed edits to STATUS and the ADR index) that the user approves as for any write into a project. The hub never edits docs by itself.
 - **[call]** "Full development cycle" is the existing pieces on one lane, not a new engine: Interview mode → plan → Task mode in a worktree → review gate → docs plan → retro stage.
+
+## Teaching: rules by mode, skills by mode
+
+**[user]** (2026-10-28): "teaching agents" means the rules that depend on the mode, and the skills.
+
+Today (observed in `rules/`, `src/core/compilers.ts`, `modes/*.json`, ADR-020):
+- Rules are **one `AGENTS.md` per project type** (`rules/base.md` plus `web-saas`, `mobile-app`, `automation` or `design-study`), written once and never overwritten. They do **not** depend on the mode.
+- Skills **do** depend on the mode (`skills` in each mode file: none, a list, or `["*"]`; Interview adds `grill-me` if installed). For Claude this is enforced with flags; for Codex it is **not** (no verified setting).
+- A mode adds rules only through a short `promptPrefix` (Interview and Review have one).
+
+**[call]** Proposal: each mode gets a rules file `rules/modes/<mode>.md` (English), sent as a prefix of that run's prompt, **not** written into the project's `AGENTS.md` (that file's edits clear the prompt cache for every later session). The prefix is built in one place and recorded on the node, so the drawer shows exactly what this agent was taught: the rules files and the skills loaded for the run, with their token cost where the hub already estimates it. A test pins, per mode, which rules and skills a run receives. For Codex the drawer says "skills not restricted by the hub" until a setting is verified.
 
 ## English-only agent-facing text
 
@@ -75,4 +92,5 @@ Tests first (red, then green): tree builder from `run` rows including cascade, r
 1. **[open] Scope of this round.** Stage 1 only (everything above), or also Stage 2 (the hub spawns workers)? Recommended: Stage 1 now.
 2. **[open] Where may the journal be written?** Hub data folder plus an approved write into the project's `specs/` (recommended), or hub data only.
 3. **[open] "Strictly English".** Agent-facing text only (recommended), or the whole panel UI too.
-4. **[open] "Teaching agents".** I read it as the rules, starter skills, mode prompts and `REVIEW.md` the agents receive, plus the router's calibration from your history. If you meant something else (for example a tutorial for you), say so.
+4. ~~"Teaching agents"~~ **answered by the user:** rules by mode, and skills (see "Teaching").
+5. **[open] Mode rules: new content.** The rules text for each of the five modes does not exist yet. **[call]** I draft short English files from the mode hints and prompt prefixes already in `modes/*.json`; you review the wording before they ship.
