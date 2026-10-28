@@ -1,6 +1,10 @@
-# Not active until the repository is published (agreed: together, after v0.1 review).
+# Runs on pull requests and by hand (Actions -> ci -> Run workflow), not on every push: the whole suite in one command takes
+# over 10 minutes on a loaded machine and has never been run on GitHub's runners yet (docs/PIPELINES-REVIEW.md, F1).
+# Proposed next step: one job per folder of src/ (that is how it was made reliable locally), then trigger on push again.
 name: ci
-on: [push, pull_request]
+on:
+  pull_request:
+  workflow_dispatch:
 jobs:
   test:
     runs-on: windows-latest
