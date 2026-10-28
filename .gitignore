@@ -6,3 +6,9 @@ design/prototypes/captures/iter*/
 .hub/runs/
 *.log
 dist/
+
+# local data of this machine (hub database, archives): never published
+/_local/
+.hub/handoffs/
+.hub/security/report-*.json
+graphify-out/20??-??-??/

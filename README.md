@@ -1,115 +1,277 @@
 # Agent Hub
 
-One local hub for coding agents. Shared skills, rules and MCP for **Claude Code** and **Codex**; a chat and task runner for any of them; a **handoff card** so work continues on another agent when one hits its limit; unified history, cost advice and a lifecycle for every project.
+**Один локальный центр для кодовых агентов (Claude Code, Codex).** Общие навыки, правила и MCP для обоих; чат и запуск задач; **карточка передачи**, чтобы работа продолжилась на другом агенте, когда у первого кончился лимит; единая история; советы по моделям с учётом цены; обязательное ревью всего, что агенты написали.
 
-> Status: **v0.2 (branch `v0.2/p-pr-review`) — working locally; the real Claude and Codex CLIs have not driven the new v0.2 parts end to end.** [docs/STATUS.md](docs/STATUS.md) says per requirement what was observed (ran or saw it), what is only inferred and what is not verified. Decisions: [docs/adr/README.md](docs/adr/README.md).
+*English, short:* a local-first hub (CLI + panel on `127.0.0.1`) that unifies skills, rules and MCP across Claude Code and Codex, runs agents on tasks in git worktrees, hands work over when a limit is hit, imports both agents' history read-only into one searchable index, advises models by cost and quality, and puts every agent branch through a review gate that only a human can approve. Windows first, Node 24, zero runtime dependencies. Not published to npm: run from a clone.
 
-## What it does
+> **Статус: v0.2, ветка `v0.2/p-pr-review`.** Всё собрано и проверено тестами с поддельными агентами. **Реальные Claude и Codex не прогонялись по новым частям v0.2 от начала до конца** (CLI Claude на машине автора не залогинен). Что наблюдалось, что только выведено и что не проверено, написано по каждому пункту в [docs/STATUS.md](docs/STATUS.md). Решения: [docs/adr/README.md](docs/adr/README.md).
 
-| Area | What you get |
+---
+
+## Как это выглядит
+
+Панель работает на `127.0.0.1`, четыре темы (тёмная/светлая × зелёный/оранжевый акцент), есть мобильная ширина. Снимки сделаны на демо-сервере с поддельными агентами и пустым профилем (`hub ui --demo`): ни лимиты, ни реальные проекты не затронуты.
+
+| «Сегодня»: где работаем, кто, как, что делать | «Сегодня», светлая тема, оранжевый акцент |
 |---|---|
-| **Library** | One catalog of skills / MCP. `hub init` shows a plan (every file, as a diff) and writes nothing until you confirm; backups + `hub undo`. Same skills and `AGENTS.md` rules for Claude and Codex; MCP written to `.mcp.json` and `.codex/config.toml`. |
-| **Chat & tasks** | Chat with any agent inside the panel (like Claude Code / Codex), or run a task in its own git worktree. Live stream, tool calls, full event log. |
-| **Handoff** | Agent stops on a limit → hub commits a checkpoint on its own `hub/<task>/<agent>` branch, writes a card (facts from git + logs, not from model memory) → one click continues on the other agent in the same folder. |
-| **History** | Claude (`~/.claude`) and Codex (`~/.codex`) sessions imported read-only into one searchable index (8.5 GB of Codex logs in ~18 s, instant re-sync). Secrets are redacted before indexing. |
-| **Models & limits** | Weekly limit from Codex logs, manual entry for Claude, measured token profiles from your own history, API-equivalent cost (Claude prices verified, unknown prices stay *unknown*), advice with the rule that produced it. |
-| **Lifecycle** | 8 stages with gates (context → clarify → toolkit → architecture → rules → plan → execute → retro). A stage closes only when its output files exist and you approve. |
-| **Panel** | Projects, chat, tasks, history, library, models, logs, settings. Dark/light × green/orange. Localhost only. |
-| **Review gate (v0.2)** | Every agent branch goes through checks you approved (digest-pinned) and independent reviewers; only a human approval counts. `hub review-eval` measures reviewer recall and noise. ADR-019. |
-| **Routing & cascade (v0.2)** | Model and effort chosen by task type with sourced priors; optional verify-and-escalate cascade; editable price table. ADR-017. |
-| **Token economy (v0.2)** | Lean per-mode tool sets, context rules, fresh session from the handoff card past 250K tokens, project graph. ADR-018, 020, 021. |
-| **Observability (v0.2)** | Per-call run trace, live context gauge, project forecast, opt-in use of the leftover limit before reset, circuit breaker for runaway runs (on by default). ADR-024…026. |
-| **Starter kit & templates (v0.2)** | First-run wizard; `hub new <type> <folder>`. Everything is shown as a plan first. ADR-022, 023. |
+| ![Сегодня, тёмная тема](docs/screenshots/today-dark-green.png) | ![Сегодня, светлая тема](docs/screenshots/today-light-orange.png) |
+
+| «Модели и лимиты» | «Инструменты»: навыки, плагины, MCP и их цена в токенах |
+|---|---|
+| ![Модели](docs/screenshots/models-dark-green.png) | ![Инструменты](docs/screenshots/library-dark-green.png) |
+
+| Узкий экран (≈ 375–500 px) |
+|---|
+| <img src="docs/screenshots/today-mobile-375.png" alt="Мобильная ширина" width="320"> |
+
+---
+
+## Что умеет
+
+| Область | Что получаете |
+|---|---|
+| **Библиотека** | Каталог навыков и MCP. `hub init` сначала показывает план (каждый файл как diff) и ничего не пишет без подтверждения; бэкапы и `hub undo`. Одни и те же навыки и правила `AGENTS.md` для Claude и Codex; MCP пишется в `.mcp.json` и `.codex/config.toml`. |
+| **Чат и задачи** | Чат с любым агентом в панели или задача в отдельном git worktree. Живой поток событий, вызовы инструментов, полный журнал. |
+| **Передача при лимите** | Агент упёрся в лимит → hub делает контрольный коммит на своей ветке `hub/<задача>/<агент>`, пишет карточку (факты из git и логов, не из памяти модели) → один клик продолжает на другом агенте в той же папке. |
+| **История** | Сессии Claude (`~/.claude`) и Codex (`~/.codex`) импортируются **только на чтение** в один поисковый индекс. Секреты вычищаются до индексации. |
+| **Модели и лимиты** | Недельный лимит Codex из логов, ручной ввод для Claude, профили токенов из вашей же истории, стоимость в API-эквиваленте (неизвестная цена остаётся «неизвестной»), совет с указанием правила. |
+| **Этапы проекта** | 8 этапов с воротами; этап закрывается, только когда есть его файлы и вы подтвердили. |
+| **Ревью-ворота (v0.2)** | Каждая ветка агента проходит проверки, которые вы одобрили (по хэшу), и независимых ревьюеров. Засчитывается только одобрение человека. ADR-019. |
+| **Маршрутизация и каскад (v0.2)** | Модель и усилие выбираются по типу задачи; необязательный каскад «проверить и подняться»; редактируемая таблица цен. ADR-017. |
+| **Экономия токенов (v0.2)** | Узкие наборы инструментов по режиму работы, правила контекста, свежая сессия по карточке после 250K токенов, граф проекта. ADR-018, 020, 021. |
+| **Наблюдаемость (v0.2)** | Трасса по вызовам, живой индикатор контекста, прогноз по проекту, необязательное использование остатка лимита до сброса, предохранитель для «разбежавшихся» запусков (включён по умолчанию). ADR-024–026. |
+| **Стартовый набор и шаблоны (v0.2)** | Мастер первого запуска; `hub new <тип> <папка>`. Всё сначала показывается планом. ADR-022, 023. |
+
+---
+
+## Как устроено
+
+### Модули
+
+Схема сгенерирована из кода командой `node bin/hub.js diagram arch --format mermaid`; `hub diagram --check` ловит расхождение со структурой.
+
+```mermaid
+flowchart LR
+  cli["hub CLI"]
+  server["Сервер + панель (127.0.0.1)"]
+  core["Ядро: реестр · lock · компиляторы · скаут · загрузка инструментов · init/undo"]
+  stages["Этапы проекта и ворота"]
+  econ["Экономика и советчик"]
+  run["Запуск: worktree · раннер · карточка передачи"]
+  bench["Замер: golden-задачи и цена решённой задачи"]
+  review["Ревью-ворота: проверка и находки"]
+  adapters["Адаптеры агентов (claude, codex)"]
+  history["Журнал: импорт, индекс, поиск (SQLite)"]
+  diagram["Схемы (этот вывод)"]
+  lib["Общее: пути, секреты, хэш, JSONL"]
+  cli --> core
+  cli --> bench
+  server --> core
+  core --> adapters
+  core --> history
+  core --> econ
+  core --> stages
+  run --> adapters
+  run --> history
+  bench --> run
+  bench --> econ
+  review --> history
+  review --> econ
+```
+
+### Этапы проекта
+
+```mermaid
+flowchart LR
+  s1["Идея и контекст"] --> s2["Вопросы к вам"] --> s3["Подбор инструментов"] --> s4["Архитектура"]
+  s4 --> s5["Правила для агентов"] --> s6["План и расход"] --> s7["Работа"] --> s8["Итоги"]
+```
+
+### Передача работы, когда кончился лимит
+
+```mermaid
+flowchart TB
+  A["Задача: hub run … --task T --worktree"] --> B["Агент A работает в worktree<br/>на ветке hub/T/A"]
+  B -->|лимит| C["Контрольный коммит на ветке hub/*<br/>(ваша рабочая папка не трогается)"]
+  C --> D["Карточка передачи:<br/>факты из git и логов + краткий рассказ"]
+  D --> E["Один клик: продолжить на агенте B<br/>в той же папке"]
+  B -->|успех| F["Ветка уходит на ревью-ворота"]
+  E --> F
+```
+
+### Ревью-ворота (ADR-019)
+
+```mermaid
+flowchart LR
+  B["Ветка агента"] --> P["План проверок<br/>(команды и их хэш)"]
+  P -->|вы одобрили этот хэш| G["Проверки в чистой копии коммита"]
+  P -->|не одобрено| X["Стоп: ничего не запускается"]
+  G -->|красные| R["Назад исполнителю как есть"]
+  G -->|зелёные| H["Ревьюеры (охотники за ошибками)"]
+  H --> V["Верификаторы голосуют по каждой находке"]
+  V --> M["Решение человека: только оно засчитывается"]
+```
+
+### Каскад «проверить и подняться» (ADR-017, по желанию)
+
+```mermaid
+flowchart LR
+  T["Задача + команда проверки<br/>(одобрена по хэшу)"] --> S1["Ступень 1: исполнитель"]
+  S1 --> C1{"проверка зелёная?"}
+  C1 -->|да| OK["Решено"]
+  C1 -->|нет| S2["Следующая ступень<br/>(сильнее модель или усилие)"]
+  S2 --> C2{"проверка зелёная?"}
+  C2 -->|да| OK
+  C2 -->|нет| S3["…до последней ступени и карточка передачи"]
+```
+
+> Сколько ступеней и какие модели на них — в `src/run/cascade.ts` и ADR-017; на схеме показан принцип. Реальные модели этот каскад пока не прогоняли (только поддельный агент).
+
+---
+
+## Подключение: что и куда hub пишет и откуда читает
+
+```mermaid
+flowchart LR
+  subgraph hub["Hub (ваша копия репозитория и ~/.agent-hub)"]
+    Lib["Библиотека hub:<br/>навыки, MCP"]
+  end
+  subgraph proj["Ваш проект"]
+    ClaudeSide["Claude: ссылки на навыки,<br/>.mcp.json, CLAUDE.md → AGENTS.md"]
+    CodexSide["Codex: .codex/config.toml<br/>(блок-маркер), AGENTS.md"]
+    Lock["hub.lock.json"]
+  end
+  subgraph foreign["Чужое хранилище (только чтение)"]
+    CH["~/.claude"]
+    XH["~/.codex"]
+  end
+  Lib -- "hub init: план → подтверждение → бэкап" --> ClaudeSide
+  Lib -- "hub init" --> CodexSide
+  Lib --> Lock
+  CH -. импорт истории .-> DB[("Индекс SQLite<br/>~/.agent-hub")]
+  XH -. импорт истории .-> DB
+```
+
+| Что | Где | Как |
+|---|---|---|
+| Навыки | в проект как ссылка (junction), при невозможности копия (запоминается) | только после плана и вашего подтверждения |
+| Правила | `AGENTS.md`; в `CLAUDE.md` указатель на него | существующие файлы не перезаписываются |
+| MCP | `.mcp.json` (Claude) и блок-маркер в `.codex/config.toml` (Codex) | `hub mcp test` делает настоящее рукопожатие; сторонние команды запускает только с `--yes` |
+| Воспроизводимость | `hub.lock.json` | `hub install` после `git clone` восстановит ссылки и MCP; источник с изменившимся хэшем отклоняется |
+| История | читается из `~/.claude` и `~/.codex` | **только чтение**; файлы с учётными данными не открываются |
+| Данные hub | `~/.agent-hub` (SQLite — перестраиваемый индекс) | другая папка: переменная окружения `AGENT_HUB_HOME` |
+| Пуш | агентам запрещён `git push` | блокирующий хук подставляется через окружение, в ваш git-конфиг ничего не пишется |
+
+### Войти в агентов
+
+- **Claude Code:** запустите `claude` в терминале и выполните `/login` (вход в Claude Desktop отдельный и CLI не помогает).
+- **Codex:** `codex login`.
+- Без входа hub работает (библиотека, история, панель, демо), но реальные запуски агентов скажут «войдите» понятным сообщением, а не упадут.
+
+---
 
 ## Быстрый старт (Windows)
 
-Пакет **не опубликован** (`private: true`): запуск идёт из папки проекта. Сначала проверка, она только читает и ничего не меняет:
+Требования: **Node.js 24+** (встроенные `node:sqlite` и запуск TypeScript), **Git**. Желательно: `claude` и/или `codex`. Пакет **не опубликован** (`private: true`): запуск из клона.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1   # Node 24+, Git, найденные claude/codex; печатает следующие команды
-npm install                                         # только TypeScript для разработки; зависимостей в рантайме нет
-node bin/hub.js ui                                  # панель на 127.0.0.1 (одноразовая ссылка); при первом запуске откроется мастер
+git clone https://github.com/pavvelltour-web/agent-hub.git
+cd agent-hub
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1   # только читает: Node, Git, найденные claude/codex; печатает следующие команды
+npm install                       # только TypeScript для разработки; зависимостей времени выполнения нет
+node bin/hub.js doctor            # что установлено
+node bin/hub.js ui                # панель на 127.0.0.1 (печатает ссылку с одноразовым токеном)
 ```
 
-- `-ExecutionPolicy Bypass` действует только на этот один запуск PowerShell и ничего не меняет в настройках компьютера. `scripts/install.ps1` ничего не скачивает и не ставит, не пишет файлов, не трогает политику выполнения, PATH и реестр; он не обязателен: достаточно `node bin/hub.js doctor`.
-- Мастер первого запуска предлагает короткий набор навыков (ADR-022) и шаблоны проектов (`hub new <тип> <папка>`, ADR-023). Всё показывается планом и ставится только после вашего подтверждения.
-- Режимы работы: «Интервью» подключает навык `grill-me`, если он лежит в ваших навыках Claude или подключён из библиотеки hub (папка самого проекта не считается; иначе идёт без него и пишет об этом; с `grill-me` загружаются все навыки, это стоит токенов); «Автопилот» требует навык `autopilot` и без него отказывает с точной командой; «Ревью» читает только; если агент не назван, ревьюит Codex (когда вы вошли и лимит не исчерпан), иначе Opus, а при известном авторе правки берётся другой вендор.
+- `-ExecutionPolicy Bypass` действует только на этот один запуск PowerShell. `scripts/install.ps1` ничего не скачивает и не ставит, не пишет файлов и не трогает PATH и реестр; он необязателен.
+- Попробовать без расхода лимитов: `node bin/hub.js ui --demo` (поддельные агенты; напишите в сообщении «лимит», чтобы увидеть остановку и передачу).
+- Мастер первого запуска предлагает короткий стартовый набор навыков и шаблоны проектов; всё показывается планом и ставится после вашего подтверждения.
 
-**Не проверено:** macOS и Linux; Safari; вход в реальные аккаунты Claude и Codex и реальный расход лимитов; установка из опубликованного пакета (его нет); `scripts/install.ps1` проверен в Windows PowerShell 5.1 на одном компьютере, PowerShell 7 и Windows 10 не проверялись; сборка `dist/` и её запуск вне исходной папки целиком не проверялись.
+**Не проверено:** macOS и Linux; Safari; вход в реальные аккаунты и расход лимитов; установка из опубликованного пакета (его нет); `install.ps1` проверен только в Windows PowerShell 5.1 на одном компьютере.
 
-## Requirements
+---
 
-- Node.js **24+** (uses built-in `node:sqlite` and TypeScript type stripping), Git.
-- Optional: `claude` and/or `codex` CLIs. `claude` must be logged in **in a terminal** (Claude Desktop logs in separately): run `claude`, then `/login`.
-- Windows 11 is the primary platform (junction links, `\\?\` paths handled). macOS/Linux are untested.
+## Команды
 
-## Quick start
-
-```bash
-npm install                       # dev tools only (TypeScript); zero runtime dependencies
-node bin/hub.js doctor            # what is installed
-node bin/hub.js ui                # panel on 127.0.0.1 (prints a one-time link)
-node bin/hub.js ui --demo         # same, with scripted fake agents: spends no limits
+```text
+Проект
+  hub init [path] [--type web-saas|mobile-app|automation|design-study] [--add id,id] [--remove skill/x] [--yes]
+  hub new <тип> <папка> [--yes]            новый проект из шаблона (только в новой или пустой папке)
+  hub undo [path] [backupId]               вернуть файлы из бэкапа
+  hub stage [path] [approve N]             этапы и ворота
+  hub scout [path] --brief "текст"         предложить навыки/MCP (никогда не ставит)
+  hub get aitmpl/skills/<кат>/<имя>        взять навык в библиотеку после полного просмотра (0 токенов, пока не подключён)
+  hub install [path] [--yes]               восстановить ссылки/MCP из hub.lock.json
+  hub tools [path]                         что грузится в каждый ход проекта и сколько стоит
+  hub profile [path] --off a,b             убрать лишнее только для этого проекта
+  hub config [list|add-skill-root <dir>]   дополнительные папки со своими навыками
+  hub mcp add <id> | hub mcp test          добавить MCP / проверить рукопожатием
+  hub open <claude|codex> [path]           родной интерфейс агента в папке проекта (push заблокирован)
+  hub hooks <hooks.json> [--adopt]         хуки плагина Claude для любого агента (после одобрения)
+Работа
+  hub chat [path] [--agent auto|claude|codex]
+  hub run "промпт" [path] --agent … --class implement|plan|debug|review|mechanical|summary [--task T016 --worktree]
+  hub estimate --class implement           диапазон стоимости/лимита и совет по модели
+  hub bench [--dry]                        golden-задачи: решено и цена решённой
+История
+  hub sync                                 импорт истории Claude + Codex (только чтение)
+  hub history "запрос" [--agent …]         полнотекстовый поиск по обоим агентам
+  hub sessions [--project slug]
+Панель и проверки
+  hub ui [--port N] [--no-open] [--demo]   локальная панель на 127.0.0.1
+  hub diagram <arch|data|stages|routing|project|handoff> [--format ascii|mermaid|json] [--check|--write]
+  hub review-eval [--dry]                  качество ревьюеров на эталонных случаях
+  hub doctor [--modes]                     проверка окружения; --modes измеряет режимы прав
+  hub security                             проверки зависимостей, секретов и опасных шаблонов
 ```
 
-Handy commands:
+---
 
-```bash
-hub init [path] --type web-saas   # dry run; add --yes to apply
-hub new web-saas ./my-site         # new project from a template (new or empty folder only); add --yes to apply
-hub chat [path] --agent auto      # terminal chat
-hub run "prompt" [path] --agent codex --task T016 --worktree
-hub install [path]                # after git clone: re-create links/MCP from hub.lock.json
-hub tools [path]                  # what loads into every turn (skills, plugins, MCP) and what it costs
-hub profile --off a,b --plugin-off id   # trim that for this project only
-hub get aitmpl/skills/<cat>/<name>      # fetch into the hub library after a full preview (0 tokens until linked)
-hub scout --source aitmpl --brief "browser tests"   # proposals from outside catalogs (never installs)
-hub hooks hooks.json --adopt      # run a Claude plugin's simple hooks from the hub, for any agent
-hub config add-skill-root <dir>   # extra folder with your own skills
-hub mcp test [path]               # MCP handshake (starts servers only with --yes)
-hub open claude [path]            # native Claude/Codex UI in the project folder
-hub sync && hub history "handoff" # import + search all sessions
-hub estimate --class implement    # cost / limit range and the model advice
-hub diagram routing --format mermaid
-hub security                      # dependency, secret and code-pattern checks
-hub bench --dry                   # golden tasks: solved count and cost per solved task (lists the tasks only with --dry)
-hub review-eval --dry             # reviewer quality cases: recall, noise (real reviewers need a signed-in CLI)
-hub doctor --modes                # what each permission mode allows (short real runs)
-hub stage . approve 1             # lifecycle stages and gates
+## Безопасность
+
+- Сервер слушает только `127.0.0.1`; одноразовый токен в cookie `HttpOnly; SameSite=Strict`; проверки `Host` и `Origin`; запись только JSON; CSP.
+- Чужие хранилища (`~/.claude`, `~/.codex`) только на чтение; файлы с учётными данными не открываются.
+- Любая запись в проект — план, который вы подтверждаете, с бэкапом и откатом. Агенты не могут сделать `git push`.
+- Текст реестров и сторонних источников — данные, не инструкции. hub коммитит только на созданных им ветках `hub/*`, никогда в вашу рабочую копию.
+- Проверки ревью и команда каскада запускаются только после одобрения именно этого хэша списка, и в чистой копии коммита из сырых git-объектов.
+
+Подробности: [docs/SECURITY.md](docs/SECURITY.md).
+
+---
+
+## Структура репозитория
+
+```text
+bin/hub.js        точка входа (dist/, если собран, иначе исходники TypeScript)
+src/              core · history · adapters · run · econ · stages · diagram · server · cli · lib · review · bench
+web/              панель: ES-модули без сборки, локальные шрифты
+design/           themes.json → tokens.css (4 темы), DESIGN-SYSTEM.md
+registry/ packs/ modes/ rules/ templates/ stages/   каталог, пресеты, режимы, правила, шаблоны, этапы
+eval/             эталонные случаи для ревьюеров
+scripts/          install.ps1 (только чтение), security.mjs
+docs/             PLAN, ARCHITECTURE, DATA-MODEL, SECURITY, STATUS, adr/, generated/ (схемы)
+graphify-out/     граф проекта (карта кода для агентов)
+AGENTS.md         правила для агентов, работающих в этом репозитории
 ```
 
-## Safety model
+---
 
-- Server binds `127.0.0.1` only; one-time token in an `HttpOnly; SameSite=Strict` cookie; `Host` and `Origin` checks; JSON-only writes; CSP.
-- Foreign stores (`~/.claude`, `~/.codex`) are read-only; credential files are never opened.
-- Every write into a project is a plan you confirm, with backup and undo. Agents cannot `git push` (a blocking hook is injected through environment, nothing is written to your git config).
-- Registry/third-party text is data, never instructions. The hub never commits in your own working tree; it commits only on `hub/*` branches it created.
+## Разработка и проверка
 
-Details: [docs/SECURITY.md](docs/SECURITY.md).
-
-## Layout
-
-```
-bin/hub.js        entry (dist/ if built, else TypeScript source)
-src/              core · history · adapters · run · econ · stages · diagram · server · cli · lib
-web/              the panel (ES modules, no build step, local fonts)
-design/           themes.json → tokens.css (4 themes), DESIGN-SYSTEM.md, build-tokens.mjs
-registry/ packs/ stages/   catalog entries, project-type presets, lifecycle stages
-docs/             PLAN, ARCHITECTURE, DATA-MODEL, SECURITY, STATUS, ADRs, generated diagrams
+```powershell
+npm run typecheck   # tsc --noEmit, строгий режим
+npm run security    # зависимости, секреты, опасные шаблоны, содержимое пакета (17 проверок)
+node bin/hub.js diagram --check
+# тесты: node:test; весь набор одной командой идёт больше 10 минут, поэтому по папкам:
+node --disable-warning=ExperimentalWarning --test "src/server/**/*.test.ts"
 ```
 
-## Development
+Состояние на 2026-10-28 (**observed**, по папкам): 731 тест зелёный, `tsc` чисто, security 17/17, схемы актуальны. Правила для агентов, работающих в репозитории: [AGENTS.md](AGENTS.md).
 
-```bash
-npm test            # node:test, all folders in one run (over 10 minutes on a loaded machine: run per folder, e.g. node --test "src/server/**/*.test.ts")
-npm run typecheck   # tsc --noEmit, strict
-npm run security    # dependency, secret, code-pattern and package-content checks; add --docker for gitleaks/semgrep when Docker is running
-npm run build       # compile to dist/ (not used for the clone-and-run start above)
-npm run tokens      # regenerate design tokens from design/themes.json
-```
+Тесты используют временную папку; она не должна лежать внутри репозитория (задайте `TEMP`/`TMP` на каталог вне клона).
 
-Rules for agents working in this repo: [AGENTS.md](AGENTS.md).
+---
 
-## License
+## Лицензия
 
-MIT. Fonts (Golos Text, JetBrains Mono) are SIL OFL 1.1, see `web/fonts/LICENSE.txt`.
+MIT. Шрифты (Golos Text, JetBrains Mono) — SIL OFL 1.1, см. `web/fonts/LICENSE.txt`.
