@@ -28,6 +28,7 @@ They are recorded as a table in [docs/ARCHITECTURE.md](../ARCHITECTURE.md) §10 
 | [025](025-leftover-limit-scheduler.md) | Using the leftover limit before reset is opt-in, approved jobs only, fails closed | tested incl. real RunManager with a fake agent; CLI window fields unverified |
 | [026](026-guardrails-circuit-breaker.md) | The circuit breaker stops runaway runs, ON by default, only the user's config can loosen it | tested; thresholds are defaults, not measured on real runs |
 | [027](027-orchestrator-map.md) | The orchestrator map reads stored data; hub runs can be messaged, native sub-agents cannot; steps go to a journal; modes teach rules | tested with the fake agent; real sub-agent and background event shapes unverified |
+| [028](028-orchestrator-mode.md) | Orchestrator mode: the hub plans, spawns workers, verifies and merges; agents only write code; mandatory gates | **proposed**, no code, waiting for the user's approval |
 
 ## Not an ADR yet
 
