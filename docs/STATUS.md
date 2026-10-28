@@ -1,7 +1,59 @@
-# Agent Hub — status of v0.1.0 against PLAN.md
+# Agent Hub — status
 
-> 2026-10-22. Local only: nothing is published and no GitHub repository exists. Legend: ✔ done and tested · ◐ partial · ✘ not done.
-> Evidence: 95 automated tests, strict typecheck, 14 security checks, real-machine runs described below.
+> Two parts. **v0.2 wrap-up (2026-10-28)** comes first; the **v0.1.0 baseline against PLAN.md (2026-10-22)** follows it, and the per-task v0.2 records come after that.
+> Legend for the v0.1 table: ✔ done and tested · ◐ partial · ✘ not done. For v0.2: **observed** = ran or saw it in this session · **inferred** = reasoned, not run · **proposed** = not done, suggested. Only the user writes "approved".
+
+## v0.2 wrap-up (Task 6.1, 2026-10-28, branch `v0.2/p-pr-review`)
+
+### Gates (observed, on D:, after the keep-alive fix below)
+
+| Gate | Result |
+|---|---|
+| Tests, run per folder | **731 pass, 0 fail**: adapters 42 · bench 8 · cli 6 · core 87 · diagram 4 · econ 82 · history 16 · lib 13 · review 247 · run 162 · server 62 · stages 2 |
+| `tsc --noEmit` (strict) | clean |
+| `scripts/security.mjs` | 17 / 17 |
+| `hub diagram --check` | up to date |
+| Graph (`graphify update .`) | 2654 nodes, 7129 edges, 155 communities. **Code only** (AST, no LLM): the new Markdown (`docs/adr/README.md`, README edits) is **not** in the graph, and the 80 saved community labels are stale (155 communities now; `graphify label` needs an LLM and was not run) |
+
+The suite was **not** run as one command: it takes over 10 minutes here and was run per folder.
+
+### The `approve is digest-pinned` failure (and the "flaky under suite load" tests): cause found, fixed (observed)
+
+- **Symptom.** `src/server/cascade-api.test.ts` passed alone and failed when the files of `src/server` ran in parallel; other server tests failed the same way with `fetch failed … ECONNRESET`. Before the fix, 4 of 9 whole-folder runs failed at least one test (I read the error text of three of them: `ECONNRESET` or an early 400 in two, the wall-clock test named under "Still open" in one; the fourth was not inspected), and the single file failed 2 of 5 runs under artificial CPU load.
+- **Cause.** The handlers call git with `spawnSync` (timeout 60 s, `src/run/git.ts`) in the process that also holds the sockets. The test process showed event-loop stalls of 4–12 s. Node's default `keepAliveTimeout` is 5 s. In the failing run the server closed three connections (`hadError=false`) 2–11 ms after a stall ended, while a request was already waiting on the socket; the client got a reset. A GET poll of `/api/runs/<id>/cascade` failed after 2–3 ms.
+- **What I could not reproduce.** Two small stand-alone scripts (a stall before a request, an idle gap between two requests) did **not** produce the reset. So the exact ordering inside Node (timer before read) is **inferred** from the timestamps, not reproduced in isolation.
+- **Fix.** `server.keepAliveTimeout = 65 s` and `headersTimeout = 66 s` in `src/server/server.ts`, longer than the 60 s git timeout. Regression test `src/server/keepalive.test.ts` (red with `keepAliveTimeout is 5000 ms`, then green). The existing assertions were not changed. `cascade-api.test.ts` now also fails loudly if its git setup fails and names the request in a network error (diagnostics only).
+- **After the fix.** The single file passed 8 of 8 runs under the same CPU load; `src/server` as a whole passed 3 of 3 whole-folder runs (62 tests each) and once more in the final gate run.
+- **Likely the same cause (inferred, not proven):** the earlier notes "Flaky under suite load" and "Open flake … work mode permissions over the API" below, and the 10 failures of the first single-command full run recorded in the handoff card (their error texts were not kept). Their runs were not re-examined; they just did not recur in the runs above.
+- **Still open:** the server blocks its own event loop on synchronous git calls. The longer keep-alive window hides the symptom for up to 60 s of stall; it does not remove the stall. `trace-review-api.test.ts` "the skills estimate never makes a request wait" is a wall-clock assertion (it failed once with `worst 147 ms` under load) and can still fail on a loaded machine.
+
+### What v0.2 contains, with the evidence
+
+| Part | State | Evidence and what is **not** verified |
+|---|---|---|
+| Review gate (ADR-019), reviewer evals | built | observed in tests with fake agents. **No live reviewer run**; recall and noise on real models unknown |
+| Routing, sourced priors, cascade (ADR-017), strategies, prices | built | observed in tests. **No real `claude`/`codex` run** drove the cascade (CLI not signed in; codex rejects `gpt-6.1-sol` on ChatGPT accounts). GPT 6.1 Sol price taken from the plan, not checked at its source |
+| Token economy: rules, lean tool sets, 250K restart, graph (ADR-018/020/021) | built | observed with fake agents and a fake graphify (and a real graphify on a small project). First-call size and token saving **not measured** |
+| Starter kit, templates, work modes, `install.ps1` (ADR-022/023) | built | observed with a fake GitHub; **no live fetch**. `install.ps1` checked on Windows PowerShell 5.1 on this PC only |
+| Trace, context gauge, forecast (ADR-024) | built | observed in tests and in the panel (built-in browser). Real `stream-json` `message.usage` shape **not verified** |
+| Leftover-limit scheduler, circuit breaker (ADR-025/026) | built | observed in tests with the real RunManager and a fake agent. Start-time probe of the lock owner not implemented by default; whether `claude auth status` accepts `--setting-sources` and what `rateLimitType` a real CLI reports are **unverified** |
+| UI in four themes, 375 px | observed for the screens listed in the task records | the other theme pairs are inferred where a record says so |
+
+### Not verified in v0.2 (collected)
+
+- Everything that needs a signed-in Claude CLI or a Codex account with quota: live cascade, live reviewers, live handoff summary, context gauge on real data.
+- macOS, Linux, PowerShell 7, Windows 10.
+- The integrity seal does not protect against an agent that rewrites `integrity.json` too (ADR-025/026).
+
+### Decisions left to the user
+
+1. Merge or keep `v0.2/p-pr-review` (nothing is merged; finishing-a-development-branch is not run).
+2. `AGENTS.md` still says "Sonnet 5.5 (medium)" for implementation while the router default is `sonnet:high`.
+3. Publishing to a public GitHub repository, its name and licence: the user asked for it on 2026-10-28; at the time of this record nothing is published.
+
+## v0.1.0 baseline (2026-10-22)
+
+> Local only at that date. Evidence then: 95 automated tests, strict typecheck, 14 security checks, real-machine runs described below.
 
 ## What was verified on the real machine
 

@@ -2,7 +2,7 @@
 
 One local hub for coding agents. Shared skills, rules and MCP for **Claude Code** and **Codex**; a chat and task runner for any of them; a **handoff card** so work continues on another agent when one hits its limit; unified history, cost advice and a lifecycle for every project.
 
-> Status: **v0.1.0 — first working version, local only, not published.** See [docs/STATUS.md](docs/STATUS.md) for what is done, what is partial and what is not verified.
+> Status: **v0.2 (branch `v0.2/p-pr-review`) — working locally; the real Claude and Codex CLIs have not driven the new v0.2 parts end to end.** [docs/STATUS.md](docs/STATUS.md) says per requirement what was observed (ran or saw it), what is only inferred and what is not verified. Decisions: [docs/adr/README.md](docs/adr/README.md).
 
 ## What it does
 
@@ -15,6 +15,11 @@ One local hub for coding agents. Shared skills, rules and MCP for **Claude Code*
 | **Models & limits** | Weekly limit from Codex logs, manual entry for Claude, measured token profiles from your own history, API-equivalent cost (Claude prices verified, unknown prices stay *unknown*), advice with the rule that produced it. |
 | **Lifecycle** | 8 stages with gates (context → clarify → toolkit → architecture → rules → plan → execute → retro). A stage closes only when its output files exist and you approve. |
 | **Panel** | Projects, chat, tasks, history, library, models, logs, settings. Dark/light × green/orange. Localhost only. |
+| **Review gate (v0.2)** | Every agent branch goes through checks you approved (digest-pinned) and independent reviewers; only a human approval counts. `hub review-eval` measures reviewer recall and noise. ADR-019. |
+| **Routing & cascade (v0.2)** | Model and effort chosen by task type with sourced priors; optional verify-and-escalate cascade; editable price table. ADR-017. |
+| **Token economy (v0.2)** | Lean per-mode tool sets, context rules, fresh session from the handoff card past 250K tokens, project graph. ADR-018, 020, 021. |
+| **Observability (v0.2)** | Per-call run trace, live context gauge, project forecast, opt-in use of the leftover limit before reset, circuit breaker for runaway runs (on by default). ADR-024…026. |
+| **Starter kit & templates (v0.2)** | First-run wizard; `hub new <type> <folder>`. Everything is shown as a plan first. ADR-022, 023. |
 
 ## Быстрый старт (Windows)
 
@@ -67,6 +72,10 @@ hub sync && hub history "handoff" # import + search all sessions
 hub estimate --class implement    # cost / limit range and the model advice
 hub diagram routing --format mermaid
 hub security                      # dependency, secret and code-pattern checks
+hub bench --dry                   # golden tasks: solved count and cost per solved task (lists the tasks only with --dry)
+hub review-eval --dry             # reviewer quality cases: recall, noise (real reviewers need a signed-in CLI)
+hub doctor --modes                # what each permission mode allows (short real runs)
+hub stage . approve 1             # lifecycle stages and gates
 ```
 
 ## Safety model
@@ -92,7 +101,7 @@ docs/             PLAN, ARCHITECTURE, DATA-MODEL, SECURITY, STATUS, ADRs, genera
 ## Development
 
 ```bash
-npm test            # 95 tests (node:test), including real recorded CLI error shapes
+npm test            # node:test, all folders in one run (over 10 minutes on a loaded machine: run per folder, e.g. node --test "src/server/**/*.test.ts")
 npm run typecheck   # tsc --noEmit, strict
 npm run security    # dependency, secret, code-pattern and package-content checks; add --docker for gitleaks/semgrep when Docker is running
 npm run build       # compile to dist/ (not used for the clone-and-run start above)
