@@ -1,6 +1,6 @@
 # Agent Hub — status
 
-> Two parts. **v0.2 wrap-up (2026-10-28)** comes first; the **v0.1.0 baseline against PLAN.md (2026-10-22)** follows it, and the per-task v0.2 records come after that.
+> Three parts. **v0.3 Stage 1 (2026-10-28)** is first, then the **v0.2 wrap-up (2026-10-28)**; the **v0.1.0 baseline against PLAN.md (2026-10-22)** follows it, and the per-task v0.2 records come after that.
 > Legend for the v0.1 table: ✔ done and tested · ◐ partial · ✘ not done. For v0.2: **observed** = ran or saw it in this session · **inferred** = reasoned, not run · **proposed** = not done, suggested. Only the user writes "approved".
 
 ## v0.2 wrap-up (Task 6.1, 2026-10-28, branch `v0.2/p-pr-review`)
@@ -50,6 +50,40 @@ The suite was **not** run as one command: it takes over 10 minutes here and was 
 1. Merge or keep `v0.2/p-pr-review` (nothing is merged; finishing-a-development-branch is not run).
 2. `AGENTS.md` still says "Sonnet 5.5 (medium)" for implementation while the router default is `sonnet:high`.
 3. Published on 2026-10-28 (observed: `gh repo view` says PUBLIC) as https://github.com/pavvelltour-web/agent-hub. Remote `main` is the tip of the local branch `v0.3/orchestrator-map` (v0.2 plus docs); the local `master` was not touched, so merging v0.2 into `master` is still your decision. CI runs only on pull requests and by hand. The licence is MIT (existing `LICENSE`). The 71 commits carry the author address `pavvelltour@gmail.com`.
+
+## v0.3 Stage 1: orchestrator map, step journal, rules by mode (2026-10-28, branch `v0.3/orchestrator-map`)
+
+Design approved by the user the same day (`docs/superpowers/specs/2026-10-28-orchestrator-map-design.md`), plan `docs/superpowers/plans/2026-10-28-orchestrator-map.md`, decisions in ADR-027.
+
+### Gates (observed, on D:, one run per folder, after the last code change)
+
+| Gate | Result |
+|---|---|
+| Tests | **780 pass, 0 fail**: adapters 44 · bench 8 · cli 6 · core 92 · diagram 4 · econ 82 · history 16 · lib 15 · review 248 · run 186 · server 77 · stages 2 |
+| `tsc --noEmit` | clean |
+| `scripts/security.mjs` | 17 / 17 |
+| `hub diagram --check` | up to date |
+
+### What was built, with the evidence
+
+- **English for agents (observed).** `src/lib/english-only.test.ts` was red on 12 template files and 7 stage prompts, then green after translating them. `REVIEW.md` headings are English; Russian headings of older files are still read (tested both ways).
+- **Rules by mode (observed).** Five English files in `rules/modes/`, pinned per mode (permission, worktree, skills, rules). The real start route puts them first in the prompt; the test was shown red without that wiring and green with it. A `/autopilot` or `/grill-me` the hub added stays first.
+- **Map tree and API (observed with seeded and fake data).** Cascade rungs, review hunters and verifiers, handoff chains and follow-up messages, cycle-safe and capped; `GET /api/map`; `POST /api/map/message` needs the panel click and refuses a live run, a run without a session, a reviewer run and a foreign node. Reviewer runs now record the run they review (`parent_run`, `spawn_reason`).
+- **Sub-agents and background shells (observed with made-up events only).** From `Task`/`Agent` and `Bash run_in_background` tool events; sub-agent lines carry `parent`.
+- **Step journal (observed).** Start, handoff, spawn, end and verify lines from the real RunManager; preview and an approved write into `specs/<task>/steps.md` (digest, click, backup).
+- **The Map screen (observed in a real browser against `hub ui --demo` with an empty profile and seeded runs).** 14 nodes drawn, node drawer, log, a message sent to a finished run produced a new child with the edge "your message", the journal showed its start and end. Dark/green, light/orange at desktop; at 375 px no horizontal overflow in all four theme pairs, buttons at least 44 px, no console errors except a form-field-name hint that was fixed afterwards. Animations are CSS and off under reduced motion. The other two themes at desktop were checked for overflow and font sizes, not by eye.
+
+### Existing assertions changed on purpose
+
+The Russian `REVIEW.md` headings and the appended rule line (`reviewmd.test.ts`, `init.test.ts`); `server.test.ts` now expects the mode rules block before the mode prefix in a stored prompt.
+
+### Not verified, not done
+
+- **Never seen on a signed-in CLI:** the real shape of `Task`/`Agent` and background-shell events, a sub-agent's own model and usage, whether Codex ignores a mode's skill list.
+- **Not on the map yet:** MCP servers of a run and the scheduler's items (only the graph update is shown as a hub job); a sub-agent's context is shown as "not measured".
+- **Not started:** Stage 2, an orchestrator mode in which the hub splits a plan and starts workers.
+- **Known limits:** agent-facing Russian text inside code (prompts built in `src/`) is outside the data files the English test scans; the map's reasons are translated in the panel from a fixed list, an unknown reason is shown as it came; the panel can only show what the event log contains.
+- **Process:** the diff was not reviewed by the other model class (AGENTS.md asks for it); `product-ui-workbench` and `design-quality-loop`, which AGENTS.md names for UI work, are not available in this environment, so the UI was checked by hand as listed above.
 
 ## v0.1.0 baseline (2026-10-22)
 

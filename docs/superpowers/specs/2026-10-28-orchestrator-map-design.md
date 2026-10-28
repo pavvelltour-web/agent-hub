@@ -1,6 +1,6 @@
 # Orchestrator map, sub-run control and step journal: design
 
-Status: **proposed, not approved** (only the user approves). Nothing in this document is built.
+Status: **approved by the user on 2026-10-28; Stage 1 is built** (see ADR-027 and docs/STATUS.md for what was observed and what was not). Deviations from this text: MCP-server nodes and the scheduler's items are not on the map yet (only the graph update is shown as a hub job); the Russian texts of the map are in the panel, English only for what agents read. Stage 2 is not started.
 Marks: **[user]** = the user's words · **[call]** = my decision, change it if you disagree · **[open]** = needs the user's answer.
 
 ## Intent and why

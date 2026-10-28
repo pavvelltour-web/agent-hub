@@ -1,0 +1,57 @@
+/* Orchestrator map (ADR-027). Tokens only (--hub-*). Work surfaces are opaque; nothing here is glass. Animations run only when the person has not asked for reduced motion. */
+.map-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 380px); gap: var(--hub-space-4); align-items: start; }
+.map-wrap > * { min-width: 0; }
+.map-scroll { overflow: auto; max-height: 72vh; background: var(--hub-surface); border-radius: var(--hub-radius-card); box-shadow: inset 0 0 0 1px var(--hub-line); }
+.map-canvas { position: relative; min-width: 100%; }
+.map-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.map-edge { fill: none; stroke: var(--hub-muted); stroke-width: 2; opacity: .7; }
+.map-edge.dash { stroke-dasharray: 5 6; }
+.map-edge.live { stroke: var(--hub-accent-edge); opacity: 1; stroke-dasharray: 7 9; }
+.map-edge-label { position: absolute; transform: translate(-50%, -50%); max-width: 150px; padding: 2px 8px; border-radius: var(--hub-radius-pill); background: var(--hub-surface-2); box-shadow: inset 0 0 0 1px var(--hub-line); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.map-zoom { transform-origin: 0 0; }
+
+.map-node { position: absolute; display: flex; flex-direction: column; gap: var(--hub-space-2); padding: var(--hub-space-3); text-align: left; color: var(--hub-ink); background: var(--hub-surface-2); border: 0; border-radius: var(--hub-radius-control); box-shadow: inset 0 0 0 1px var(--hub-line); cursor: pointer; font: var(--hub-type-body); overflow: hidden; }
+.map-node:hover { box-shadow: inset 0 0 0 2px var(--hub-accent-edge); }
+.map-node.sel { box-shadow: inset 0 0 0 3px var(--hub-accent-edge); }
+.map-node.k-orchestrator { box-shadow: inset 0 0 0 2px var(--hub-accent-edge); }
+.map-node.k-orchestrator.sel { box-shadow: inset 0 0 0 4px var(--hub-accent-edge); }
+.map-node.k-subagent { border-radius: 14px; background: var(--hub-surface); }
+.map-node.k-background, .map-node.k-hubjob, .map-node.k-mcp { border-radius: var(--hub-radius-pill); padding: var(--hub-space-2) var(--hub-space-4); justify-content: center; }
+.map-node.s-failed { background: var(--hub-danger-bg); }
+.map-node.s-running { background: var(--hub-info-bg); }
+.mn-head { gap: var(--hub-space-2); min-width: 0; flex-wrap: nowrap; }
+.mn-head b { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mn-head .chip { flex: 0 0 auto; }
+.mn-goal { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font: var(--hub-type-label); }
+.mn-ctx { display: flex; flex-direction: column; gap: 3px; margin-top: auto; }
+.mn-ctx .meter > b { background: var(--hub-accent); }
+.mn-ctx.warm .meter > b { background: var(--hub-warning-ink); }
+
+.map-legend { display: flex; flex-wrap: wrap; gap: var(--hub-space-3); align-items: center; }
+.map-legend i { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--hub-muted); vertical-align: middle; margin-right: 6px; }
+.map-legend i.dash { border-top-style: dashed; }
+.map-legend i.live { border-top-color: var(--hub-accent-edge); border-top-style: dashed; }
+
+.map-drawer { position: sticky; top: var(--hub-space-4); background: var(--hub-surface); border-radius: var(--hub-radius-card); box-shadow: inset 0 0 0 1px var(--hub-line); padding: var(--hub-space-5); display: flex; flex-direction: column; gap: var(--hub-space-4); max-height: 82vh; overflow: auto; }
+.map-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--hub-space-2) var(--hub-space-4); margin: 0; }
+.map-facts dt { color: var(--hub-muted); font: var(--hub-type-meta); }
+.map-facts dd { margin: 0; overflow-wrap: anywhere; font: var(--hub-type-label); }
+.map-log { margin: 0; padding: var(--hub-space-3); max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--hub-bg); border-radius: var(--hub-radius-control); box-shadow: inset 0 0 0 1px var(--hub-line); font: 12px/1.45 var(--hub-font-mono); }
+.map-msg textarea { width: 100%; min-height: 84px; resize: vertical; font: var(--hub-type-body); color: var(--hub-ink); background: var(--hub-bg); border: 0; border-radius: var(--hub-radius-control); padding: var(--hub-space-3); box-shadow: inset 0 0 0 1px var(--hub-line); }
+.map-journal-md { margin: 0; padding: var(--hub-space-3); max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--hub-bg); border-radius: var(--hub-radius-control); box-shadow: inset 0 0 0 1px var(--hub-line); font: 12px/1.45 var(--hub-font-mono); }
+
+@media (max-width: 960px) {
+  .map-wrap { grid-template-columns: minmax(0, 1fr); }
+  .map-drawer { position: static; max-height: none; }
+  .map-scroll { max-height: 60vh; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .map-edge.live { animation: map-flow 1s linear infinite; }
+  .map-node.s-running { animation: map-pulse 1.9s ease-in-out infinite; }
+  .map-node.settle { animation: map-settle .6s var(--hub-ease) 1; }
+  .map-node { transition: box-shadow .2s var(--hub-ease), background-color .3s var(--hub-ease); }
+  @keyframes map-flow { to { stroke-dashoffset: -32; } }
+  @keyframes map-pulse { 0%, 100% { box-shadow: inset 0 0 0 1px var(--hub-line), 0 0 0 0 transparent; } 50% { box-shadow: inset 0 0 0 2px var(--hub-accent-edge), 0 0 0 5px color-mix(in srgb, var(--hub-accent-edge) 25%, transparent); } }
+  @keyframes map-settle { 0% { transform: scale(1.04); } 100% { transform: scale(1); } }
+}

@@ -33,7 +33,7 @@ export const mapRoutes: [string, RegExp, Handler][] = [
     const map = buildFullMap(c.db, c.runs.home, { projectId: Number(pq), ...(root ? { root } : {}), ...(mq && /^\d+$/.test(mq) ? { max: Number(mq) } : {}) });
     try {   // the hub's own background job: the graph update (single flight, ADR-021)
       const g = graphStatus(p.root);
-      if (g.running || g.last) map.nodes.push({ id: 'hub:graph', kind: 'hubjob', label: 'Graph update', status: g.running ? 'running' : g.last?.ok ? 'done' : 'failed', goal: 'Rebuild the project graph (graphify, no model)', why: 'hub background job', context: null, messageable: false, ...(g.last ? { detail: g.last.message.slice(0, 200) } : {}) });
+      if (g.running || g.last) map.nodes.push({ id: 'hub:graph', kind: 'hubjob', label: 'Обновление графа', status: g.running ? 'running' : g.last?.ok ? 'done' : 'failed', goal: 'Пересборка графа проекта (graphify, без модели)', why: 'hub background job', context: null, messageable: false, ...(g.last ? { detail: g.last.message.slice(0, 200) } : {}) });
     } catch { /* no graph information: no node */ }
     return ok(map);
   }],

@@ -16,12 +16,13 @@ const ROUTES = [
   [/^\/models(?:\/(.+))?$/, () => import('./views/models.js')],
   [/^\/library$/, () => import('./views/library.js')],
   [/^\/logs$/, () => import('./views/logs.js')],
+  [/^\/map$/, () => import('./views/map.js')],
   [/^\/trace\/(r[0-9a-z]{2,40})$/, () => import('./views/trace.js')],
   [/^\/settings$/, () => import('./views/settings.js')],
 ];
 const NAV = [
   ['/', 'Сегодня', 'today'], ['/projects', 'Проекты', 'folder'], ['/chat', 'Чат', 'chat'], ['/history', 'История', 'history'],
-  ['/models', 'Модели', 'models'], ['/library', 'Инструменты', 'library'], ['/logs', 'Журнал', 'logs'],
+  ['/map', 'Карта', 'map'], ['/models', 'Модели', 'models'], ['/library', 'Инструменты', 'library'], ['/logs', 'Журнал', 'logs'],
 ];
 const section = (path) => (path === '/' ? '/' : '/' + path.split('/')[1]);
 const navKey = (path) => (path.startsWith('/p/') ? '/projects' : path.startsWith('/s/') ? '/history' : section(path));
@@ -57,9 +58,9 @@ function shell(cur) {
   const rail = h('nav.rail.glass', { 'aria-label': 'Разделы' },
     h('a.logo', { href: '#/', 'aria-label': 'agent hub — Сегодня' }, icon('chat')),
     NAV.map((n) => navLink(n, 'nav-item', cur)), h('div.spacer'), navLink(['/settings', 'Настройки', 'settings'], 'nav-item', cur));
-  const more = () => dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Разделы'), closeBtn()), [['/history', 'История', 'history'], ['/library', 'Инструменты', 'library'], ['/logs', 'Журнал', 'logs'], ['/settings', 'Настройки', 'settings']].map(([href, label, ic]) => h('a.btn.btn-glass', { href: '#' + href, onclick: () => document.getElementById('dlg').close() }, icon(ic, 'sm'), label))));
+  const more = () => dialog(h('div.stack', h('div.bar', h('h2.t-title', 'Разделы'), closeBtn()), [['/map', 'Карта', 'map'], ['/history', 'История', 'history'], ['/library', 'Инструменты', 'library'], ['/logs', 'Журнал', 'logs'], ['/settings', 'Настройки', 'settings']].map(([href, label, ic]) => h('a.btn.btn-glass', { href: '#' + href, onclick: () => document.getElementById('dlg').close() }, icon(ic, 'sm'), label))));
   const dock = h('nav.dock.glass', { 'aria-label': 'Разделы (телефон)' },
-    [NAV[0], NAV[1], NAV[2], NAV[4]].map((n) => navLink(n, 'nav-item', cur)),
+    [NAV[0], NAV[1], NAV[2], NAV[5]].map((n) => navLink(n, 'nav-item', cur)),
     h('button.nav-item', { type: 'button', style: { background: 'none', border: 0 }, onclick: more }, icon('logs'), h('span', 'Ещё')));
   return [rail, dock];
 }

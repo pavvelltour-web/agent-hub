@@ -6,7 +6,7 @@ One line per decision. "Verified" says what the ADR's own *Status* section claim
 
 They are recorded as a table in [docs/ARCHITECTURE.md](../ARCHITECTURE.md) §10 (TypeScript/Node, files as source of truth, built-in SQLite, read-only adapters, panel hooks as fallback, handoff written by a cheap model from deterministic facts, ranges with calibration, sub-agents off by default, scout proposes but never installs). ARCHITECTURE.md §10 says each should become its own file; that has **not** been done.
 
-## ADR-010…026
+## ADR-010…027
 
 | ADR | Decision | State of the evidence |
 |---|---|---|
@@ -27,6 +27,7 @@ They are recorded as a table in [docs/ARCHITECTURE.md](../ARCHITECTURE.md) §10 
 | [024](024-run-trace.md) | Run trace and context gauge read per-call `turn` rows: numbers, names, times, bounded | tested; real `stream-json` usage shape not verified |
 | [025](025-leftover-limit-scheduler.md) | Using the leftover limit before reset is opt-in, approved jobs only, fails closed | tested incl. real RunManager with a fake agent; CLI window fields unverified |
 | [026](026-guardrails-circuit-breaker.md) | The circuit breaker stops runaway runs, ON by default, only the user's config can loosen it | tested; thresholds are defaults, not measured on real runs |
+| [027](027-orchestrator-map.md) | The orchestrator map reads stored data; hub runs can be messaged, native sub-agents cannot; steps go to a journal; modes teach rules | tested with the fake agent; real sub-agent and background event shapes unverified |
 
 ## Not an ADR yet
 

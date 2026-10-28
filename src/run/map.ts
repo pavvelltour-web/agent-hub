@@ -145,7 +145,7 @@ export function extractNative(events: { seq: number; ts: string; kind: string; d
     if (c.name === 'Bash') {
       const sid = SHELL_ID.exec(res?.body ?? '')?.[1];
       const n = sid ? reads.get(sid) ?? 0 : 0;
-      nodes.push({ id: `bg:${runId}:${c.id}`, kind: 'background', label: 'Background shell', status: sid && killed.has(sid) ? 'stopped' : ended ? 'unfinished' : 'running', goal: one(c.input['command'], GOAL_MAX), why: 'background shell', context: null, messageable: false, detail: `read ${n} ${n === 1 ? 'time' : 'times'}${sid ? ` (shell ${one(sid, 40)})` : ''}` });
+      nodes.push({ id: `bg:${runId}:${c.id}`, kind: 'background', label: 'Background shell', status: sid && killed.has(sid) ? 'stopped' : ended ? 'unfinished' : 'running', goal: one(c.input['command'], GOAL_MAX), why: 'background shell', context: null, messageable: false, detail: `Вывод читали раз: ${n}${sid ? ` (процесс ${one(sid, 40)})` : ''}` });
       edges.push({ from, to: `bg:${runId}:${c.id}`, reason: 'background shell' });
       continue;
     }
@@ -154,7 +154,7 @@ export function extractNative(events: { seq: number; ts: string; kind: string; d
       id: `sub:${runId}:${c.id}`, kind: 'subagent', label: one(c.input['description'], 120) || type || 'sub-agent', ...(model ? { model } : {}),
       status: res ? (res.isError ? 'failed' : 'done') : ended ? 'unfinished' : 'running', goal: one(c.input['prompt'], GOAL_MAX) || one(c.input['description'], GOAL_MAX),
       why: type ? `native sub-agent: ${type}` : 'native sub-agent', context: null, messageable: false,
-      detail: `${n} tool ${n === 1 ? 'call' : 'calls'} inside${res ? `. Result: ${one(res.body, 300)}` : ''}`,
+      detail: `Вызовов инструментов внутри: ${n}${res ? `. Результат: ${one(res.body, 300)}` : ''}`,
     });
     edges.push({ from, to: `sub:${runId}:${c.id}`, reason: type ? `native sub-agent: ${type}` : 'native sub-agent' });
   }
