@@ -28,6 +28,7 @@ export interface StartReq {
   cls?: string; workMode?: string; est?: unknown;          // task class and the estimate shown to the user, kept to compare with the actual
   startNote?: string;                                        // INTERNAL (api.ts, mode reviewer): a warn event at the start of the run; never forwarded from a request body
   autoContinue?: boolean;                                    // INTERNAL (cascade): false = a run stopped for context size leaves its card but is not restarted; api.ts must never forward it
+  parentRunId?: string; spawnReason?: string;                // INTERNAL (review gate): the run this one was started for and why, shown on the map; api.ts must never forward them
 }
 export interface RunRow { id: string; agent: string; model: string | null; effort: string | null; prompt: string | null; cwd: string | null; branch: string | null; startedAt: string; endedAt: string | null; outcome: string | null; sessionNativeId: string | null; tokensIn: number | null; tokensOut: number | null; costUsd: number | null; handoffOf: string | null; resumeOf: string | null; error: string | null; projectId: number | null; tokensCached: number | null; cls: string | null; estJson: string | null; rating: number | null; projectType: string | null; permission: string | null; workMode: string | null; baseSha: string | null; verifyPassed: number | null }
 export interface StoredEvent { seq: number; ts: string; kind: string; data: unknown }
@@ -123,8 +124,8 @@ export class RunManager {
     const reviewer = !!req.isolatedCwd;
     const workMode = reviewer ? REVIEWER_MODE : prevMode === 'review' ? 'review' : req.workMode ?? prevMode;
     tx(this.db, () => {
-      this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type, permission, work_mode, base_sha) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(id, projectId(this.db, req.projectRoot), req.agent, req.model || null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode, baseSha ?? null);
+      this.db.prepare('INSERT INTO run (id, project_id, agent, model, effort, prompt, cwd, branch, started_at, handoff_of, resume_of, cls, est_json, project_type, permission, work_mode, base_sha, parent_run, spawn_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(id, projectId(this.db, req.projectRoot), req.agent, req.model || null, req.effort ?? null, redact(req.prompt).slice(0, 20_000), cwd, branch, new Date().toISOString(), req.handoffOf ?? null, req.resumeRunId ?? (req.resumeOfSession ? `session:${req.resumeOfSession}` : null), req.cls ?? null, req.est ? JSON.stringify(req.est) : null, projectTypeOf(req.projectRoot), permission, workMode, baseSha ?? null, req.parentRunId?.slice(0, 80) ?? null, req.spawnReason?.slice(0, 120) ?? null);
     });
 
     // How many sessions of this chain were already stopped for context size (a fresh session after a context stop is `handoffOf` the stopped one).

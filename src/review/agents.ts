@@ -182,14 +182,14 @@ function parseVerify(text: string): { real: boolean; why: string } {
 
 // ---- running a reviewer -------------------------------------------------------------------------------------------------------------------
 
-interface Common { runs: RunManager; cwd: string; timeoutMs?: number; warn?: (s: string) => void }
+interface Common { runs: RunManager; cwd: string; timeoutMs?: number; warn?: (s: string) => void; /** The run under review: recorded on every reviewer run so the map can draw it as a child. */ parentRunId?: string }
 
 /**
  * Start one read-only reviewer through the RunManager and return its last assistant text. Schema flags are internal `extraArgs`.
  * The reviewer runs in a fresh EMPTY folder under `<hub home>/reviewers/` (removed after; history ignores it): the diff reaches it as text, and the branch's CLAUDE.md / AGENTS.md /
  * .claude settings and hooks never load. `o.cwd` is only where the hub itself runs git.
  */
-async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o: Common): Promise<string> {
+async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o: Common, spawnReason: string): Promise<string> {
   let dir: string | undefined;
   mkdirSync(reviewersDir(o.runs.home), { recursive: true });
   const neutral = mkdtempSync(join(reviewersDir(o.runs.home), 'rv-'));
@@ -197,7 +197,7 @@ async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o
     let extraArgs: string[];
     if (pick.agent === 'claude') extraArgs = ['--json-schema', JSON.stringify(schema)];
     else { dir = mkdtempSync(join(tmpdir(), 'hub-review-')); const file = join(dir, 'schema.json'); writeFileSync(file, JSON.stringify(schema)); extraArgs = ['--output-schema', file]; }
-    const run = o.runs.start({ agent: pick.agent, prompt, projectRoot: o.cwd, isolatedCwd: neutral, model: pick.model, effort: pick.effort, permission: 'plan', extraArgs });
+    const run = o.runs.start({ agent: pick.agent, prompt, projectRoot: o.cwd, isolatedCwd: neutral, model: pick.model, effort: pick.effort, permission: 'plan', extraArgs, ...(o.parentRunId ? { parentRunId: o.parentRunId, spawnReason } : {}) });
     await waitForRun(o.runs, run.id, o.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const done = o.runs.get(run.id);
     if (done?.outcome !== 'done') throw new ReviewError(`reviewer run ${done?.outcome ?? 'lost'}${done?.error ? `: ${done.error}` : ''}`);
@@ -214,14 +214,14 @@ async function runReviewer(pick: ReviewerPick, prompt: string, schema: Schema, o
 
 export async function hunt(o: { lens: Lens; pick: ReviewerPick; diffCmd?: string[]; diffText?: string; brief?: string; reviewMd?: string; agentsMd: string } & Common): Promise<RawFinding[]> {
   const diff = diffOf(o);
-  const text = await runReviewer(o.pick, buildHuntPrompt({ lens: o.lens, diff, ...(o.brief !== undefined ? { brief: o.brief } : {}), ...(o.reviewMd !== undefined ? { reviewMd: o.reviewMd } : {}), agentsMd: o.agentsMd }), HUNT_SCHEMA, o);
+  const text = await runReviewer(o.pick, buildHuntPrompt({ lens: o.lens, diff, ...(o.brief !== undefined ? { brief: o.brief } : {}), ...(o.reviewMd !== undefined ? { reviewMd: o.reviewMd } : {}), agentsMd: o.agentsMd }), HUNT_SCHEMA, o, 'review hunter');
   return parseHunt(text, o.lens, o.warn);
 }
 
 /** `diffCmd` / `diffText` are optional: without either the verifier reads the file named in the finding itself. */
 export async function verify(f: RawFinding, o: { pick: ReviewerPick; diffCmd?: string[]; diffText?: string } & Common): Promise<{ real: boolean; why: string }> {
   const diff = o.diffCmd || o.diffText !== undefined ? diffOf(o) : undefined;
-  return parseVerify(await runReviewer(o.pick, buildVerifyPrompt(f, diff), VERIFY_SCHEMA, o));
+  return parseVerify(await runReviewer(o.pick, buildVerifyPrompt(f, diff), VERIFY_SCHEMA, o, 'review verifier'));
 }
 
 /** K independent verifiers; kept only when STRICTLY more than half say real (K=2: one real + one not real is dropped). A failed verifier throws. */

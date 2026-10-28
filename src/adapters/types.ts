@@ -4,11 +4,11 @@ import type { AgentId } from '../core/types.ts';
 export type HubEvent =
   | { kind: 'session'; nativeId: string; model?: string }
   | { kind: 'user'; text: string }                                                       // history only: what the person wrote (a live run shows its own prompt)
-  | { kind: 'text'; text: string }
+  | { kind: 'text'; text: string; parent?: string }                                      // `parent`: the tool call (id) of the sub-agent that produced this, absent in the main session
   | { kind: 'thinking'; text: string; tokens?: number }
   | { kind: 'partial'; text: string }                                                    // live text delta: shown, never persisted (the final `text` is)
-  | { kind: 'tool'; id: string; name: string; summary: string; input: Record<string, unknown> }
-  | { kind: 'tool_result'; id: string; summary: string; body: string; lines: number; truncated: boolean; isError?: boolean }
+  | { kind: 'tool'; id: string; name: string; summary: string; input: Record<string, unknown>; parent?: string }
+  | { kind: 'tool_result'; id: string; summary: string; body: string; lines: number; truncated: boolean; isError?: boolean; parent?: string }
   | { kind: 'diff'; path: string; added: number; removed: number; hunks: string }
   | { kind: 'todo'; items: { text: string; state: 'pending' | 'active' | 'done' }[] }
   | { kind: 'usage'; uncachedIn: number; cachedIn: number; out: number; reasoning?: number; costUsd?: number; ms?: number }

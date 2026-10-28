@@ -9,7 +9,7 @@ import { buildMap } from './map.ts';
 
 const home = mkdtempSync(join(tmpdir(), 'hub-map-'));
 const db = openDb(':memory:');
-const P = projectId(db, join(home, 'proj-a')), Q = projectId(db, join(home, 'proj-b'));
+const P = projectId(db, join(home, 'proj-a')) as number, Q = projectId(db, join(home, 'proj-b')) as number;
 type R = Partial<{ project: number; agent: string; model: string; prompt: string; start: string; end: string | null; outcome: string | null; sid: string | null; cost: number; handoff: string; resume: string; mode: string; parent: string; reason: string }>;
 let tick = 0;
 const run = (id: string, o: R = {}): void => {

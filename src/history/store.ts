@@ -44,7 +44,7 @@ export function openDb(path = defaultDbPath()): Db {
     const have = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[]).map((c) => c.name));
     for (const [col, type] of cols) if (!have.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   };
-  addMissing('run', [['resume_of', 'TEXT'], ['tokens_cached', 'INTEGER'], ['cls', 'TEXT'], ['est_json', 'TEXT'], ['rating', 'INTEGER'], ['project_type', 'TEXT'], ['permission', 'TEXT'], ['work_mode', 'TEXT'], ['base_sha', 'TEXT'], ['verify_passed', 'INTEGER']]);       // verify_passed: 1 the verify command passed, 0 it failed, NULL none ran
+  addMissing('run', [['resume_of', 'TEXT'], ['tokens_cached', 'INTEGER'], ['cls', 'TEXT'], ['est_json', 'TEXT'], ['rating', 'INTEGER'], ['project_type', 'TEXT'], ['permission', 'TEXT'], ['work_mode', 'TEXT'], ['base_sha', 'TEXT'], ['verify_passed', 'INTEGER'], ['parent_run', 'TEXT'], ['spawn_reason', 'TEXT']]);       // verify_passed: 1 the verify command passed, 0 it failed, NULL none ran; parent_run / spawn_reason: the run that started this one (a review hunter or verifier) and why (the map, ADR-027)
   addMissing('review', [['info_json', 'TEXT']]);       // checks, warnings, round bookkeeping of the review gate
   addMissing('finding', [['line_text', 'TEXT']]);      // text of the flagged line, to clear the finding when a later commit removes it
   return db;

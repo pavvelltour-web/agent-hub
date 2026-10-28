@@ -47,6 +47,7 @@ import { GateError, answer as answerFindingGate, approve as approveReview, appro
 import { MAX_DIFF_BYTES, SEED_CASES_DIR, caseFromFinding, caseSummary, incidentCasesDir, readBaseline, saveCase } from '../review/eval.ts';
 import { getReview } from '../review/store.ts';
 import { phase7Routes } from './phase7-api.ts';
+import { mapRoutes } from './map-api.ts';
 import { appendRuleChange, repeatedFindings, reviewMdExists, suggestRuleLine } from '../review/reviewmd.ts';
 
 export interface Ctx { db: Db; runs: RunManager; agents?: () => Record<AgentId, AgentInfo>; auth?: (id: AgentId, info: AgentInfo) => AuthInfo; native?: { pickFolder: () => { path: string | null }; openLogin: (id: AgentId, exe: string) => void }; syncDirs?: { claude?: string; codex?: string }; review?: { available?: AgentId[] }; reviewEval?: { casesDir?: string; seedDir?: string; baselinePath?: string };
@@ -671,6 +672,7 @@ const ROUTES: [string, RegExp, Handler][] = [
     return ok({ id, frontmatter: parseFrontmatter(text), text: clip(text, 8000) });
   }],
   ...phase7Routes,
+  ...mapRoutes,
 ];
 
 export async function handle(c: Ctx, method: string, pathname: string, q: URLSearchParams, body: Body, meta?: Meta): Promise<Res> {

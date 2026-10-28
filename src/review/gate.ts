@@ -526,7 +526,7 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     // 1 Hunt
     updateReview(db, review.id, { state: 'hunting' });
     const read = (name: string): string => { try { return readFileSync(join(root, name), 'utf8'); } catch { return ''; } };
-    const common = { diffCmd: ['git', ...roundArgs], brief: run.prompt ?? '', agentsMd: read('AGENTS.md'), reviewMd: loadReviewMd(root, changed), runs: o.runs, cwd, warn, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) };
+    const common = { diffCmd: ['git', ...roundArgs], brief: run.prompt ?? '', agentsMd: read('AGENTS.md'), reviewMd: loadReviewMd(root, changed), runs: o.runs, cwd, warn, parentRunId: o.runId, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) };
     // The security pass goes first, so its findings are first in line for verification.
     const found = (await pool([picks.security, ...picks.hunters].map((h) => () => hunt({ ...common, lens: h.lens, pick: h.pick })), RUN_SLOTS)).flat();
 
@@ -547,7 +547,7 @@ async function runRound(o: GateOpts, review: Review): Promise<Review> {
     updateReview(db, review.id, { state: 'verifying' });
     const k = Math.max(1, picks.verifiers.length);
     const dropped = Math.max(0, todo.length - MAX_VERIFIED);   // never silent: the round cannot pass while findings are unchecked
-    const verified = (await pool(todo.slice(0, MAX_VERIFIED).map((f) => () => verifyMany(f, { picks: picks.verifiers, diffCmd: common.diffCmd, runs: o.runs, cwd, warn, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) })), Math.max(1, Math.floor(RUN_SLOTS / k)))).filter((v): v is VerifiedFinding => v !== null);
+    const verified = (await pool(todo.slice(0, MAX_VERIFIED).map((f) => () => verifyMany(f, { picks: picks.verifiers, diffCmd: common.diffCmd, runs: o.runs, cwd, warn, parentRunId: o.runId, ...(o.timeoutMs ? { timeoutMs: o.timeoutMs } : {}) })), Math.max(1, Math.floor(RUN_SLOTS / k)))).filter((v): v is VerifiedFinding => v !== null);
     for (const d of depFindings) verified.push({ ...d, votes: { real: 1, notReal: 0 } });   // licenses from the project root (read before the checks), never the task folder
 
     // 3 Filter and 4 Security tagging (triage), then store.

@@ -145,6 +145,22 @@ function saveState(home: string, s: CascadeState): void {
   mkdirSync(stateDir(home), { recursive: true });
   writeFileSync(join(stateDir(home), `${s.id}.json`), JSON.stringify(s));
 }
+/** The last 200 cascade state files (newest first), each read once: for the map, which would otherwise scan the folder once per run. Unreadable or oversized files are skipped. */
+export function listCascades(home: string): CascadeState[] {
+  let names: string[] = [];
+  try { names = readdirSync(stateDir(home)).filter((n) => n.endsWith('.json')).map((n) => ({ n, t: statSync(join(stateDir(home), n)).mtimeMs })).sort((a, b) => b.t - a.t).slice(0, 200).map((x) => x.n); } catch { return []; }
+  const out: CascadeState[] = [];
+  for (const n of names) {
+    try {
+      const f = join(stateDir(home), n);
+      if (statSync(f).size > 1_000_000) continue;
+      const s = JSON.parse(readFileSync(f, 'utf8')) as CascadeState;
+      if (s && Array.isArray(s.rungs)) out.push(s);
+    } catch { /* a half-written file is skipped */ }
+  }
+  return out;
+}
+
 /** The cascade a run belongs to (any of its runs), newest first among the last 200. */
 export function readCascadeFor(home: string, runId: string): CascadeState | undefined {
   if (!RUN_ID.test(runId)) return undefined;

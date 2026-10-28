@@ -98,5 +98,7 @@ function parseLine(line: unknown): HubEvent[] {
     default:
       out.push({ kind: 'unknown', type: typeof l.type === 'string' ? l.type : '(none)' });
   }
+  // A sub-agent's own lines name the tool call that started it: keep that on what the map needs to attribute (calls, results, text).
+  if (typeof l.parent_tool_use_id === 'string' && l.parent_tool_use_id) for (const e of out) if (e.kind === 'tool' || e.kind === 'tool_result' || e.kind === 'text') e.parent = l.parent_tool_use_id;
   return out;
 }

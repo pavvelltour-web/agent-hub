@@ -69,7 +69,14 @@ const TODO_STATES = new Set(['pending', 'active', 'done']);
  * from its expected type: strings stay strings (capped), numbers are finite (the runner sums them), booleans are real booleans, lists are
  * bounded. A kind outside the HubEvent union becomes `unknown`. Nothing here can throw on a hostile value.
  */
+/** `parent` (the sub-agent's tool call id) survives on tool, tool_result and text only, as a plain string of at most 200 characters; anything else is dropped, not cut. */
 export function sanitizeEvent(raw: HubEvent): HubEvent {
+  const out = sanitizeBase(raw);
+  const p = (raw as unknown as Record<string, unknown>)['parent'];
+  return typeof p === 'string' && p !== '' && p.length <= 200 && (out.kind === 'tool' || out.kind === 'tool_result' || out.kind === 'text') ? { ...out, parent: p } : out;
+}
+
+function sanitizeBase(raw: HubEvent): HubEvent {
   const e = raw as unknown as Record<string, unknown>;
   switch (e['kind']) {
     case 'session': { const model = text(e['model'], 200); return { kind: 'session', nativeId: text(e['nativeId'], 200), ...(model ? { model } : {}) }; }
