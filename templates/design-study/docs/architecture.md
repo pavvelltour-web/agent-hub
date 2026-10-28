@@ -1,18 +1,18 @@
-# {{name}}: архитектура
+# {{name}}: architecture
 
-Короткий каркас: заполняйте по мере работы, решения записывайте сюда же. Ничего не выдумывайте заранее.
+A short frame: fill it in as work goes on and record decisions here. Do not invent anything in advance.
 
-## Вопрос и критерии
-Один вопрос и 3-5 проверяемых критериев.
+## Question and criteria
+One question and 3-5 checkable criteria.
 
-## Референсы
-Что смотрели: ссылка, что именно увидели, что берём, что отвергаем.
+## References
+What we looked at: the link, what exactly we saw, what we take, what we reject.
 
-## Варианты
-Два-три варианта решения и чем они отличаются по задаче пользователя.
+## Options
+Two or three options and how they differ for the user's task.
 
-## Проверка
-Как смотрели рендер: рабочий стол и телефон, светлая и тёмная тема, пустое состояние и ошибка.
+## Check
+How the render was reviewed: desktop and phone, light and dark theme, empty state and error.
 
-## Решение
-Что выбрали, почему, что осталось неясным.
+## Decision
+What we chose, why, and what is still unclear.

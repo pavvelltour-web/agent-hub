@@ -8,7 +8,9 @@ import { isSafeName, isSecretPath } from '../lib/paths.ts';
 import { redact } from '../lib/redact.ts';
 
 /** The five sections of every REVIEW.md, in order. The reviewer, the risk tier and the rule-drift action find their data by these headings. */
-export const REVIEW_HEADINGS = ['Что здесь считается поломкой', 'Не проверять', 'Пути, где нужен человек', 'Лимит мелочей: 5', 'Доказательство: файл и строка'] as const;
+export const REVIEW_HEADINGS = ['What counts as broken here', 'Do not check', 'Paths that need a human', 'Nit limit: 5', 'Evidence: file and line'] as const;
+/** The Russian headings of the REVIEW.md files earlier versions wrote: still read (and appended under), never written again. Same order as REVIEW_HEADINGS. */
+const LEGACY_HEADINGS = ['Что здесь считается поломкой', 'Не проверять', 'Пути, где нужен человек', 'Лимит мелочей: 5', 'Доказательство: файл и строка'] as const;
 const BROKEN = REVIEW_HEADINGS[0], HUMAN = REVIEW_HEADINGS[2];
 
 const MAX_TOTAL = 40 * 1024;          // characters handed to the reviewer
@@ -129,7 +131,13 @@ export function humanPathsForChanges(root: string, changedPaths: string[]): stri
 
 // ---- paths where a human is needed ---------------------------------------------------------------------------------------------------
 
-const headingRe = (title: string): RegExp => new RegExp(`^#{1,6}\\s*${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:?\\s*$`);
+const esc = (t: string): string => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** The heading as written in the project's file: the English one, or the Russian one of an older file. */
+const headingRe = (title: string): RegExp => {
+  const i = (REVIEW_HEADINGS as readonly string[]).indexOf(title);
+  const alts = [title, ...(i >= 0 ? [LEGACY_HEADINGS[i] as string] : [])].map(esc).join('|');
+  return new RegExp(`^#{1,6}\\s*(?:${alts})\\s*:?\\s*$`);
+};
 const ANY_HEADING = /^#{1,6}\s/;
 const BULLET = /^ {0,3}[-*+]\s+(.*)$/;
 
@@ -177,10 +185,10 @@ export function repeatedFindings(db: Db, projectId: number, minCount = 3): { cla
   return rows.map((r) => ({ classOfBug: String(r.classOfBug), count: Number(r.count) }));
 }
 
-/** A one-line rule in plain Russian. The bug class is quoted data: one line, no backticks, no markup characters, at most 120 characters. */
+/** A one-line rule in plain English (the reviewer agent reads it). The bug class is quoted data: one line, no backticks, no markup characters, at most 120 characters. */
 export function suggestRuleLine(classOfBug: string): string {
   const cls = redact(String(classOfBug ?? '')).replace(/[`<>[\]\p{Zl}\p{Zp}]|[\u0000-\u001f\u007f]+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 120).trim();
-  return `Считать поломкой: «${cls}» — этот класс ошибок уже не раз находили в ревью этого проекта.`;
+  return `Treat as broken: "${cls}" - this class of bug was already found several times in this project's reviews.`;
 }
 
 /**

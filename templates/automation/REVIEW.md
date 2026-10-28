@@ -1,18 +1,18 @@
 # REVIEW.md
 
-Правила ревью для этого проекта. Ревьюер читает их вместе с AGENTS.md. Пишите по одной строке на правило.
+Review rules for this project. The reviewer reads them together with AGENTS.md. One line per rule.
 
-## Что здесь считается поломкой
-Поломка: ключи и пароли в коде, задачи по расписанию, которые могут запуститься дважды или без остановки, разрушительные действия без подтверждения. Добавьте свои пункты списком.
+## What counts as broken here
+Broken: keys and passwords in code, scheduled jobs that can run twice or never stop, destructive actions without confirmation. Add your own items as a list.
 
-## Не проверять
-Что ревьюер должен пропускать: сгенерированные файлы, чужой код, форматирование. Одна строка на пункт.
+## Do not check
+What the reviewer should skip: generated files, third-party code, formatting. One line per item.
 
-## Пути, где нужен человек
-Ключи доступа, расписания запусков, удаление и перезапись данных. Пишите пути списком: `jobs/**`, `scripts/cleanup*`.
+## Paths that need a human
+Access keys, run schedules, deleting and overwriting data. List the paths: `jobs/**`, `scripts/cleanup*`.
 
-## Лимит мелочей: 5
-Не больше пяти замечаний о мелочах (стиль, имена) за один круг; остальное не показывать.
+## Nit limit: 5
+At most five remarks about small things (style, names) per round; do not show the rest.
 
-## Доказательство: файл и строка
-Каждое замечание называет файл и строку и приводит цитату кода. Замечание без этого не принимается.
+## Evidence: file and line
+Every remark names the file and the line and quotes the code. A remark without this is not accepted.

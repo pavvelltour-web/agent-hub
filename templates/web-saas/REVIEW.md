@@ -1,18 +1,18 @@
 # REVIEW.md
 
-Правила ревью для этого проекта. Ревьюер читает их вместе с AGENTS.md. Пишите по одной строке на правило.
+Review rules for this project. The reviewer reads them together with AGENTS.md. One line per rule.
 
-## Что здесь считается поломкой
-Поломка: вход и права доступа, платежи и подписки, миграции данных, секреты в браузерном коде, ответы API, которые не проверяют входные данные. Добавьте свои пункты списком.
+## What counts as broken here
+Broken: sign-in and access rights, payments and subscriptions, data migrations, secrets in browser code, API answers that do not validate their input. Add your own items as a list.
 
-## Не проверять
-Что ревьюер должен пропускать: сгенерированные файлы, чужой код, форматирование. Одна строка на пункт.
+## Do not check
+What the reviewer should skip: generated files, third-party code, formatting. One line per item.
 
-## Пути, где нужен человек
-Вход и выход, платежи, миграции, права доступа. Пишите пути списком: `src/auth/**`, `migrations/**`.
+## Paths that need a human
+Sign-in and sign-out, payments, migrations, access rights. List the paths: `src/auth/**`, `migrations/**`.
 
-## Лимит мелочей: 5
-Не больше пяти замечаний о мелочах (стиль, имена) за один круг; остальное не показывать.
+## Nit limit: 5
+At most five remarks about small things (style, names) per round; do not show the rest.
 
-## Доказательство: файл и строка
-Каждое замечание называет файл и строку и приводит цитату кода. Замечание без этого не принимается.
+## Evidence: file and line
+Every remark names the file and the line and quotes the code. A remark without this is not accepted.

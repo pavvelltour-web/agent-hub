@@ -1,15 +1,15 @@
-# {{name}}: бриф
+# {{name}}: brief
 
-Тип проекта: Бот, автоматизация, агенты. Заполните коротко: агенты читают этот файл перед работой.
+Project type: bot, automation, agents. Keep it short: agents read this file before they work.
 
-## Для кого и зачем
-Что должно происходить само и по какому событию?
+## Who it is for and why
+What should happen by itself, and on which event?
 
-## Главные сценарии
-Три главных сценария, по одному предложению.
+## Main scenarios
+The three main scenarios, one sentence each.
 
-## Границы первой версии
-Что автоматизация не должна делать никогда без человека.
+## Limits of the first version
+What the automation must never do without a human.
 
-## Как поймём, что готово
-Проверка, которую можно запустить или посмотреть глазами (в `hub.json` есть команда `verify`).
+## How we know it is done
+A check that can be run or looked at (`hub.json` has a `verify` command).

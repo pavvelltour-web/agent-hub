@@ -109,9 +109,9 @@ test('repeatedFindings: most frequent first; letter case does not split a class'
   assert.equal(r[0]!.classOfBug.toLowerCase(), 'race');
 });
 
-test('suggestRuleLine: one plain Russian line, class quoted as data, capped, no newlines or backticks', () => {
+test('suggestRuleLine: one plain English line (the agent reads it), class quoted as data, capped, no newlines or backticks', () => {
   const line = suggestRuleLine('null-deref');
-  assert.match(line, /[А-Яа-я]/); assert.ok(line.includes('null-deref')); assert.ok(!line.includes('\n'));
+  assert.match(line, /^Treat as broken: /); assert.ok(!/[А-Яа-я]/.test(line)); assert.ok(line.includes('null-deref')); assert.ok(!line.includes('\n'));
   const evil = suggestRuleLine('x`\n## Заголовок\n- [ссылка](http://e.x) <b>' + 'я'.repeat(400));
   assert.ok(!/[`\r\n<>]/.test(evil), evil);
   assert.ok(!evil.includes('](') && !/^#/.test(evil));
@@ -121,6 +121,24 @@ test('suggestRuleLine: one plain Russian line, class quoted as data, capped, no 
 
 // ---- template, parsing, append -------------------------------------------------------------------------------------------------------
 
+test('English headings are read, and so are the Russian ones of REVIEW.md files written by earlier versions; a new rule goes under the heading the file already uses', () => {
+  const en = '# REVIEW.md\n\n## Paths that need a human\n- `src/pay/**`\n- billing.ts\n\n## Do not check\n- dist/**\n';
+  const ru = '# REVIEW.md\n\n## Пути, где нужен человек\n- `src/pay/**`\n- billing.ts\n\n## Не проверять\n- dist/**\n';
+  assert.deepEqual(humanPathsFromReviewMd(en), ['src/pay/**', 'billing.ts']);
+  assert.deepEqual(humanPathsFromReviewMd(ru), ['src/pay/**', 'billing.ts']);
+  const root = mkdtempSync(join(tmpdir(), 'hub-rv-head-'));
+  try {
+    writeFileSync(join(root, 'REVIEW.md'), ru);
+    const a = appendRuleChange(root, 'Check permissions').after;
+    assert.ok(a.replace(/\r/g, '').includes('## What counts as broken here\n- Check permissions'), 'a file with Russian headings but no "broken" section gets the English one');
+    writeFileSync(join(root, 'REVIEW.md'), '# REVIEW.md\n\n## Что здесь считается поломкой\n- old\n');
+    const b = appendRuleChange(root, 'Check permissions').after;
+    assert.ok(/## Что здесь считается поломкой\n- old\n- Check permissions/.test(b.replace(/\r/g, '')), 'appended under the Russian heading the file has');
+    writeFileSync(join(root, 'REVIEW.md'), '# REVIEW.md\n');
+    assert.ok(/## What counts as broken here\n- Check permissions/.test(appendRuleChange(root, 'Check permissions').after.replace(/\r/g, '')), 'a file with no section gets the English heading');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('the reviewer prompt tells the hunter to flag AGENTS.md lines that contradict the code', () => {
   const p = buildHuntPrompt({ lens: 'correctness', diff: 'diff --git a b', agentsMd: 'RULES', reviewMd: 'REVIEWMD-TEXT' });
   assert.match(p, /flag every line of AGENTS\.md that contradicts the code/);
@@ -128,7 +146,7 @@ test('the reviewer prompt tells the hunter to flag AGENTS.md lines that contradi
 });
 
 test('the headings are the five required ones, in order, in every template', () => {
-  assert.deepEqual([...REVIEW_HEADINGS], ['Что здесь считается поломкой', 'Не проверять', 'Пути, где нужен человек', 'Лимит мелочей: 5', 'Доказательство: файл и строка']);
+  assert.deepEqual([...REVIEW_HEADINGS], ['What counts as broken here', 'Do not check', 'Paths that need a human', 'Nit limit: 5', 'Evidence: file and line']);
   for (const type of ['web-saas', 'mobile-app', 'automation', 'design-study']) {
     const t = reviewTemplate(type)!;
     assert.ok(t, type);
@@ -164,15 +182,15 @@ test('humanPathsFromReviewMd: bullets under the heading become globs; junk is ig
   assert.deepEqual(humanPathsFromReviewMd(reviewTemplate('web-saas') as string), [], 'a fresh template lists nothing');
 });
 
-test('appendRuleChange: adds a bullet under "Что здесь считается поломкой" and nowhere else; refuses bad lines', () => {
+test('appendRuleChange: adds a bullet under "What counts as broken here" and nowhere else; refuses bad lines', () => {
   const root = proj({ 'REVIEW.md': reviewTemplate('web-saas') as string });
   const c1 = appendRuleChange(root, 'Не принимать запросы без проверки прав');
   assert.equal(c1.action, 'update');
   const sections = c1.after.split(/^## /m);
-  const sec = sections.find((s) => s.startsWith('Что здесь считается поломкой'))!;
+  const sec = sections.find((s) => s.startsWith('What counts as broken here'))!;
   assert.ok(sec.includes('- Не принимать запросы без проверки прав'));
   assert.equal(c1.after.split('Не принимать запросы').length - 1, 1);
-  assert.ok(c1.after.indexOf('- Не принимать') < c1.after.indexOf('## Не проверять'));
+  assert.ok(c1.after.indexOf('- Не принимать') < c1.after.indexOf('## Do not check'));
   assert.ok(c1.after.startsWith(c1.before!.trimEnd()) || c1.after.length > c1.before!.length);
   writeFileSync(join(root, 'REVIEW.md'), c1.after);
   const c2 = appendRuleChange(root, 'Вторая строка');
@@ -187,5 +205,5 @@ test('appendRuleChange: adds a bullet under "Что здесь считаетс�
 test('appendRuleChange: secrets are redacted, a missing heading is added at the end', () => {
   const root = proj({ 'REVIEW.md': '# REVIEW.md\n\nсвои заметки\n' });
   const c = appendRuleChange(root, 'ключ sk-' + 'a1B2c3D4e5F6g7H8i9J0k1L2' + ' нельзя');
-  assert.ok(!c.after.includes('a1B2c3D4e5F6') && /## Что здесь считается поломкой\n- ключ/.test(c.after.replace(/\r/g, '')));
+  assert.ok(!c.after.includes('a1B2c3D4e5F6') && /## What counts as broken here\n- ключ/.test(c.after.replace(/\r/g, '')));
 });

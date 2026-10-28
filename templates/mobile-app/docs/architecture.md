@@ -1,18 +1,18 @@
-# {{name}}: архитектура
+# {{name}}: architecture
 
-Короткий каркас: заполняйте по мере работы, решения записывайте сюда же. Ничего не выдумывайте заранее.
+A short frame: fill it in as work goes on and record decisions here. Do not invent anything in advance.
 
-## Экраны и переходы
-Список экранов и как между ними ходит пользователь.
+## Screens and transitions
+The list of screens and how the user moves between them.
 
-## Данные и офлайн
-Что хранится на устройстве, что на сервере, что будет без сети.
+## Data and offline
+What is stored on the device, what on the server, what happens without a network.
 
-## Доступ к устройству
-Камера, геолокация, уведомления: зачем и что показываем при отказе.
+## Device access
+Camera, location, notifications: why they are needed and what we show when the user refuses.
 
-## Подписи и ключи
-Где лежат ключи подписи (не в репозитории), кто может выпускать сборку.
+## Signing and keys
+Where the signing keys live (not in the repository) and who may produce a build.
 
-## Выпуск
-Как собирается сборка, как проверяется на реальном устройстве, как откатить.
+## Release
+How a build is made, how it is checked on a real device, how to roll back.

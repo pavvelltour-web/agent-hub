@@ -1,18 +1,18 @@
-# {{name}}: архитектура
+# {{name}}: architecture
 
-Короткий каркас: заполняйте по мере работы, решения записывайте сюда же. Ничего не выдумывайте заранее.
+A short frame: fill it in as work goes on and record decisions here. Do not invent anything in advance.
 
-## Контракты
-Список эндпоинтов и форма запросов/ответов. Сначала контракт, потом экран.
+## Contracts
+The list of endpoints and the shape of requests and responses. Contract first, then the screen.
 
-## Данные
-Таблицы и связи. Как выполняются миграции и как их откатить.
+## Data
+Tables and relations. How migrations run and how to roll them back.
 
-## Доступ
-Кто что может. Где это проверяется на сервере.
+## Access
+Who may do what, and where the server checks it.
 
-## Секреты и среда
-Какие ключи нужны (только имена), где они лежат, как выглядит `.env.example`.
+## Secrets and environment
+Which keys are needed (names only), where they live, what `.env.example` looks like.
 
-## Выкладка
-Где запускается, как откатить, что проверяется перед выкладкой.
+## Release
+Where it runs, how to roll back, what is checked before a release.

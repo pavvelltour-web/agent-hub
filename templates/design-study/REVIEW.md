@@ -1,18 +1,18 @@
 # REVIEW.md
 
-Правила ревью для этого проекта. Ревьюер читает их вместе с AGENTS.md. Пишите по одной строке на правило.
+Review rules for this project. The reviewer reads them together with AGENTS.md. One line per rule.
 
-## Что здесь считается поломкой
-Поломка: расхождение токенов и DESIGN-SYSTEM.md, жёстко прописанные цвета вне токенов, экран, не проверенный во всех темах. Добавьте свои пункты списком.
+## What counts as broken here
+Broken: tokens that disagree with DESIGN-SYSTEM.md, hard-coded colors outside the tokens, a screen not checked in all themes. Add your own items as a list.
 
-## Не проверять
-Что ревьюер должен пропускать: сгенерированные файлы, чужой код, форматирование. Одна строка на пункт.
+## Do not check
+What the reviewer should skip: generated files, third-party code, formatting. One line per item.
 
-## Пути, где нужен человек
-Токены и файл DESIGN-SYSTEM.md: любое изменение показывает человек. Пишите пути списком: `design/tokens.css`, `design/DESIGN-SYSTEM.md`.
+## Paths that need a human
+Tokens and the DESIGN-SYSTEM.md file: a human shows any change. List the paths: `design/tokens.css`, `design/DESIGN-SYSTEM.md`.
 
-## Лимит мелочей: 5
-Не больше пяти замечаний о мелочах (стиль, имена) за один круг; остальное не показывать.
+## Nit limit: 5
+At most five remarks about small things (style, names) per round; do not show the rest.
 
-## Доказательство: файл и строка
-Каждое замечание называет файл и строку и приводит цитату кода. Замечание без этого не принимается.
+## Evidence: file and line
+Every remark names the file and the line and quotes the code. A remark without this is not accepted.

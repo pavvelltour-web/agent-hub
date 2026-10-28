@@ -1,15 +1,15 @@
-# {{name}}: бриф
+# {{name}}: brief
 
-Тип проекта: Дизайн-исследование. Заполните коротко: агенты читают этот файл перед работой.
+Project type: design study. Keep it short: agents read this file before they work.
 
-## Для кого и зачем
-Какой вопрос исследуем и кому нужен ответ?
+## Who it is for and why
+Which question are we investigating, and who needs the answer?
 
-## Главные сценарии
-Для какого экрана или потока ищем решение.
+## Main scenarios
+Which screen or flow are we looking for a solution for.
 
-## Границы первой версии
-Что считаем хорошим результатом и по каким признакам это поймём.
+## Limits of the first version
+What we count as a good result and by which signs we will know.
 
-## Как поймём, что готово
-Проверка, которую можно запустить или посмотреть глазами (в `hub.json` есть команда `verify`).
+## How we know it is done
+A check that can be run or looked at (`hub.json` has a `verify` command).

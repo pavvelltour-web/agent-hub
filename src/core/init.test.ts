@@ -46,7 +46,7 @@ test('an existing REVIEW.md is never overwritten or touched by the init plan', (
 test('apply + undo of the init plan leaves the project as it was (REVIEW.md removed again)', () => {
   const root = project();
   const r = applyPlan(planInit(root, { type: 'automation' }), { approved: true });
-  assert.ok(readFileSync(join(root, 'REVIEW.md'), 'utf8').includes('## Не проверять'));
+  assert.ok(readFileSync(join(root, 'REVIEW.md'), 'utf8').includes('## Do not check'));
   assert.equal(planInit(root, { type: 'automation' }).changes.some((x) => x.path === join(root, 'REVIEW.md')), false, 'idempotent');
   undoBackup(root, r.backupId);
   assert.deepEqual(readdirSync(root).filter((f) => f !== '.hub'), []);
@@ -110,7 +110,7 @@ test('POST review-rules: preview shows the change and writes nothing; approved a
   const done = await w.api('POST', url, { line: 'Проверять права на каждом запросе', approved: true });
   assert.equal(done.status, 200);
   const after = readFileSync(join(w.root, 'REVIEW.md'), 'utf8');
-  assert.ok(after.indexOf('- Проверять права') > after.indexOf('## Что здесь считается поломкой') && after.indexOf('- Проверять права') < after.indexOf('## Не проверять'));
+  assert.ok(after.indexOf('- Проверять права') > after.indexOf('## What counts as broken here') && after.indexOf('- Проверять права') < after.indexOf('## Do not check'));
   assert.equal((await w.api('POST', url, { line: 'Проверять права на каждом запросе', approved: true })).status, 409, 'same rule twice');
   const backupId = (done.json as { backupId: string }).backupId;
   assert.ok(backupId);

@@ -1,15 +1,15 @@
-# {{name}}: бриф
+# {{name}}: brief
 
-Тип проекта: Мобильное приложение. Заполните коротко: агенты читают этот файл перед работой.
+Project type: mobile app. Keep it short: agents read this file before they work.
 
-## Для кого и зачем
-Кто пользуется приложением и в какой ситуации (в метро, на ходу, без сети)?
+## Who it is for and why
+Who uses the app and in what situation (on the subway, on the go, offline)?
 
-## Главные сценарии
-Три главных сценария, по одному предложению.
+## Main scenarios
+The three main scenarios, one sentence each.
 
-## Границы первой версии
-Что точно не делаем в первой версии.
+## Limits of the first version
+What we definitely do not build in the first version.
 
-## Как поймём, что готово
-Проверка, которую можно запустить или посмотреть глазами (в `hub.json` есть команда `verify`).
+## How we know it is done
+A check that can be run or looked at (`hub.json` has a `verify` command).
