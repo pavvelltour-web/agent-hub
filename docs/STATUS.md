@@ -49,7 +49,7 @@ The suite was **not** run as one command: it takes over 10 minutes here and was 
 
 1. Merge or keep `v0.2/p-pr-review` (nothing is merged; finishing-a-development-branch is not run).
 2. `AGENTS.md` still says "Sonnet 5.5 (medium)" for implementation while the router default is `sonnet:high`.
-3. Publishing to a public GitHub repository, its name and licence: the user asked for it on 2026-10-28; at the time of this record nothing is published.
+3. Published on 2026-10-28 (observed: `gh repo view` says PUBLIC) as https://github.com/pavvelltour-web/agent-hub. Remote `main` is the tip of the local branch `v0.3/orchestrator-map` (v0.2 plus docs); the local `master` was not touched, so merging v0.2 into `master` is still your decision. CI runs only on pull requests and by hand. The licence is MIT (existing `LICENSE`). The 71 commits carry the author address `pavvelltour@gmail.com`.
 
 ## v0.1.0 baseline (2026-10-22)
 
