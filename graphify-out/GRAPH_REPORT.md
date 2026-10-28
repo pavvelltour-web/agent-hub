@@ -1,23 +1,23 @@
 # Graph Report - agent-hub  (2026-10-28)
 
 ## Corpus Check
-- 305 files · ~339,387 words
+- 329 files · ~487,391 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2654 nodes · 7129 edges · 155 communities (134 shown, 21 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 179 edges (avg confidence: 0.77)
+- 2830 nodes · 7446 edges · 185 communities (158 shown, 27 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 204 edges (avg confidence: 0.78)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `62af463e`
+- Built from commit: `3524eb0e`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - btn
 - transcript.js
-- Agent Hub (local-first hub for coding agents)
+- Not verified / known limits
 - prompt.md (pinned reconstruction prompt S1)
 - Tooling for building the project (TOOLING.md)
 - history/store.ts
@@ -26,50 +26,50 @@
 - api.ts
 - index.ts
 - security.mjs
-- Agent Hub — Project Specification & Delivery Plan
-- adapters/claude.ts
-- runner.ts
+- map.js
+- redact
+- adapters/types.ts
 - build-tokens.mjs
 - review.js
-- core/types.ts
+- RegistryEntry
 - hub.js
 - fake-agent.mjs
 - CLAUDE.md (pointer to AGENTS.md)
-- Agent Hub — архитектура
+- workmodes.ts
 - agents.ts
 - server.test.ts
-- AgentId
-- probe.ts
+- forecast.ts
+- runner.ts
 - core.test.ts
 - install.test.ts
 - hooks-adopt.test.ts
 - history/codex.ts
-- cases.test.ts
-- RunManager
-- init.ts
+- Agent Hub v0.1 — отчёт: что сделано, как работает, как запускать
+- run.test.ts
+- core/types.ts
 - router.ts
 - install-remote.test.ts
 - loading.test.ts
 - eval.ts
 - starter.ts
-- Agent Hub v0.1 — отчёт: что сделано, как работает, как запускать
-- git.ts
-- AGENTS.md
-- adapters/codex.ts
-- workmodes.ts
+- workmodes-fixes.test.ts
+- context-review.test.ts
+- Agent Hub (local-first hub for coding agents)
+- ADR-019: mandatory review gate with verifier votes; only a human approval counts
+- lean.ts
 - Optimization (OPTIMIZATION.md)
 - gate.ts
 - Models and limits (MODELS-AND-LIMITS.md)
-- hooks-run.ts
+- Orchestrator map, sub-run control and step journal: design
 - trace.ts
 - registry.ts
-- h
+- trace.js
 - common.js
 - checks.ts
 - cascade.ts
 - project.js
 - context.ts
-- gate.test.ts
+- server.ts
 - econ.ts
 - review/store.ts
 - prices.ts
@@ -84,36 +84,36 @@
 - slug.js
 - legacy.js
 - cache.js
-- scheduler.test.ts
+- autouse-wire.ts
 - context-gauge.js
-- source.ts
+- auth.ts
 - forecast.js
-- phase7-api.ts
+- map-api.ts
 - adr/README.md
 - strategies.ts
 - autouse.js
-- graph.ts
-- scheduler.ts
+- git.ts
+- phase7-api.ts
 - integrity.ts
 - priors.ts
-- ui.js
-- autouse-wire.ts
+- h
+- autouse-integration.test.ts
 - 2. Схема базы
 - cascade.test.ts
 - bench.ts
-- Db
+- guardrails.ts
 - cascade-api.test.ts
 - logs.js
-- ADR-019: mandatory review gate with verifier votes; only a human approval counts
+- map.ts
 - trace-model.js
 - checks.test.ts
-- runCheck
+- Review Focus
 - phase7-api.test.ts
 - Agent Hub v0.2 Implementation Plan
-- risk.ts
+- reviewmd.ts
 - guard-model.js
+- map-api.test.ts
 - ADR-017: verify-and-escalate cascade
-- readReviewConfig
 - phase7-round2-api.test.ts
 - Phase PR — Mandatory thorough review (a gate, not an option)
 - starter.test.ts
@@ -122,34 +122,35 @@
 - Phase 3 — Model and effort routing toward the ideal
 - start.test.ts
 - breaker.test.ts
-- 8. Iteration plan
+- Agent Hub — архитектура
 - package-check.ts
 - Phase 7 — Observability and forecasting
-- automation/REVIEW.md
-- design-study/REVIEW.md
-- mobile-app/REVIEW.md
-- web-saas/REVIEW.md
+- Agent Hub — Project Specification & Delivery Plan
+- map.test.ts
+- trace.test.ts
+- AGENTS.md
 - init.test.ts
 - templates.test.ts
 - breaker-round2.test.ts
 - integrity.test.ts
-- {{name}}: архитектура
-- {{name}}: архитектура
-- {{name}}: архитектура
-- {{name}}: архитектура
+- {{name}}: architecture
+- {{name}}: architecture
+- {{name}}: architecture
+- {{name}}: architecture
 - chip
 - Phase 2 — Chat and history like the real CLIs
 - Phase 4 — Token economy
 - Phase 5 — Fastest entry: starter kit
 - screen-model.test.ts
-- {{name}}: бриф
-- {{name}}: бриф
-- {{name}}: бриф
-- {{name}}: бриф
+- {{name}}: brief
+- {{name}}: brief
+- {{name}}: brief
+- {{name}}: brief
 - Phase 1 — Modes that really work
-- ADR-025: using the leftover limit before a reset is opt-in per project, starts only what the user approved, and fails closed
-- ADR-026: the circuit breaker stops runaway runs, is ON by default, and only the user's own config can loosen it
+- mode-rules-api.test.ts
+- Security and vulnerability checks (SECURITY.md)
 - Adapter fixtures
+- 4. Компоненты
 - templates-paths.test.ts
 - cascade-model.test.ts
 - trace-model.test.ts
@@ -160,18 +161,42 @@
 - mobile-app.md
 - web-saas.md
 - integrity-worker.mjs
+- rel
+- 8. Iteration plan
+- mcp-test.ts
+- automation/REVIEW.md
+- design-study/REVIEW.md
+- mobile-app/REVIEW.md
+- web-saas/REVIEW.md
+- 1. Product brief (ТЗ)
+- 2. Functional requirements
+- hooks.ts
+- map-native.test.ts
+- ADR-025: using the leftover limit before a reset is opt-in per project, starts only what the user approved, and fails closed
+- ADR-026: the circuit breaker stops runaway runs, is ON by default, and only the user's own config can loosen it
+- 5. Ключевые потоки
+- 6. Model routing and call specifications
+- ADR-027: the orchestrator map reads what the hub already stores; hub runs can be messaged, native sub-agents cannot; steps go to a journal; modes teach rules
+- Pipelines: short review (2026-10-28)
+- 5. Principles
+- ADR-018: a task run past 250K tokens of context is stopped and continued in a fresh session from its handoff card
+- ADR-020: a run starts only the skills and MCP servers its work mode needs
+- ADR-021: the project graph is built by a bounded `graphify update` the user starts
+- ADR-022: the starter kit installs third-party skills into the hub library only, from named repositories, at a pinned commit, after the user was shown every byte
+- ADR-023: `hub new` creates a project only in a new or empty folder, and its verify command stays unapproved
+- ADR-024: the run trace and the context gauge read `turn` rows the hub stores per model call: numbers, names and times only, bounded everywhere
 
 ## God Nodes (most connected - your core abstractions)
-1. `h()` - 141 edges
-2. `btn()` - 58 edges
-3. `AgentId` - 56 edges
-4. `redact()` - 55 edges
-5. `chip()` - 54 edges
-6. `RunManager` - 47 edges
-7. `icon()` - 42 edges
+1. `h()` - 144 edges
+2. `redact()` - 61 edges
+3. `btn()` - 60 edges
+4. `AgentId` - 57 edges
+5. `chip()` - 56 edges
+6. `RunManager` - 49 edges
+7. `icon()` - 44 edges
 8. `main()` - 41 edges
-9. `runRound()` - 40 edges
-10. `toast()` - 40 edges
+9. `toast()` - 41 edges
+10. `runRound()` - 40 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Agent Hub (local-first hub for coding agents)` --semantically_similar_to--> `Repository map`  [INFERRED] [semantically similar]
@@ -198,19 +223,19 @@
 - **Token and cost reduction measures validated by A/B** — docs_optimization_stable_prefix, docs_optimization_two_level_skills, docs_tooling_ponytail, docs_tooling_graphify, docs_optimization_golden_task_set, docs_tooling_token_saving_measures [INFERRED 0.85]
 - **Four-theme design system pipeline** — design_design_system_tokens_css, design_design_system_shadcn_bridge, design_design_system_contrast_measurements, design_preview [INFERRED 0.85]
 
-## Communities (155 total, 21 thin omitted)
+## Communities (185 total, 27 thin omitted)
 
 ### Community 0 - "btn"
-Cohesion: 0.14
-Nodes (45): n(), label(), api, call(), prefs, qs(), stream(), navLink() (+37 more)
+Cohesion: 0.17
+Nodes (37): n(), btn(), closeBtn(), copy(), dialog(), field(), pills(), toast() (+29 more)
 
 ### Community 1 - "transcript.js"
-Cohesion: 0.13
+Cohesion: 0.12
 Nodes (38): argFor(), bodyView(), corner(), diffLine(), diffRow(), duration(), errRes(), FAMILY (+30 more)
 
-### Community 2 - "Agent Hub (local-first hub for coding agents)"
-Cohesion: 0.07
-Nodes (43): ADR-014: hub commits only on hub/* branches, Hard rules (credentials, read-only stores, no push), Mission: local-first hub unifying agents, Repository map, UI rules (tokens, four themes, sizes), ADR-015: prompt goes through stdin, never arguments, Security and vulnerability checks (SECURITY.md), Third-party component risk assessment (+35 more)
+### Community 2 - "Not verified / known limits"
+Cohesion: 0.14
+Nodes (20): ADR-015: prompt goes through stdin, never arguments, Claude rate_limit_event shape never seen, Real Codex rate_limits snapshot (94 percent of weekly window), Codex success path unverified, Docker scanners not run (gitleaks, semgrep, trivy), Needs your decision, Not done: FR-R6 hub open agent, Not verified / known limits (+12 more)
 
 ### Community 3 - "prompt.md (pinned reconstruction prompt S1)"
 Cohesion: 0.07
@@ -222,39 +247,39 @@ Nodes (21): Agent Hub Design System v0.1, Accent edge (light themes), Accent fil
 
 ### Community 5 - "history/store.ts"
 Cohesion: 0.06
-Nodes (36): db, t, job, NOW, snap(), cf, claudeDir, codexDir (+28 more)
+Nodes (41): db, t, claudeWindowMinutes(), LimitSnap, limitSnapshots(), fromDb(), job, NOW (+33 more)
 
 ### Community 6 - "loading.ts"
-Cohesion: 0.11
-Nodes (28): auditLoading(), CLAUDE_FILE, ClaudeLocal, CodexBlock, compileProfile(), Desired, mcpNamesClaude(), mcpNamesCodex() (+20 more)
+Cohesion: 0.14
+Nodes (19): auditLoading(), CLAUDE_FILE, ClaudeLocal, CodexBlock, compileProfile(), Desired, LoadingAudit, mcpNamesClaude() (+11 more)
 
 ### Community 7 - "main.ts"
-Cohesion: 0.14
-Nodes (45): authStatus(), authStatusIn(), parseAuth(), detectAgents(), parsePicks(), summarize(), Args, BOOL (+37 more)
+Cohesion: 0.20
+Nodes (35): authStatus(), detectAgents(), Args, BOOL, cmdBench(), cmdConfig(), cmdGet(), cmdHooks() (+27 more)
 
 ### Community 8 - "api.ts"
-Cohesion: 0.06
-Nodes (34): AuthInfo, cache, forgetAuth(), Runner, RunnerIn, AgentInfo, codexFromAppData(), locate() (+26 more)
+Cohesion: 0.05
+Nodes (37): openLogin(), PICK_PS, pickFolder(), skillRoots(), Overhead, q(), startOverhead(), createSkillsEstimator() (+29 more)
 
 ### Community 9 - "index.ts"
-Cohesion: 0.14
-Nodes (26): REPO_ROOT, ARCH, archDoc(), box(), build(), check(), dataDoc(), Doc (+18 more)
+Cohesion: 0.15
+Nodes (25): REPO_ROOT, ARCH, archDoc(), box(), build(), check(), dataDoc(), Doc (+17 more)
 
 ### Community 10 - "security.mjs"
 Cohesion: 0.12
 Nodes (17): all, code, dir, failed, files(), hits, inline, inner (+9 more)
 
-### Community 11 - "Agent Hub — Project Specification & Delivery Plan"
-Cohesion: 0.07
-Nodes (29): 0. Document map, 10. Definition of Done (every task), 11. Risks and open questions, 12. Decisions so far (by the author), 1.1 Problem, 1.2 Product, 1.3 Users, 1.4 Goals / non-goals / anti-goals (+21 more)
+### Community 11 - "map.js"
+Cohesion: 0.12
+Nodes (25): w(), changedToDone(), contextPct(), ADR-0027, KIND_RU, kindLabel(), layout(), REASON_RU (+17 more)
 
-### Community 12 - "adapters/claude.ts"
-Cohesion: 0.17
-Nodes (25): Block, brief(), ClaudeLine, parseLine(), resultText(), ADR-0024, parseLine(), asInput() (+17 more)
+### Community 12 - "redact"
+Cohesion: 0.12
+Nodes (31): Block, brief(), ClaudeLine, parseLine(), resultText(), ADR-0024, CodexLine, Item (+23 more)
 
-### Community 13 - "runner.ts"
-Cohesion: 0.13
-Nodes (25): fake, run(), ADR-0024, withFake(), RunHandle, startAgent(), StartOpts, AgentAdapter (+17 more)
+### Community 13 - "adapters/types.ts"
+Cohesion: 0.10
+Nodes (24): fake, run(), ADR-0024, withFake(), claudeAdapter, codexAdapter, dir, feed() (+16 more)
 
 ### Community 14 - "build-tokens.mjs"
 Cohesion: 0.29
@@ -264,33 +289,33 @@ Nodes (6): bridge, css, root, sel, shared, themes
 Cohesion: 0.06
 Nodes (62): api(), db, fakeAgent, fakeExe, home, hubHome, raw(), root (+54 more)
 
-### Community 16 - "core/types.ts"
-Cohesion: 0.09
-Nodes (29): adoptHooks(), AdoptResult, EVENT_MAP, tokenize(), classifyHooks(), ClaudeHooks, CODEX_KNOWN_EVENTS, HookReport (+21 more)
+### Community 16 - "RegistryEntry"
+Cohesion: 0.16
+Nodes (14): Candidate, AitmplItem, defaultFetcher(), fetchAitmpl(), Fetcher, GhRunner, risk(), searchGithub() (+6 more)
 
 ### Community 17 - "hub.js"
 Cohesion: 0.50
 Nodes (3): dist, hi, root
 
-### Community 22 - "Agent Hub — архитектура"
-Cohesion: 0.08
-Nodes (25): 10. Технологический выбор (кратко, решения), 11. Порядок сборки, 12. Что не проверено и риски, 1. Зачем это нужно, 2. Цели, не-цели, анти-цели, 3. Принципы, 4.1. Ядро (`packages/core`), 4.2. Адаптеры (`packages/adapter-*`) (+17 more)
+### Community 22 - "workmodes.ts"
+Cohesion: 0.15
+Nodes (19): AGENTS, AP_DEPTHS, AP_MODES, ApplyOpts, applyWorkMode(), autopilotFix(), CLASSES, defaultHubRoots() (+11 more)
 
 ### Community 23 - "agents.ts"
 Cohesion: 0.07
-Nodes (46): ADR-0010, Pick, block(), buildHuntPrompt(), buildVerifyPrompt(), Common, ctx(), dataRule() (+38 more)
+Nodes (46): ADR-0010, Pick, reviewersDir(), block(), buildHuntPrompt(), buildVerifyPrompt(), Common, ctx() (+38 more)
 
 ### Community 24 - "server.test.ts"
 Cohesion: 0.12
 Nodes (13): api(), db, fake, fakeAgent, fakeExe, graphCtx, runs, scenario (+5 more)
 
-### Community 25 - "AgentId"
-Cohesion: 0.07
-Nodes (46): Pick, LoadingAudit, SkillInfo, ToolRow, RootInfo, AgentId, Classified, classify() (+38 more)
+### Community 25 - "forecast.ts"
+Cohesion: 0.08
+Nodes (38): Classified, classify(), COMPILED, RULES, cls(), Calib, OutcomeRow, AGENT_RU (+30 more)
 
-### Community 26 - "probe.ts"
-Cohesion: 0.19
-Nodes (13): Capability, classify(), Ev, IS_TOOL, loadMatrix(), ModeMatrix, probeModes(), repo() (+5 more)
+### Community 26 - "runner.ts"
+Cohesion: 0.06
+Nodes (48): Capability, classify(), Ev, IS_TOOL, loadMatrix(), ModeMatrix, probeModes(), repo() (+40 more)
 
 ### Community 27 - "core.test.ts"
 Cohesion: 0.18
@@ -298,23 +323,23 @@ Nodes (3): fake, gtmp, ADR-0021
 
 ### Community 30 - "history/codex.ts"
 Cohesion: 0.11
-Nodes (38): Block, clip(), historyLineEvents(), isNoise(), Line, readSessionEvents(), syncClaude(), SyncStats (+30 more)
+Nodes (39): sanitizeEvent(), Block, clip(), historyLineEvents(), isNoise(), Line, readSessionEvents(), syncClaude() (+31 more)
 
-### Community 31 - "cases.test.ts"
-Cohesion: 0.19
-Nodes (13): bucket(), buildCases(), bundle(), Case, exportCases(), installId(), isoWeek(), NEVER_INCLUDED (+5 more)
+### Community 31 - "Agent Hub v0.1 — отчёт: что сделано, как работает, как запускать"
+Cohesion: 0.11
+Nodes (18): 1. Адаптировано ли использование токенов, 1. Главный вывод про токены, 2. Выбор модели: не правило, а ближайшая точка к идеалу, 2. Как устроена «инструменты только под проект», 3. Как это выглядит в панели, 3. Сбор данных пользователей с согласия, 4. Как запустить, 5. Аудит качества: что нашёл и исправил (+10 more)
 
-### Community 32 - "RunManager"
-Cohesion: 0.10
-Nodes (20): BenchOpts, waitEnd(), isGitRepo(), chain(), ChainRow, ctxRun(), fake, fakeExe (+12 more)
+### Community 32 - "run.test.ts"
+Cohesion: 0.13
+Nodes (21): approvalFile(), approvals(), approveRunnerHooks(), argvList(), digest(), empty(), HookResult, readRunnerHooks() (+13 more)
 
-### Community 33 - "init.ts"
-Cohesion: 0.09
-Nodes (45): compileAll(), compileMcpClaude(), compileMcpCodex(), compileRules(), compileSkill(), McpJson, mcpName(), projectType() (+37 more)
+### Community 33 - "core/types.ts"
+Cohesion: 0.11
+Nodes (38): compileAll(), compileMcpClaude(), compileMcpCodex(), compileRules(), compileSkill(), McpJson, mcpName(), projectType() (+30 more)
 
 ### Community 34 - "router.ts"
-Cohesion: 0.11
-Nodes (36): advise(), AdviseIn, Choice, EFFORT_RU, EXPLORABLE, FAMILY_RU, full(), GPT_EFFORT (+28 more)
+Cohesion: 0.10
+Nodes (32): advise(), AdviseIn, Choice, EFFORT_RU, EXPLORABLE, FAMILY_RU, full(), GPT_EFFORT (+24 more)
 
 ### Community 35 - "install-remote.test.ts"
 Cohesion: 0.67
@@ -325,168 +350,168 @@ Cohesion: 0.67
 Nodes (3): fake, mk(), skill()
 
 ### Community 37 - "eval.ts"
-Cohesion: 0.08
-Nodes (41): answerCounts(), ANSWERS, Baseline, BLOCKING, caseFromFinding(), CaseResult, caseSummary, checkMeta() (+33 more)
+Cohesion: 0.09
+Nodes (43): cmdReviewEval(), verifyMany(), answerCounts(), ANSWERS, BLOCKING, caseFromFinding(), CaseResult, caseSummary (+35 more)
 
 ### Community 38 - "starter.ts"
 Cohesion: 0.09
-Nodes (36): defaultTextFetcher, makeTextFetcher(), planLibraryInstall(), Preview, previewComponent(), RawItem, relOk(), slug() (+28 more)
+Nodes (38): defaultTextFetcher, makeTextFetcher(), planLibraryInstall(), Preview, previewComponent(), RawItem, relOk(), slug() (+30 more)
 
-### Community 39 - "Agent Hub v0.1 — отчёт: что сделано, как работает, как запускать"
-Cohesion: 0.11
-Nodes (18): 1. Адаптировано ли использование токенов, 1. Главный вывод про токены, 2. Выбор модели: не правило, а ближайшая точка к идеалу, 2. Как устроена «инструменты только под проект», 3. Как это выглядит в панели, 3. Сбор данных пользователей с согласия, 4. Как запустить, 5. Аудит качества: что нашёл и исправил (+10 more)
+### Community 39 - "workmodes-fixes.test.ts"
+Cohesion: 0.14
+Nodes (11): bases, mode(), noLib, loadWorkModes(), ModeReviewer, pickModeReviewer(), mode(), noLib (+3 more)
 
-### Community 40 - "git.ts"
-Cohesion: 0.19
-Nodes (18): hiddenEntries(), gitc(), repoWithWorktree(), sh(), ALLOWED_ENV, branchName(), checkpoint(), checkSparse() (+10 more)
+### Community 40 - "context-review.test.ts"
+Cohesion: 0.15
+Nodes (11): file, g, handoffMode(), hubOwnsFolder(), answer, base, clock(), mk() (+3 more)
 
-### Community 41 - "AGENTS.md"
-Cohesion: 0.20
-Nodes (9): AGENTS.md, Definition of done, Hard rules, How to work, by kind of task, Models and effort, Save tokens, Skills by situation (use if installed), Start here (+1 more)
+### Community 41 - "Agent Hub (local-first hub for coding agents)"
+Cohesion: 0.14
+Nodes (14): Mission: local-first hub unifying agents, Repository map, UI rules (tokens, four themes, sizes), Real history import: 18 s first run, 0.0 s re-sync, Panel verified in Chrome (4 themes, desktop and 390 px), Untested platforms and accessibility, Agent Hub (local-first hub for coding agents), Unified read-only history index (+6 more)
 
-### Community 42 - "adapters/codex.ts"
-Cohesion: 0.13
-Nodes (14): claudeAdapter, codexAdapter, CodexLine, Item, MONTHS, parseResetTime(), dir, feed() (+6 more)
+### Community 42 - "ADR-019: mandatory review gate with verifier votes; only a human approval counts"
+Cohesion: 0.14
+Nodes (13): ADR-019: mandatory review gate with verifier votes; only a human approval counts, Consequences, Convergence, Data model, Decision, Findings are answered, not ignored, Known limitations (accepted), Trust model (+5 more)
 
-### Community 43 - "workmodes.ts"
-Cohesion: 0.06
-Nodes (45): loadCatalog(), readCatalogDir(), shippedCatalogIds(), AGENTS, AP_DEPTHS, AP_MODES, ApplyOpts, applyWorkMode() (+37 more)
+### Community 43 - "lean.ts"
+Cohesion: 0.16
+Nodes (17): loadCatalog(), readCatalogDir(), shippedCatalogIds(), WorkMode, canon(), canonDeep(), inside(), launcher() (+9 more)
 
 ### Community 44 - "Optimization (OPTIMIZATION.md)"
 Cohesion: 0.19
 Nodes (13): Eleven practices to keep spend low, Optimization (OPTIMIZATION.md), Golden task set eval/golden, harness2 mechanisms adopted (probes, lessons, golden eval), Hypotheses to test first, Lessons with evidence (.hub/lessons), Three memory types (semantic, episodic, procedural), Two-level skills (profile of 15 + hub-skill-index) (+5 more)
 
 ### Community 45 - "gate.ts"
-Cohesion: 0.10
-Nodes (43): diffTooLarge(), approveChecks(), planChecks(), answer(), approve(), approveReviewChecks(), blockers(), BLOCKING_SEVERITY (+35 more)
+Cohesion: 0.07
+Nodes (62): diffTooLarge(), approveChecks(), gateChecks(), notApprovedReason(), planChecks(), readReviewConfig(), answer(), approve() (+54 more)
 
 ### Community 46 - "Models and limits (MODELS-AND-LIMITS.md)"
-Cohesion: 0.27
-Nodes (10): Models and limits (MODELS-AND-LIMITS.md), Two-week calibration plan, Claude API pricing table, Codex as fallback when Claude Pro limit is hit, Codex log findings (97.9 percent cache, 57 percent subagent tokens), Escalation ladder and triggers, Weekly limit percent cannot be derived by formula, Model allocation (Opus 27 sessions, Sonnet 69) (+2 more)
+Cohesion: 0.24
+Nodes (11): Models and limits (MODELS-AND-LIMITS.md), Two-week calibration plan, Claude API pricing table, Codex as fallback when Claude Pro limit is hit, Codex log findings (97.9 percent cache, 57 percent subagent tokens), Escalation ladder and triggers, Weekly limit percent cannot be derived by formula, Model allocation (Opus 27 sessions, Sonnet 69) (+3 more)
 
-### Community 47 - "hooks-run.ts"
-Cohesion: 0.38
-Nodes (10): approvalFile(), approvals(), approveRunnerHooks(), argvList(), digest(), empty(), HookResult, readRunnerHooks() (+2 more)
+### Community 47 - "Orchestrator map, sub-run control and step journal: design"
+Cohesion: 0.14
+Nodes (13): Constraints that come from the code (observed), English-only agent-facing text, Goals, Intent and why, Non-goals and anti-goals, Open questions for the user, Orchestrator map, sub-run control and step journal: design, Stages (+5 more)
 
 ### Community 48 - "trace.ts"
-Cohesion: 0.08
-Nodes (34): BenchRow, file, g, clock(), mk(), Tokens, buildTrace(), cachedTrace() (+26 more)
+Cohesion: 0.15
+Nodes (17): buildTrace(), cachedTrace(), obj(), Pending, readTraceEvents(), at(), fake, seeded() (+9 more)
 
 ### Community 49 - "registry.ts"
-Cohesion: 0.10
-Nodes (35): ApplyResult, addSkillRoot(), loadUserConfig(), removeSkillRoot(), saveUserConfig(), scanLocalSkills(), skillDirs(), skillRootInfos() (+27 more)
+Cohesion: 0.13
+Nodes (27): ApplyResult, home(), listPlugins(), PluginInfo, skillCost(), suggest(), scanLocalSkills(), skillDirs() (+19 more)
 
-### Community 50 - "h"
-Cohesion: 0.15
-Nodes (34): lanes(), msText(), avatar(), debounce(), empty(), h(), chatPanel(), view() (+26 more)
+### Community 50 - "trace.js"
+Cohesion: 0.27
+Nodes (11): lanes(), msText(), fmt, cell(), ADR-0012, OUTCOME_RU, pct(), stat() (+3 more)
 
 ### Community 51 - "common.js"
-Cohesion: 0.15
-Nodes (29): renderRun(), renderSafe(), agentBadge(), agentName(), copy(), meter(), PERMS, addProjectDialog() (+21 more)
+Cohesion: 0.11
+Nodes (30): api, call(), prefs, stream(), stepsLine(), renderRun(), renderSafe(), agentName() (+22 more)
 
 ### Community 52 - "checks.ts"
-Cohesion: 0.10
-Nodes (32): AddedDep, addedDependencies(), buildPlan(), CheckOpts, CopyError, dependencyFindings(), digestOf(), fileLike() (+24 more)
+Cohesion: 0.07
+Nodes (52): AddedDep, addedDependencies(), approvalFile(), approvals(), approvePlan(), buildPlan(), CheckOpts, CopyError (+44 more)
 
 ### Community 53 - "cascade.ts"
-Cohesion: 0.13
-Nodes (31): run(), CheckPlan, diffArgs(), block(), CascadeOpts, CascadeResult, CascadeState, clip() (+23 more)
+Cohesion: 0.12
+Nodes (33): run(), CheckPlan, block(), CascadeOpts, CascadeResult, CascadeState, clip(), dataRule() (+25 more)
 
 ### Community 54 - "project.js"
-Cohesion: 0.12
-Nodes (30): field(), sectionHead(), svgEl(), modelName(), pctText(), runRow(), shortModel(), TASKS (+22 more)
+Cohesion: 0.13
+Nodes (27): sectionHead(), svgEl(), modelName(), pctText(), shortModel(), TASKS, BALANCE, dateRu() (+19 more)
 
 ### Community 55 - "context.ts"
-Cohesion: 0.10
-Nodes (27): ADR-0014, Breakdown, Cache, cacheState(), contextBreakdown(), contextChainDepth(), contextLevel(), ctxOf() (+19 more)
+Cohesion: 0.13
+Nodes (20): ADR-0014, Breakdown, Cache, cacheState(), contextBreakdown(), contextLevel(), ctxOf(), Handoff (+12 more)
 
-### Community 56 - "gate.test.ts"
-Cohesion: 0.10
-Nodes (26): q(), sweepReviewerDirs(), sweepCheckRuns(), GateError, launchReview(), startReview(), apiOf(), baseOf() (+18 more)
+### Community 56 - "server.ts"
+Cohesion: 0.23
+Nodes (13): q(), sweepReviewerDirs(), sweepCheckRuns(), apiOf(), markInterruptedReviews(), handle(), cookieOf(), eqToken() (+5 more)
 
 ### Community 57 - "econ.ts"
-Cohesion: 0.19
-Nodes (24): ALIAS, calibrate(), canonicalModel(), CODEX_PRIOR, costUsd(), DEFAULT_PROFILE, effortProfile(), effortProfiles() (+16 more)
+Cohesion: 0.12
+Nodes (36): bucket(), buildCases(), bundle(), Case, exportCases(), installId(), isoWeek(), NEVER_INCLUDED (+28 more)
 
 ### Community 58 - "review/store.ts"
-Cohesion: 0.14
-Nodes (27): begin(), reviewsOfRun(), addFindings(), answerFinding(), clearHumanApproval(), createReview(), FindingRow, listFindings() (+19 more)
+Cohesion: 0.13
+Nodes (28): EvalResult, reviewsOfRun(), addFindings(), answerFinding(), clearHumanApproval(), createReview(), FindingRow, listFindings() (+20 more)
 
 ### Community 59 - "prices.ts"
-Cohesion: 0.14
-Nodes (26): PRICES_VERIFIED_AT, badId(), bundledCheckedAt(), DEFAULT_PRICES_PATH, isObj(), loadPriceTable(), money(), NONE (+18 more)
+Cohesion: 0.15
+Nodes (25): PRICES_VERIFIED_AT, badId(), bundledCheckedAt(), DEFAULT_PRICES_PATH, isObj(), loadPriceTable(), money(), NONE (+17 more)
 
 ### Community 60 - "review/types.ts"
-Cohesion: 0.13
-Nodes (23): sha256(), fnd(), put(), rawF(), stored(), clip(), count(), DiffLine (+15 more)
+Cohesion: 0.16
+Nodes (19): sha256(), fnd(), clip(), count(), DiffLine, DROPPED, fold(), indexDiff() (+11 more)
 
 ### Community 61 - "breaker.ts"
-Cohesion: 0.16
-Nodes (27): ackFile(), ackTrip(), blockingTrips(), Caps, capsProblem(), chainDepth(), effectiveCaps(), evaluate() (+19 more)
+Cohesion: 0.13
+Nodes (31): ackFile(), ackTrip(), auditGuard(), blockingTrips(), CAP_RANGE, Caps, capsProblem(), chainDepth() (+23 more)
 
 ### Community 62 - "autouse.ts"
-Cohesion: 0.13
-Nodes (25): AutoDeps, AutoItem, AutoProject, AutoState, cancelItem(), clip(), emptyState(), fin() (+17 more)
+Cohesion: 0.10
+Nodes (36): approveItem(), AutoDeps, AutoItem, AutoProject, AutoScheduler, AutoState, cancelItem(), clip() (+28 more)
 
 ### Community 63 - "greet.js"
 Cohesion: 0.60
 Nodes (3): greet(), getUsr(), users
 
-### Community 71 - "scheduler.test.ts"
-Cohesion: 0.18
-Nodes (22): confirmWordFor(), acquireLock(), body(), file(), heartbeat(), holdsLock(), Lock, LockDeps (+14 more)
+### Community 71 - "autouse-wire.ts"
+Cohesion: 0.19
+Nodes (24): acquireLock(), body(), file(), heartbeat(), holdsLock(), Lock, LockDeps, lockStatus (+16 more)
 
 ### Community 75 - "context-gauge.js"
 Cohesion: 0.14
 Nodes (23): AGENTS, cacheLine(), contextModel(), gaugeText(), HANDOFFS, INVISIBLE, ADR-0018, levelChip() (+15 more)
 
-### Community 76 - "source.ts"
-Cohesion: 0.50
-Nodes (3): real(), resolveSource(), Source
+### Community 76 - "auth.ts"
+Cohesion: 0.20
+Nodes (11): AuthInfo, cache, forgetAuth(), parseAuth(), Runner, RunnerIn, AgentInfo, codexFromAppData() (+3 more)
 
 ### Community 77 - "forecast.js"
 Cohesion: 0.17
-Nodes (24): AGENT_RU, AGENTS, BASES, basisText(), forecastLine(), forecastModel(), INVISIBLE, LABELS (+16 more)
+Nodes (23): AGENT_RU, AGENTS, BASES, basisText(), forecastLine(), forecastModel(), INVISIBLE, LABELS (+15 more)
 
-### Community 78 - "phase7-api.ts"
-Cohesion: 0.09
-Nodes (18): auditGuard(), CAP_RANGE, DEFAULT_CAPS, NUM_KEYS, JobKind, KIND_RU, KIND_WRITES, Handler (+10 more)
+### Community 78 - "map-api.ts"
+Cohesion: 0.14
+Nodes (20): isSafeName(), appendStep(), fileOf(), JournalEntry, KINDS, line(), names(), planJournalWrite() (+12 more)
 
 ### Community 79 - "adr/README.md"
-Cohesion: 0.12
-Nodes (16): Code conventions (single package, erasable TS, JSON, Windows first), ADR-010: one package, zero runtime dependencies, ADR-011: JSON file formats instead of YAML, ADR-012: panel is plain ES modules, no React, no bundler, ADR-013: TypeScript via Node type stripping, tsc build for publishing, ADR-018: a task run past 250K tokens of context is stopped and continued in a fresh session from its handoff card, ADR-020: a run starts only the skills and MCP servers its work mode needs, ADR-021: the project graph is built by a bounded `graphify update` the user starts (+8 more)
+Cohesion: 0.35
+Nodes (10): Code conventions (single package, erasable TS, JSON, Windows first), ADR-010: one package, zero runtime dependencies, ADR-011: JSON file formats instead of YAML, ADR-012: panel is plain ES modules, no React, no bundler, ADR-013: TypeScript via Node type stripping, tsc build for publishing, ADR-001…009: no separate files, ADR-010…027, ADR index (+2 more)
 
 ### Community 80 - "strategies.ts"
-Cohesion: 0.14
-Nodes (17): cascade(), Cell, CLASSES, compareStrategies(), fromBench(), fromOutcomes(), isBench(), keyOf() (+9 more)
+Cohesion: 0.13
+Nodes (20): surchargeFor(), priceTier(), rank(), cascade(), Cell, CLASSES, compareStrategies(), fromBench() (+12 more)
 
 ### Community 81 - "autouse.js"
 Cohesion: 0.19
 Nodes (21): AGENTS, agentText(), autoModel(), confirmMatches(), fin(), hoursText(), INVISIBLE, KIND_RU (+13 more)
 
-### Community 82 - "graph.ts"
-Cohesion: 0.16
-Nodes (21): killTree(), ALWAYS_SKIP, envPath(), globSeg(), GRAPHIGNORE, GraphLast, GraphState, graphStatus (+13 more)
+### Community 82 - "git.ts"
+Cohesion: 0.10
+Nodes (36): killTree(), ALWAYS_SKIP, envPath(), globSeg(), GRAPHIGNORE, GraphLast, GraphState, graphStatus (+28 more)
 
-### Community 83 - "scheduler.ts"
-Cohesion: 0.15
-Nodes (21): approveItem(), isEnabled(), projectKeyOf(), AGENTS, BILLING_ENV, billingOk(), eligibility(), exists() (+13 more)
+### Community 83 - "phase7-api.ts"
+Cohesion: 0.08
+Nodes (34): authStatusIn(), confirmWordFor(), isEnabled(), AGENTS, BILLING_ENV, billingOk(), eligibility(), exists() (+26 more)
 
 ### Community 84 - "integrity.ts"
-Cohesion: 0.20
-Nodes (21): auditName(), canon(), fileState(), guardrailsConfigTrusted(), hashFile(), hasTamper(), readJson(), recordTamper() (+13 more)
+Cohesion: 0.17
+Nodes (26): addSkillRoot(), loadUserConfig(), removeSkillRoot(), saveUserConfig(), userCapsRaw(), auditName(), canon(), fileState() (+18 more)
 
 ### Community 85 - "priors.ts"
 Cohesion: 0.16
 Nodes (18): basisOf(), CLASSES, common(), DEFAULT_PRIORS_PATH, isObj(), isoDate(), loadPriors(), MODELS (+10 more)
 
-### Community 86 - "ui.js"
-Cohesion: 0.15
-Nodes (18): app, main, NAV, navKey(), route(), ROUTES, section(), add() (+10 more)
+### Community 86 - "h"
+Cohesion: 0.14
+Nodes (36): app, main, NAV, navKey(), navLink(), quickSearch(), route(), ROUTES (+28 more)
 
-### Community 87 - "autouse-wire.ts"
-Cohesion: 0.16
-Nodes (17): AutoScheduler, base, fake, fakeExe, home, repo, ownStartMs(), pidAlive() (+9 more)
+### Community 87 - "autouse-integration.test.ts"
+Cohesion: 0.29
+Nodes (6): base, fake, fakeExe, home, repo, waitEnd()
 
 ### Community 88 - "2. Схема базы"
 Cohesion: 0.11
@@ -494,39 +519,39 @@ Nodes (18): 1.1. `hub.yaml` — проект, 1.2. `toolkit.yaml` — выбра
 
 ### Community 89 - "cascade.test.ts"
 Cohesion: 0.15
-Nodes (15): approveVerify(), planVerify(), RunGuard, Rung, cleanup, FAILING_PKG, fake, fakeExe (+7 more)
+Nodes (16): approveVerify(), planVerify(), Rung, cleanup, FAILING_PKG, fake, fakeExe, gitc() (+8 more)
 
 ### Community 90 - "bench.ts"
-Cohesion: 0.20
-Nodes (12): CLASSES, freshRepo(), GoldenTask, gradeRepo(), loadTasks(), runBench(), runVerify(), fake (+4 more)
+Cohesion: 0.12
+Nodes (21): BenchOpts, BenchRow, CLASSES, freshRepo(), GoldenTask, gradeRepo(), loadTasks(), parsePicks() (+13 more)
 
-### Community 91 - "Db"
-Cohesion: 0.18
-Nodes (13): LimitSnap, limitSnapshots(), fromDb(), Db, latestLimitMin(), EvalOpts, GateOpts, cnt() (+5 more)
+### Community 91 - "guardrails.ts"
+Cohesion: 0.39
+Nodes (6): Baseline, Scores, cnt(), guardrails, reviewWindow, Effort
 
 ### Community 92 - "cascade-api.test.ts"
-Cohesion: 0.14
-Nodes (12): api(), capture, db, fake, fakeAgent, fakeExe, pid, review (+4 more)
+Cohesion: 0.11
+Nodes (14): api(), capture, db, fake, fakeAgent, fakeExe, pid, review (+6 more)
 
 ### Community 93 - "logs.js"
 Cohesion: 0.26
 Nodes (12): filterOptions(), KIND_RU, kindLabel(), matches(), pid(), filterSelect(), LEVEL, logsPanel() (+4 more)
 
-### Community 94 - "ADR-019: mandatory review gate with verifier votes; only a human approval counts"
-Cohesion: 0.14
-Nodes (13): ADR-019: mandatory review gate with verifier votes; only a human approval counts, Consequences, Convergence, Data model, Decision, Findings are answered, not ignored, Known limitations (accepted), Trust model (+5 more)
+### Community 94 - "map.ts"
+Cohesion: 0.21
+Nodes (13): buildFullMap(), buildMap(), extractNative(), handoffReason(), MapEdge, MapNode, NodeKind, one() (+5 more)
 
 ### Community 95 - "trace-model.js"
-Cohesion: 0.23
-Nodes (13): at(), AGENTS, int(), INVISIBLE, ADR-0012, mergePage(), money(), num() (+5 more)
+Cohesion: 0.24
+Nodes (13): AGENTS, int(), INVISIBLE, ADR-0012, mergePage(), money(), num(), obj() (+5 more)
 
 ### Community 96 - "checks.test.ts"
-Cohesion: 0.20
-Nodes (11): CheckResult, exportCommit(), pathProblem(), safeEntry(), g(), project(), tmp(), withTmp() (+3 more)
+Cohesion: 0.21
+Nodes (9): CheckResult, exportCommit(), pathProblem(), safeEntry(), g(), project(), tmp(), withTmp() (+1 more)
 
-### Community 97 - "runCheck"
-Cohesion: 0.18
-Nodes (14): fail(), gateChecks(), isFile(), killTree(), notFound(), pathOf(), printable(), resolveCommand() (+6 more)
+### Community 97 - "Review Focus"
+Cohesion: 0.15
+Nodes (12): Global Constraints, Orchestrator Map (Stage 1) Implementation Plan, Review Focus, Self-review, Task A: English-only agent-facing text, Task B: Rules by mode, Task C: Map tree builder, Task D: Native sub-agents and background processes (+4 more)
 
 ### Community 98 - "phase7-api.test.ts"
 Cohesion: 0.16
@@ -536,21 +561,21 @@ Nodes (11): agents, click, db, get(), home, pid, post(), raw() (+3 more)
 Cohesion: 0.15
 Nodes (12): Agent Hub v0.2 Implementation Plan, Global Constraints, Out of scope for v0.2, Phase 0 — Measure before changing, Phase 6 — Wrap-up, Research basis → decisions, Review Focus, Skills by step (load only the one the step names) (+4 more)
 
-### Community 100 - "risk.ts"
-Cohesion: 0.35
-Nodes (9): ALWAYS_HIGH, globMatch(), globToRegExp(), isDoc(), outside(), riskTier, SENSITIVE, slash() (+1 more)
+### Community 100 - "reviewmd.ts"
+Cohesion: 0.11
+Nodes (29): appendRuleChange(), esc(), headingRe(), humanPathsForChanges(), humanPathsFromReviewMd(), inside(), LEGACY_HEADINGS, loadReviewMd() (+21 more)
 
 ### Community 101 - "guard-model.js"
 Cohesion: 0.26
 Nodes (10): CAP_KEYS, CAP_LABEL, capMap(), EFFORT_RU, fin(), guardModel(), INVISIBLE, KINDS (+2 more)
 
-### Community 102 - "ADR-017: verify-and-escalate cascade"
+### Community 102 - "map-api.test.ts"
+Cohesion: 0.15
+Nodes (8): db, fake, fakeAgent, fakeExe, Init, pid, root, runs
+
+### Community 103 - "ADR-017: verify-and-escalate cascade"
 Cohesion: 0.18
 Nodes (10): ADR-017: verify-and-escalate cascade, Caps and stop conditions, Consequences, Decision, Quality evidence (task 3.4), Rungs and what each one receives, State shown in the panel, Trust model (+2 more)
-
-### Community 103 - "readReviewConfig"
-Cohesion: 0.31
-Nodes (11): approvalFile(), approvals(), approvePlan(), defaultChecks(), isObj(), licenseOf(), planFor(), readJson() (+3 more)
 
 ### Community 104 - "phase7-round2-api.test.ts"
 Cohesion: 0.22
@@ -569,8 +594,8 @@ Cohesion: 0.22
 Nodes (5): db, home, hubHome, quick, root
 
 ### Community 108 - "Workflow (one task, one worktree, test first)"
-Cohesion: 0.22
-Nodes (9): Definition of done, Graph (graphify) rules, Models and effort policy, Read order for a task (graph first), Skills by situation table, Token discipline, Workflow (one task, one worktree, test first), Stable prefix for prompt cache (+1 more)
+Cohesion: 0.25
+Nodes (8): Definition of done, Graph (graphify) rules, Models and effort policy, Read order for a task (graph first), Skills by situation table, Token discipline, Workflow (one task, one worktree, test first), Development commands (test, typecheck, security, build, tokens)
 
 ### Community 109 - "Phase 3 — Model and effort routing toward the ideal"
 Cohesion: 0.22
@@ -584,9 +609,9 @@ Nodes (8): check(), CHECKER, dirs, PS, ROOT, run(), SCRIPT, tmp()
 Cohesion: 0.22
 Nodes (6): base, Fact, fake, fakeExe, NOW, web
 
-### Community 112 - "8. Iteration plan"
-Cohesion: 0.25
-Nodes (8): 8. Iteration plan, Cross-cutting (12 · Opus 2 · Sonnet 10) and reviews (14 · Opus 6 · Sonnet 8), I0 — Bootstrap (6 sessions: Opus 4 · Sonnet 2), I1 — Library & sync (14 · Opus 3 · Sonnet 11), I2 — History & ledger (12 · Opus 2 · Sonnet 10), I3 — Adapters, run, handoff (16 · Opus 5 · Sonnet 11), I4 — Economics & advisor (8 · Opus 2 · Sonnet 6), I5 — Lifecycle & UI (14 · Opus 3 · Sonnet 11)
+### Community 112 - "Agent Hub — архитектура"
+Cohesion: 0.18
+Nodes (11): 10. Технологический выбор (кратко, решения), 11. Порядок сборки, 12. Что не проверено и риски, 1. Зачем это нужно, 2. Цели, не-цели, анти-цели, 3. Принципы, 6. Совместимость и адаптация компонентов, 7. Модель безопасности (+3 more)
 
 ### Community 113 - "package-check.ts"
 Cohesion: 0.32
@@ -596,21 +621,21 @@ Nodes (6): checkPackageList(), localUserPathIn(), NEED, NEED_DIRS, PackageVerdic
 Cohesion: 0.29
 Nodes (7): Phase 7 — Observability and forecasting, Phase 7 review, Task 7.1: Detailed run trace, Task 7.2: Live context gauge, Task 7.3: Project forecast, Task 7.4: Use the leftover limit before reset (opt-in), Task 7.5: Guardrails (circuit breaker)
 
-### Community 115 - "automation/REVIEW.md"
-Cohesion: 0.29
-Nodes (5): Доказательство: файл и строка, Лимит мелочей: 5, Не проверять, Пути, где нужен человек, Что здесь считается поломкой
+### Community 115 - "Agent Hub — Project Specification & Delivery Plan"
+Cohesion: 0.18
+Nodes (9): 0. Document map, 10. Definition of Done (every task), 11. Risks and open questions, 12. Decisions so far (by the author), 3. Non-functional requirements, 4. Architecture and data model (summary), 7. Skills, plugins and MCP for building, 9. Unit economics (summary) (+1 more)
 
-### Community 116 - "design-study/REVIEW.md"
-Cohesion: 0.29
-Nodes (5): Доказательство: файл и строка, Лимит мелочей: 5, Не проверять, Пути, где нужен человек, Что здесь считается поломкой
+### Community 116 - "map.test.ts"
+Cohesion: 0.20
+Nodes (7): db, home, P, Q, R, run(), turn()
 
-### Community 117 - "mobile-app/REVIEW.md"
-Cohesion: 0.29
-Nodes (5): Доказательство: файл и строка, Лимит мелочей: 5, Не проверять, Пути, где нужен человек, Что здесь считается поломкой
+### Community 117 - "trace.test.ts"
+Cohesion: 0.25
+Nodes (10): pageTurns(), at(), claude(), ev(), fake, fakeExe, T0, turn() (+2 more)
 
-### Community 118 - "web-saas/REVIEW.md"
-Cohesion: 0.29
-Nodes (5): Доказательство: файл и строка, Лимит мелочей: 5, Не проверять, Пути, где нужен человек, Что здесь считается поломкой
+### Community 118 - "AGENTS.md"
+Cohesion: 0.20
+Nodes (9): AGENTS.md, Definition of done, Hard rules, How to work, by kind of task, Models and effort, Save tokens, Skills by situation (use if installed), Start here (+1 more)
 
 ### Community 119 - "init.test.ts"
 Cohesion: 0.33
@@ -628,25 +653,25 @@ Nodes (5): base, Fact, fake, fakeExe, NOW
 Cohesion: 0.29
 Nodes (4): base, HOME, job, NOW
 
-### Community 123 - "{{name}}: архитектура"
+### Community 123 - "{{name}}: architecture"
 Cohesion: 0.29
-Nodes (6): {{name}}: архитектура, Границы, Сбои и повторы, Секреты, Триггеры, Шаги
+Nodes (6): Failures and retries, Limits, {{name}}: architecture, Secrets, Steps, Triggers
 
-### Community 124 - "{{name}}: архитектура"
+### Community 124 - "{{name}}: architecture"
 Cohesion: 0.29
-Nodes (6): {{name}}: архитектура, Варианты, Вопрос и критерии, Проверка, Референсы, Решение
+Nodes (6): Check, Decision, {{name}}: architecture, Options, Question and criteria, References
 
-### Community 125 - "{{name}}: архитектура"
+### Community 125 - "{{name}}: architecture"
 Cohesion: 0.29
-Nodes (6): {{name}}: архитектура, Выпуск, Данные и офлайн, Доступ к устройству, Подписи и ключи, Экраны и переходы
+Nodes (6): Data and offline, Device access, {{name}}: architecture, Release, Screens and transitions, Signing and keys
 
-### Community 126 - "{{name}}: архитектура"
+### Community 126 - "{{name}}: architecture"
 Cohesion: 0.29
-Nodes (6): {{name}}: архитектура, Выкладка, Данные, Доступ, Контракты, Секреты и среда
+Nodes (6): Access, Contracts, Data, {{name}}: architecture, Release, Secrets and environment
 
 ### Community 127 - "chip"
-Cohesion: 0.48
-Nodes (6): stepsLine(), chip(), cascadeCard(), ADR-0012, stepRow(), outcomeChip()
+Cohesion: 0.21
+Nodes (20): label(), qs(), chip(), linkProject(), planDialog(), detail(), KIND, view() (+12 more)
 
 ### Community 128 - "Phase 2 — Chat and history like the real CLIs"
 Cohesion: 0.33
@@ -664,57 +689,133 @@ Nodes (6): Phase 5 — Fastest entry: starter kit, Phase 5 review, Task 5.1: Fir
 Cohesion: 0.33
 Nodes (3): here, model, web
 
-### Community 132 - "{{name}}: бриф"
+### Community 132 - "{{name}}: brief"
 Cohesion: 0.33
-Nodes (5): {{name}}: бриф, Главные сценарии, Границы первой версии, Для кого и зачем, Как поймём, что готово
+Nodes (5): How we know it is done, Limits of the first version, Main scenarios, {{name}}: brief, Who it is for and why
 
-### Community 133 - "{{name}}: бриф"
+### Community 133 - "{{name}}: brief"
 Cohesion: 0.33
-Nodes (5): {{name}}: бриф, Главные сценарии, Границы первой версии, Для кого и зачем, Как поймём, что готово
+Nodes (5): How we know it is done, Limits of the first version, Main scenarios, {{name}}: brief, Who it is for and why
 
-### Community 134 - "{{name}}: бриф"
+### Community 134 - "{{name}}: brief"
 Cohesion: 0.33
-Nodes (5): {{name}}: бриф, Главные сценарии, Границы первой версии, Для кого и зачем, Как поймём, что готово
+Nodes (5): How we know it is done, Limits of the first version, Main scenarios, {{name}}: brief, Who it is for and why
 
-### Community 135 - "{{name}}: бриф"
+### Community 135 - "{{name}}: brief"
 Cohesion: 0.33
-Nodes (5): {{name}}: бриф, Главные сценарии, Границы первой версии, Для кого и зачем, Как поймём, что готово
+Nodes (5): How we know it is done, Limits of the first version, Main scenarios, {{name}}: brief, Who it is for and why
 
 ### Community 136 - "Phase 1 — Modes that really work"
 Cohesion: 0.40
 Nodes (5): Phase 1 — Modes that really work, Phase 1 review, Task 1.1: Permission presets, applied on start **and** resume, Task 1.2: Live mode probe (`hub doctor --modes`), Task 1.3: Work modes (presets) — Chat, Task, Interview, Autopilot, Review
 
-### Community 137 - "ADR-025: using the leftover limit before a reset is opt-in per project, starts only what the user approved, and fails closed"
-Cohesion: 0.40
-Nodes (4): ADR-025: using the leftover limit before a reset is opt-in per project, starts only what the user approved, and fails closed, Review fixes (after the Opus review of 7.3-7.5), Second review round, What an unattended agent can reach
+### Community 137 - "mode-rules-api.test.ts"
+Cohesion: 0.20
+Nodes (7): db, fake, fakeAgent, fakeExe, pid, root, runs
 
-### Community 138 - "ADR-026: the circuit breaker stops runaway runs, is ON by default, and only the user's own config can loosen it"
-Cohesion: 0.40
-Nodes (4): ADR-026: the circuit breaker stops runaway runs, is ON by default, and only the user's own config can loosen it, Review fixes (after the Opus review of 7.3-7.5), Second review round, What an unattended agent can reach
+### Community 138 - "Security and vulnerability checks (SECURITY.md)"
+Cohesion: 0.36
+Nodes (9): ADR-014: hub commits only on hub/* branches, Hard rules (credentials, read-only stores, no push), Security and vulnerability checks (SECURITY.md), Third-party component risk assessment, Security merge gates, Security scanners (gitleaks, semgrep, osv-scanner, trivy via Docker), Threat model T1 to T10, Push guard (blocking hook via environment) (+1 more)
 
 ### Community 139 - "Adapter fixtures"
 Cohesion: 0.50
 Nodes (3): Adapter fixtures, From documentation or memory only (unverified), Shapes seen in local history (observed shape, synthetic content)
 
+### Community 140 - "4. Компоненты"
+Cohesion: 0.22
+Nodes (9): 4.1. Ядро (`packages/core`), 4.2. Адаптеры (`packages/adapter-*`), 4.3. Сервер и интерфейс, 4.4. Структура репозитория, 4.5. `hub` как общий CLI для всех нейросетей, 4.6. MCP и библиотеки (в том числе для дизайна), 4.7. Скаут скиллов («постоянный поиск»), 4.8. Политика субагентов (+1 more)
+
+### Community 155 - "rel"
+Cohesion: 0.28
+Nodes (7): json(), offenders(), rel(), ROOT, strings(), safeRel(), treeReader()
+
+### Community 156 - "8. Iteration plan"
+Cohesion: 0.25
+Nodes (8): 8. Iteration plan, Cross-cutting (12 · Opus 2 · Sonnet 10) and reviews (14 · Opus 6 · Sonnet 8), I0 — Bootstrap (6 sessions: Opus 4 · Sonnet 2), I1 — Library & sync (14 · Opus 3 · Sonnet 11), I2 — History & ledger (12 · Opus 2 · Sonnet 10), I3 — Adapters, run, handoff (16 · Opus 5 · Sonnet 11), I4 — Economics & advisor (8 · Opus 2 · Sonnet 6), I5 — Lifecycle & UI (14 · Opus 3 · Sonnet 11)
+
+### Community 157 - "mcp-test.ts"
+Cohesion: 0.36
+Nodes (6): ProbeResult, probeStdio(), Server, dir, fakeServer, testProject()
+
+### Community 158 - "automation/REVIEW.md"
+Cohesion: 0.29
+Nodes (5): Do not check, Evidence: file and line, Nit limit: 5, Paths that need a human, What counts as broken here
+
+### Community 159 - "design-study/REVIEW.md"
+Cohesion: 0.29
+Nodes (5): Do not check, Evidence: file and line, Nit limit: 5, Paths that need a human, What counts as broken here
+
+### Community 160 - "mobile-app/REVIEW.md"
+Cohesion: 0.29
+Nodes (5): Do not check, Evidence: file and line, Nit limit: 5, Paths that need a human, What counts as broken here
+
+### Community 161 - "web-saas/REVIEW.md"
+Cohesion: 0.29
+Nodes (5): Do not check, Evidence: file and line, Nit limit: 5, Paths that need a human, What counts as broken here
+
+### Community 162 - "1. Product brief (ТЗ)"
+Cohesion: 0.33
+Nodes (6): 1.1 Problem, 1.2 Product, 1.3 Users, 1.4 Goals / non-goals / anti-goals, 1.5 Scope v1 (MVP), 1. Product brief (ТЗ)
+
+### Community 163 - "2. Functional requirements"
+Cohesion: 0.33
+Nodes (6): 2. Functional requirements, Economics & advisor (Part 4), History & ledger (Part 2), Library & sync (Part 1), Lifecycle & UI (Part 5), Run, adapters & handoff (Part 3)
+
+### Community 164 - "hooks.ts"
+Cohesion: 0.47
+Nodes (5): classifyHooks(), ClaudeHooks, CODEX_KNOWN_EVENTS, HookReport, Compat
+
+### Community 165 - "map-native.test.ts"
+Cohesion: 0.47
+Nodes (4): ev(), result(), tool(), ADR-0027
+
+### Community 166 - "ADR-025: using the leftover limit before a reset is opt-in per project, starts only what the user approved, and fails closed"
+Cohesion: 0.40
+Nodes (4): ADR-025: using the leftover limit before a reset is opt-in per project, starts only what the user approved, and fails closed, Review fixes (after the Opus review of 7.3-7.5), Second review round, What an unattended agent can reach
+
+### Community 167 - "ADR-026: the circuit breaker stops runaway runs, is ON by default, and only the user's own config can loosen it"
+Cohesion: 0.40
+Nodes (4): ADR-026: the circuit breaker stops runaway runs, is ON by default, and only the user's own config can loosen it, Review fixes (after the Opus review of 7.3-7.5), Second review round, What an unattended agent can reach
+
+### Community 168 - "5. Ключевые потоки"
+Cohesion: 0.40
+Nodes (5): 5. Ключевые потоки, A. Подготовка проекта (`hub init` и этап 3), B. Запуск задачи, C. Остановка по лимиту и передача, D. Оценка плана (этап 6)
+
+### Community 169 - "6. Model routing and call specifications"
+Cohesion: 0.40
+Nodes (5): 6.1 Call types, 6.2 Effort policy, 6.3 Escalation ladder, 6.4 Subagent policy, 6. Model routing and call specifications
+
+### Community 170 - "ADR-027: the orchestrator map reads what the hub already stores; hub runs can be messaged, native sub-agents cannot; steps go to a journal; modes teach rules"
+Cohesion: 0.40
+Nodes (4): ADR-027: the orchestrator map reads what the hub already stores; hub runs can be messaged, native sub-agents cannot; steps go to a journal; modes teach rules, Consequences, Decisions, Not done in Stage 1
+
+### Community 171 - "Pipelines: short review (2026-10-28)"
+Cohesion: 0.50
+Nodes (3): Findings, Modes and "training" (what exists), Pipelines: short review (2026-10-28)
+
+### Community 172 - "5. Principles"
+Cohesion: 0.67
+Nodes (3): 5.1 Product principles, 5.2 How agents build this project, 5. Principles
+
 ## Knowledge Gaps
-- **740 isolated node(s):** `hi`, `root`, `dist`, `root`, `themes` (+735 more)
+- **820 isolated node(s):** `hi`, `root`, `dist`, `root`, `themes` (+815 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **21 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **27 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `h()` connect `h` to `btn`, `transcript.js`, `workmodes.ts`, `context-gauge.js`, `forecast.js`, `review.js`, `autouse.js`, `common.js`, `ui.js`, `project.js`, `gate.test.ts`, `logs.js`, `chip`?**
-  _High betweenness centrality (0.080) - this node is a cross-community bridge._
-- **Why does `World` connect `gate.test.ts` to `RunManager`, `history/store.ts`, `main.ts`, `security.mjs`, `gate.ts`, `h`, `Db`?**
-  _High betweenness centrality (0.057) - this node is a cross-community bridge._
-- **Why does `Security and vulnerability checks (SECURITY.md)` connect `Agent Hub (local-first hub for coding agents)` to `Workflow (one task, one worktree, test first)`, `Tooling for building the project (TOOLING.md)`, `adr/README.md`?**
-  _High betweenness centrality (0.047) - this node is a cross-community bridge._
+- **Why does `h()` connect `h` to `btn`, `transcript.js`, `map.js`, `context-gauge.js`, `gate.ts`, `forecast.js`, `review.js`, `autouse.js`, `trace.js`, `common.js`, `workmodes.ts`, `project.js`, `logs.js`, `trace-model.js`, `chip`?**
+  _High betweenness centrality (0.073) - this node is a cross-community bridge._
+- **Why does `World` connect `gate.ts` to `history/store.ts`, `main.ts`, `security.mjs`, `h`, `runner.ts`?**
+  _High betweenness centrality (0.045) - this node is a cross-community bridge._
+- **Why does `runCascade()` connect `cascade.ts` to `checks.test.ts`, `cascade.test.ts`, `transcript.js`, `api.ts`, `starter.test.ts`, `gate.ts`, `git.ts`, `checks.ts`, `h`, `forecast.ts`, `runner.ts`?**
+  _High betweenness centrality (0.036) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `h()` (e.g. with `trustedSkillLinked()` and `World`) actually correct?**
   _`h()` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `hi`, `root`, `dist` to the rest of the system?**
-  _740 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `btn` be split into smaller, more focused modules?**
-  _Cohesion score 0.1425339366515837 - nodes in this community are weakly interconnected._
+  _820 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `transcript.js` be split into smaller, more focused modules?**
-  _Cohesion score 0.12692307692307692 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.12307692307692308 - nodes in this community are weakly interconnected._
+- **Should `Not verified / known limits` be split into smaller, more focused modules?**
+  _Cohesion score 0.1368421052631579 - nodes in this community are weakly interconnected._
