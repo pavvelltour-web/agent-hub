@@ -5,6 +5,11 @@
   "permission": "edit",
   "cls": "implement",
   "worktree": true,
-  "skills": ["*"],
-  "review": "on-stuck"
+  "skills": [
+    "*"
+  ],
+  "review": "on-stuck",
+  "rules": [
+    "task"
+  ]
 }

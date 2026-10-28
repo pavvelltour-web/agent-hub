@@ -490,7 +490,7 @@ const ROUTES: [string, RegExp, Handler][] = [
     const askedPerm = body['permission'] === 'plan' || body['permission'] === 'full' || body['permission'] === 'edit' ? body['permission'] : undefined;
     try {
       let req: StartReq = { agent, prompt, projectRoot: root, ...(startNote ? { startNote } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(askedPerm ? { permission: askedPerm } : {}), ...(wm ? {} : { mode: body['mode'] === 'task' ? 'task' : 'chat' }), ...(sparse ? { sparse } : {}), ...(cls ? { cls } : {}), ...(est ? { est } : {}), ...(str(body['task']) ? { task: str(body['task']) as string } : {}), ...(str(body['resumeRunId']) ? { resumeRunId: str(body['resumeRunId']) as string } : {}), ...(sess && sid ? { resumeNativeId: sess.nativeId, resumeOfSession: sid } : {}) };
-      if (wm) { const depth = str(body['depth']); req = applyWorkMode(depth && wm.autopilot && ['strict', 'normal', 'deep'].includes(depth) ? { ...wm, autopilot: { ...wm.autopilot, depth: depth as 'strict' | 'normal' | 'deep' } } : wm, req); }
+      if (wm) { const depth = str(body['depth']); req = applyWorkMode(depth && wm.autopilot && ['strict', 'normal', 'deep'].includes(depth) ? { ...wm, autopilot: { ...wm.autopilot, depth: depth as 'strict' | 'normal' | 'deep' } } : wm, req, { withRules: true }); }   // the mode's rules are the start of the run's prompt (ADR-027)
       if (body['strategy'] === 'cascade') return await cascadeStart(c, body, req, !!(resuming || wm), model, effort, advice);
       if (body['strategy'] !== undefined && body['strategy'] !== 'single') return bad(400, "strategy must be 'single' or 'cascade'");
       const run = c.runs.start(req);

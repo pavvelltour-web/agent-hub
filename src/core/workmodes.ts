@@ -20,6 +20,8 @@ export interface WorkMode {
   review: 'none' | 'on-stuck' | 'phase';
   autopilot?: { mode: 'full' | 'semi' | 'interview' | 'manual'; depth: 'strict' | 'normal' | 'deep' };
   promptPrefix?: string;
+  /** Rules this mode teaches the agent: names of files in `rules/modes/<name>.md`. They are sent as the start of the run's prompt (see `modeRules`), never written into the project's AGENTS.md. */
+  rules?: string[];
 }
 
 const ORDER = ['chat', 'task', 'interview', 'autopilot', 'review'];
@@ -45,7 +47,25 @@ export function parseWorkMode(raw: unknown): WorkMode {
   if (!REVIEWS.includes(m.review as string)) bad('bad review');
   if (m.autopilot && (!AP_MODES.includes(m.autopilot.mode) || !AP_DEPTHS.includes(m.autopilot.depth))) bad('bad autopilot settings');
   if (m.promptPrefix !== undefined && typeof m.promptPrefix !== 'string') bad('bad promptPrefix');
+  if (m.rules !== undefined && (!Array.isArray(m.rules) || m.rules.some((s) => typeof s !== 'string' || !NAME.test(s)))) bad('bad rules');   // plain file names, never a path
   return m as WorkMode;
+}
+
+const MAX_RULES_FILE = 4096;
+/**
+ * The text a mode teaches: its rules files (`rules/modes/<name>.md`) between two marker lines, so a run log shows exactly what the agent was given. A missing file is left
+ * out (the run still starts), a file over 4 KB is cut with a marker. `files` lists what was found.
+ */
+export function modeRules(m: WorkMode, dir: string = join(REPO_ROOT, 'rules', 'modes')): { files: string[]; text: string } {
+  const files: string[] = [], parts: string[] = [];
+  for (const name of m.rules ?? []) {
+    if (!NAME.test(name)) continue;
+    let t: string;
+    try { t = readFileSync(join(dir, `${name}.md`), 'utf8').replace(/^﻿/, '').replace(/\r\n/g, '\n').trim(); } catch { continue; }
+    files.push(name);
+    parts.push(t.length > MAX_RULES_FILE ? `${t.slice(0, MAX_RULES_FILE)}\n[rules truncated]` : t);
+  }
+  return { files, text: parts.length ? `[mode rules: ${m.id}]\n${parts.join('\n\n')}\n[end mode rules]\n\n` : '' };
 }
 
 export function loadWorkModes(dir: string = join(REPO_ROOT, 'modes')): WorkMode[] {
@@ -77,7 +97,8 @@ export function trustedSkillLinked(projectRoot: string, name: string, home: stri
   return !!r && hubRoots.some((h) => { const hr = real(h); return !!hr && inside(r, hr); });
 }
 
-export interface ApplyOpts { home?: string; /** the hub library (tests inject it; default: `library(project)`, read only when a skill is not linked) */ library?: RegistryEntry[]; /** tests: the folders that count as the hub library for `trustedSkillLinked` */ hubRoots?: string[] }
+export interface ApplyOpts { home?: string; /** the hub library (tests inject it; default: `library(project)`, read only when a skill is not linked) */ library?: RegistryEntry[]; /** tests: the folders that count as the hub library for `trustedSkillLinked` */ hubRoots?: string[];
+  /** The real start route sets this: the mode's rules go into the prompt (first; after the slash command for autopilot). Off by default so the other callers (availability probes) are unchanged. */ withRules?: boolean; /** tests: another folder of rules files */ rulesDir?: string }
 
 /** The skill is linked for this agent, only in the hub library (present, but no agent loads it), or nowhere. */
 function skillState(agent: 'claude' | 'codex', projectRoot: string, name: string, o: ApplyOpts): 'linked' | 'in-library' | 'missing' {
@@ -151,6 +172,10 @@ export function applyWorkMode(m: WorkMode, req: StartReq, o: ApplyOpts = {}): St
     // optional skills: only Claude takes a slash command here; a missing one is not an error (leanPlan says so in the run)
     const first = req.agent === 'claude' ? (m.skillsIfLinked ?? []).find((n) => trustedSkillLinked(req.projectRoot, n, o.home ?? homedir(), o.hubRoots)) : undefined;
     if (first) prompt = `/${first} ${prompt}`;
+  }
+  if (o.withRules) {
+    const rules = modeRules(m, o.rulesDir).text;
+    if (rules) prompt = prompt.startsWith('/') && prompt !== req.prompt ? `${prompt}\n\n${rules.trimEnd()}` : rules + prompt;   // a slash command we added (/autopilot, /grill-me) must stay the first thing the CLI sees
   }
   return {
     ...req, prompt,

@@ -5,7 +5,15 @@
   "permission": "edit",
   "cls": "implement",
   "worktree": true,
-  "skills": ["autopilot"],
+  "skills": [
+    "autopilot"
+  ],
   "review": "phase",
-  "autopilot": { "mode": "semi", "depth": "normal" }
+  "rules": [
+    "autopilot"
+  ],
+  "autopilot": {
+    "mode": "semi",
+    "depth": "normal"
+  }
 }

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MODEL_ID } from '../econ/router.ts';
-import { applyWorkMode, loadWorkModes, parseWorkMode, pickModeReviewer, type ModeReviewer, type WorkMode } from './workmodes.ts';
+import { applyWorkMode, loadWorkModes, modeRules, parseWorkMode, pickModeReviewer, type ModeReviewer, type WorkMode } from './workmodes.ts';
 
 const proj = (): { root: string; home: string } => {
   const base = mkdtempSync(join(tmpdir(), 'hub-wm-'));
@@ -122,4 +122,64 @@ test('parseWorkMode: reviewer and skillsIfLinked are validated (names and agents
   const ok = { id: 'x', title: 'X', hint: 'h', permission: 'plan', cls: 'review', worktree: false, skills: [], review: 'none' };
   assert.deepEqual(parseWorkMode({ ...ok, reviewer: { prefer: 'codex', fallback: 'claude' }, skillsIfLinked: ['grill-me'] }).skillsIfLinked, ['grill-me']);
   for (const bad of [{ reviewer: { prefer: 'gemini', fallback: 'claude' } }, { reviewer: { prefer: 'codex' } }, { reviewer: 'codex' }, { skillsIfLinked: ['*'] }, { skillsIfLinked: ['../x'] }, { skillsIfLinked: 'grill-me' }]) assert.throws(() => parseWorkMode({ ...ok, ...bad }), /work mode/, JSON.stringify(bad));
+});
+
+// ---- teaching: rules by mode, skills by mode (orchestrator-map design, "Teaching") ----------------------------------------------------
+
+test('every shipped mode names its rules file(s); the files exist, are English and bounded', () => {
+  for (const m of loadWorkModes()) {
+    assert.deepEqual(m.rules, [m.id], `${m.id}: rules`);
+    const r = modeRules(m);
+    assert.deepEqual(r.files, [m.id], `${m.id}: the file is found`);
+    assert.ok(r.text.startsWith(`[mode rules: ${m.id}]\n`) && r.text.trimEnd().endsWith('[end mode rules]'), m.id);
+    assert.ok(!/[\u0400-\u04FF]/.test(r.text), `${m.id}: English only`);
+    assert.ok(r.text.length < 4500, `${m.id}: ${r.text.length} characters`);
+  }
+});
+
+test('what each mode teaches: permission, worktree, skills and rules, pinned per mode', () => {
+  const table = loadWorkModes().map((m) => [m.id, m.permission, m.worktree, m.skills.join('|'), (m.skillsIfLinked ?? []).join('|'), (m.rules ?? []).join('|')]);
+  assert.deepEqual(table, [
+    ['chat', 'edit', false, '*', '', 'chat'],
+    ['task', 'edit', true, '*', '', 'task'],
+    ['interview', 'plan', false, '', 'grill-me', 'interview'],
+    ['autopilot', 'edit', true, 'autopilot', '', 'autopilot'],
+    ['review', 'plan', false, '', '', 'review'],
+  ]);
+});
+
+test('applyWorkMode with rules: the rules come first, then the mode prefix, then the user text; autopilot keeps its slash command first', () => {
+  const { root, home } = proj();
+  const req = { agent: 'claude' as const, prompt: 'USER-TEXT', projectRoot: root };
+  assert.equal(applyWorkMode(mode('chat'), req, { home }).prompt, 'USER-TEXT', 'without the flag nothing is added (existing behaviour)');
+  const chat = applyWorkMode(mode('chat'), req, { home, withRules: true }).prompt;
+  assert.ok(chat.startsWith('[mode rules: chat]\n') && chat.endsWith('USER-TEXT'), chat.slice(0, 80));
+  const iv = applyWorkMode(mode('interview'), req, { home, withRules: true }).prompt;
+  const prefix = (mode('interview').promptPrefix as string).slice(0, 30);
+  assert.ok(iv.indexOf('[mode rules: interview]') === 0 && iv.indexOf('[mode rules: interview]') < iv.indexOf(prefix) && iv.indexOf(prefix) < iv.indexOf('USER-TEXT'));
+  link(join(root, '.claude', 'skills'), 'autopilot');
+  const ap = applyWorkMode(mode('autopilot'), req, { home, withRules: true }).prompt;
+  assert.ok(ap.startsWith('/autopilot semi normal USER-TEXT') && ap.indexOf('[mode rules: autopilot]') > ap.indexOf('USER-TEXT'), ap.slice(0, 80));
+});
+
+test('modeRules: a missing file is left out, an oversized file is cut with a marker, names must be plain', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-wm-rules-'));
+  writeFileSync(join(dir, 'big.md'), 'x'.repeat(10_000));
+  writeFileSync(join(dir, 'ok.md'), 'Be brief.\n');
+  const m = { ...mode('chat'), rules: ['ok', 'missing', 'big'] };
+  const r = modeRules(m, dir);
+  assert.deepEqual(r.files, ['ok', 'big']);
+  assert.ok(r.text.includes('Be brief.') && r.text.includes('[rules truncated]') && r.text.length < 5000);
+  assert.deepEqual(modeRules({ ...mode('chat'), rules: [] }, dir), { files: [], text: '' });
+  const ok = { id: 'x', title: 'X', hint: 'h', permission: 'edit', cls: 'implement', worktree: false, skills: [], review: 'none' };
+  for (const bad of [['../x'], ['a/b'], ['a b'], 'x', [1]]) assert.throws(() => parseWorkMode({ ...ok, rules: bad }), /bad rules/, JSON.stringify(bad));
+  assert.deepEqual(parseWorkMode({ ...ok, rules: ['chat'] }).rules, ['chat']);
+});
+
+test('applyWorkMode with rules: a /grill-me slash command added for Interview stays first', () => {
+  const { root, home } = proj();
+  link(join(home, '.claude', 'skills'), 'grill-me');
+  const p = applyWorkMode(mode('interview'), { agent: 'claude' as const, prompt: 'USER-TEXT', projectRoot: root }, { home, ...noLib, withRules: true }).prompt;
+  assert.ok(p.startsWith('/grill-me Before doing anything, interview me'), p.slice(0, 60));
+  assert.ok(p.indexOf('[mode rules: interview]') > p.indexOf('USER-TEXT') && p.endsWith('[end mode rules]'));
 });

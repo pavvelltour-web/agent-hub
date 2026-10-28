@@ -6,7 +6,13 @@
   "cls": "review",
   "worktree": false,
   "skills": [],
-  "reviewer": { "prefer": "codex", "fallback": "claude" },
+  "reviewer": {
+    "prefer": "codex",
+    "fallback": "claude"
+  },
   "review": "none",
-  "promptPrefix": "Review the current changes read-only. Answer exactly as: VERDICT: pass | blocking, then BLOCKING: file:line — condition that must hold (0..n lines), then FINDINGS: file:line — issue (0..n lines). Do not edit any file.\n\n"
+  "promptPrefix": "Review the current changes read-only. Answer exactly as: VERDICT: pass | blocking, then BLOCKING: file:line — condition that must hold (0..n lines), then FINDINGS: file:line — issue (0..n lines). Do not edit any file.\n\n",
+  "rules": [
+    "review"
+  ]
 }

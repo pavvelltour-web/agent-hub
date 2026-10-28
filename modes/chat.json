@@ -5,6 +5,11 @@
   "permission": "edit",
   "cls": "implement",
   "worktree": false,
-  "skills": ["*"],
-  "review": "none"
+  "skills": [
+    "*"
+  ],
+  "review": "none",
+  "rules": [
+    "chat"
+  ]
 }
