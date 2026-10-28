@@ -25,15 +25,18 @@ const root = mkdtempSync(join(tmpdir(), 'hub-casc-apirepo-'));
 after(async () => { await srv.close(); for (const d of [fake, root, `${root}-worktrees`]) try { rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* Windows */ } });
 const cookie = `hub_token=${srv.token}`;
 const api = async (path: string, init: { method?: string; body?: unknown } = {}): Promise<{ status: number; json: any }> => {
-  const r = await fetch(`http://127.0.0.1:${srv.port}${path}`, { method: init.method ?? 'GET', headers: { cookie, ...(init.body ? { 'content-type': 'application/json' } : {}) }, ...(init.body ? { body: JSON.stringify(init.body) } : {}) });
+  const t0 = Date.now();
+  const r = await fetch(`http://127.0.0.1:${srv.port}${path}`, { method: init.method ?? 'GET', headers: { cookie, ...(init.body ? { 'content-type': 'application/json' } : {}) }, ...(init.body ? { body: JSON.stringify(init.body) } : {}) })
+    .catch((e: Error & { cause?: { code?: string } }) => { throw new Error(`${init.method ?? 'GET'} ${path} failed after ${Date.now() - t0} ms: ${e.cause?.code ?? e.message}`, { cause: e }); });
   return { status: r.status, json: await r.json().catch(() => null) };
 };
 const until = async (fn: () => Promise<boolean>, ms = 15000): Promise<void> => { const t = Date.now(); while (Date.now() - t < ms) { if (await fn()) return; await new Promise((r) => setTimeout(r, 100)); } throw new Error('timeout'); };
 
-git(root, ['init', '-q', '-b', 'main']);
+const must = (args: string[]): void => { const r = git(root, args); if (!r.ok) throw new Error(`test setup: git ${args.join(' ')} failed: ${r.err || '(no stderr: the process did not run)'}`); };
+must(['init', '-q', '-b', 'main']);
 writeFileSync(join(root, 'check.js'), "const t = require('node:fs').readFileSync('impl.txt', 'utf8').trim(); if (t !== 'good') { console.error('FAIL ' + t); process.exit(1); }\n");
 writeFileSync(join(root, 'impl.txt'), 'bad\n');
-git(root, ['add', '-A']); git(root, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'i']);
+must(['add', '-A']); must(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'i']);
 const start = (extra: Record<string, unknown>) => api('/api/runs', { method: 'POST', body: { projectId: pid, agent: 'claude', model: 'claude-sonnet-5-5', prompt: 'make impl.txt say good', mode: 'task', task: 'casc', strategy: 'cascade', ...extra } });
 const pid = (await api('/api/projects', { method: 'POST', body: { path: root } })).json.id as number;
 

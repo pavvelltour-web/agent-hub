@@ -92,6 +92,8 @@ export async function startServer(ctx: Ctx, o: { port?: number; token?: string; 
     } catch { return send(res, 500, JSON.stringify({ error: 'internal error' })); }
   });
 
+  // Handlers run git with spawnSync (up to 60 s): a stalled loop lets Node's default 5 s keep-alive timer expire before the request waiting on that socket is read, and the client sees ECONNRESET.
+  server.keepAliveTimeout = 65_000; server.headersTimeout = 66_000;
   await new Promise<void>((r) => server.listen(o.port ?? 0, '127.0.0.1', r));
   port = (server.address() as { port: number }).port;
   return { server, port, token, url: `http://127.0.0.1:${port}/?t=${token}`, close: () => new Promise((r) => { server.closeAllConnections(); server.close(() => r()); }), warnings };
