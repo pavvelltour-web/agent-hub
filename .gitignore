@@ -6,6 +6,7 @@ design/prototypes/captures/iter*/
 .hub/runs/
 *.log
 dist/
+test-report*.md
 
 # local data of this machine (hub database, archives): never published
 /_local/

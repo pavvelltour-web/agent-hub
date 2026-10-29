@@ -5,6 +5,10 @@
   "type": "module",
   "private": true,
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/pavvelltour-web/agent-hub.git" },
+  "bugs": { "url": "https://github.com/pavvelltour-web/agent-hub/issues" },
+  "homepage": "https://github.com/pavvelltour-web/agent-hub#readme",
+  "keywords": ["coding-agents", "claude-code", "codex", "mcp", "skills", "local-first", "handoff"],
   "engines": {
     "node": ">=24"
   },
@@ -13,6 +17,7 @@
   },
   "scripts": {
     "test": "node --disable-warning=ExperimentalWarning --test \"src/**/*.test.ts\"",
+    "test:all": "node scripts/test-all.mjs",
     "typecheck": "tsc --noEmit",
     "security": "node scripts/security.mjs",
     "hub": "node --disable-warning=ExperimentalWarning bin/hub.js",
@@ -46,6 +51,7 @@
     "design/DESIGN-SYSTEM.md",
     "docs",
     "scripts/security.mjs",
+    "scripts/test-all.mjs",
     "scripts/install.ps1",
     "README.md",
     "LICENSE",

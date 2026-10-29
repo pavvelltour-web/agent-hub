@@ -3,6 +3,14 @@
 > Three parts. **v0.3 Stage 1 (2026-10-28)** is first, then the **v0.2 wrap-up (2026-10-28)**; the **v0.1.0 baseline against PLAN.md (2026-10-22)** follows it, and the per-task v0.2 records come after that.
 > Legend for the v0.1 table: ✔ done and tested · ◐ partial · ✘ not done. For v0.2: **observed** = ran or saw it in this session · **inferred** = reasoned, not run · **proposed** = not done, suggested. Only the user writes "approved".
 
+## Public-repository readiness (2026-10-29)
+
+**Observed:** one run of `node scripts/test-all.mjs` (new): 786 tests pass in 12 folders, `tsc` clean, security 17/17, diagrams up to date. Its first attempt failed twice and the causes were found: (1) `--tmp D:/…` with forward slashes made `src/review/agents.test.ts` ("under os.tmpdir") fail, reproduced from Node (Git Bash had hidden it by rewriting the variable), fixed by normalising the path in the script (`scratchDir`); (2) the test plan held a literal fake key and the repository's secret scan rejected it, fixed by building the key at run time.
+
+**Added:** `scripts/test-all.mjs`, a CI matrix of one job per test folder plus a `checks` job (a test fails when the list and the folders differ), root `SECURITY.md` and `CONTRIBUTING.md`, package metadata (still `private: true`: it is run from a clone, not published to npm), and `docs/TEST-PLAN.md`, a protocol of 85 steps (clean install, automated checks, CLI, panel, real agents, server security, documents, repository settings) with a report form.
+
+**Not verified:** every real-CLI step (part E of the plan), the CI on GitHub (never run), the panel on other browsers, and the whole plan by a person other than the author. Stage 2 is designed (ADR-028) and **not built**.
+
 ## v0.2 wrap-up (Task 6.1, 2026-10-28, branch `v0.2/p-pr-review`)
 
 ### Gates (observed, on D:, after the keep-alive fix below)

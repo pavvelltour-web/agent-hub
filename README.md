@@ -4,7 +4,9 @@
 
 *English, short:* a local-first hub (CLI + panel on `127.0.0.1`) that unifies skills, rules and MCP across Claude Code and Codex, runs agents on tasks in git worktrees, hands work over when a limit is hit, imports both agents' history read-only into one searchable index, advises models by cost and quality, and puts every agent branch through a review gate that only a human can approve. Windows first, Node 24, zero runtime dependencies. Not published to npm: run from a clone.
 
-> **Статус: v0.2, ветка `v0.2/p-pr-review`.** Всё собрано и проверено тестами с поддельными агентами. **Реальные Claude и Codex не прогонялись по новым частям v0.2 от начала до конца** (CLI Claude на машине автора не залогинен). Что наблюдалось, что только выведено и что не проверено, написано по каждому пункту в [docs/STATUS.md](docs/STATUS.md). Решения: [docs/adr/README.md](docs/adr/README.md).
+> **Статус: v0.3 (карта оркестратора), ранняя версия, `0.x`.** Всё собрано и проверено автотестами с поддельными агентами. **Реальные Claude и Codex не прогонялись по новым частям от начала до конца** (CLI Claude на машине автора не залогинен); GitHub CI ни разу не запускался. Что наблюдалось, что только выведено и что не проверено, написано по каждому пункту в [docs/STATUS.md](docs/STATUS.md). Решения: [docs/adr/README.md](docs/adr/README.md). Этап 2 (оркестратор раздаёт задачи рабочим агентам) пока только спроектирован: [дизайн](docs/superpowers/specs/2026-10-28-orchestrator-mode-design.md), [ADR-028](docs/adr/028-orchestrator-mode.md); кода нет.
+>
+> **Хотите проверить сами?** Полный пошаговый протокол с формой отчёта: [docs/TEST-PLAN.md](docs/TEST-PLAN.md). Как вносить изменения: [CONTRIBUTING.md](CONTRIBUTING.md). Как сообщить об уязвимости: [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -274,7 +276,7 @@ web/              панель: ES-модули без сборки, локал�
 design/           themes.json → tokens.css (4 темы), DESIGN-SYSTEM.md
 registry/ packs/ modes/ rules/ templates/ stages/   каталог, пресеты, режимы, правила, шаблоны, этапы
 eval/             эталонные случаи для ревьюеров
-scripts/          install.ps1 (только чтение), security.mjs
+scripts/          install.ps1 (только чтение), security.mjs, test-all.mjs (тесты по папкам с отчётом)
 docs/             PLAN, ARCHITECTURE, DATA-MODEL, SECURITY, STATUS, adr/, generated/ (схемы)
 graphify-out/     граф проекта (карта кода для агентов)
 AGENTS.md         правила для агентов, работающих в этом репозитории
@@ -288,11 +290,13 @@ AGENTS.md         правила для агентов, работающих в 
 npm run typecheck   # tsc --noEmit, строгий режим
 npm run security    # зависимости, секреты, опасные шаблоны, содержимое пакета (17 проверок)
 node bin/hub.js diagram --check
-# тесты: node:test; весь набор одной командой идёт больше 10 минут, поэтому по папкам:
-node --disable-warning=ExperimentalWarning --test "src/server/**/*.test.ts"
+# все тесты по папкам + tsc + security + схемы, с отчётом test-report.md (около 10–15 минут):
+node scripts/test-all.mjs
+# одна или несколько папок:
+node scripts/test-all.mjs --only server,run
 ```
 
-Состояние на 2026-10-28 (**observed**, по папкам): 731 тест зелёный, `tsc` чисто, security 17/17, схемы актуальны. Правила для агентов, работающих в репозитории: [AGENTS.md](AGENTS.md).
+Одной командой `npm test` набор идёт больше 10 минут в одном процессе; `scripts/test-all.mjs` делает то же по папкам и пишет отчёт, который можно приложить к issue. Состояние на 2026-10-29 (**observed**, `scripts/test-all.mjs`): 786 тестов зелёные, `tsc` чисто, security 17/17, схемы актуальны. Правила для агентов, работающих в репозитории: [AGENTS.md](AGENTS.md).
 
 Тесты используют временную папку; она не должна лежать внутри репозитория (задайте `TEMP`/`TMP` на каталог вне клона).
 

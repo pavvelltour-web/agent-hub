@@ -1,12 +1,15 @@
-# Runs on pull requests and by hand (Actions -> ci -> Run workflow), not on every push: the whole suite in one command takes
-# over 10 minutes on a loaded machine and has never been run on GitHub's runners yet (docs/PIPELINES-REVIEW.md, F1).
-# Proposed next step: one job per folder of src/ (that is how it was made reliable locally), then trigger on push again.
+# Runs on pull requests and by hand (Actions -> ci -> Run workflow). It has not been run on GitHub's runners yet:
+# run it once by hand after publishing and read docs/TEST-PLAN.md (part H) before switching it on for every push.
+# Tests run one job per folder of src/ (the whole suite in one command takes over 10 minutes and was only reliable per folder).
+# A test that checks this file (src/lib/test-all.test.ts) fails when the `dir` list below and the folders that hold tests differ.
 name: ci
 on:
   pull_request:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
-  test:
+  checks:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,6 +18,25 @@ jobs:
       - run: npm install -g pnpm@9
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test
       - run: pnpm security
+      - run: node bin/hub.js diagram arch --check
       - run: pnpm build
+  test:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [adapters, bench, cli, core, diagram, econ, history, lib, review, run, server, stages]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm install -g pnpm@9
+      - run: pnpm install --frozen-lockfile
+      # Some tests make commits in temporary repositories and need an identity; it is for the runner only.
+      - run: git config --global user.email "ci@example.invalid"
+      - run: git config --global user.name "ci"
+      - run: node scripts/test-all.mjs --only ${{ matrix.dir }} --out report.md
+      - if: always()
+        shell: bash
+        run: cat report.md >> "$GITHUB_STEP_SUMMARY"

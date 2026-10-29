@@ -1,6 +1,6 @@
 # Orchestrator mode (Stage 2): the hub splits a goal and runs workers, then merges only what passes the gates
 
-Status: **proposed, waiting for the user's approval of this document.** No code is written. ADR: `docs/adr/028-orchestrator-mode.md` (draft).
+Status: **complete, waiting for the user's approval of this document (the word "approved" is the user's).** No code is written. The builder check was done (7 gaps, closed in "Decisions added after the builder check"); the three questions that were open are closed below **by my recommendation** and stay changeable until approval. ADR: `docs/adr/028-orchestrator-mode.md` (proposed).
 Marks: **[user]** = the user's words · **[call]** = my decision, change it if you disagree · **[open]** = needs the user's answer · statuses of facts: **observed** (read in code) · **inferred** · **proposed**.
 
 ## Intent and why
@@ -84,13 +84,13 @@ All gates run **by the hub in a clean copy of the commit** (as the cascade's ver
 - **[call]** The hub does **not** depend on Playwright and never installs it (ADR-010; a new dependency needs the user's OK and an ADR). Instead the `qa` gate runs the **project's own** end-to-end command if the project has one (for example a `test:e2e` script that uses Playwright), approved like any other argv. If the project has none, `qa` falls back to plain autotests and says so on the node ("no e2e configured").
 - The planner writes **cases** as plain sentences; the worker must add a test for each case (named after the case id in a comment/test title); the hub checks the mapping by searching the case ids in the changed test files. A case without a test is a `qa` failure. This is a heuristic (a test that asserts nothing passes the mapping, not the review): the review gate's Opus pass reads the cases against the tests.
 - For this repository (the hub itself) the panel is checked in the built-in browser by the person or the session; **no e2e command exists yet** and none is added in this stage.
-- **[open 1]** Do you want me to *propose* adding Playwright to this repository as a **dev** dependency in a separate task (needs your OK + ADR), or keep the hub's own UI checked by browser sessions as now?
+- Playwright for the hub's own UI is out of this stage (see "Former open questions").
 
 ### Graph (graphify) as part of the loop
 
 - **Context in:** before a worker starts, the hub runs `graphify query "<piece goal>" --budget 800` against the **root graph** (read-only) and puts the node list (file + section) at the start of the worker's prompt, so the worker opens only what the graph points to (AGENTS.md read order). If the graph is missing, the worker is told so.
 - **Refresh out:** after each piece is merged into the integration branch, the hub runs the code-only `graphify update` in the **integration worktree** and commits the graph files on that branch with the merge. The `graph` gate fails when the committed graph does not match the branch tip. On the map this is a hub-job node.
-- **[open 2]** AGENTS.md says "worktrees use the root graph; never build a copy inside a worktree". Committing the graph on the integration branch is what keeps the graph current without a separate step, but it builds graph output inside a worktree. Options: (a) **recommended**: allow it only for the integration worktree, once per piece, and say so in the ADR; (b) refresh in the root checkout after you merge (graph is stale during the run, workers query an older graph). I will not edit AGENTS.md without your word.
+- AGENTS.md says "worktrees use the root graph; never build a copy inside a worktree". Committing the graph on the integration branch keeps the graph current without a separate step, but builds graph output inside a worktree. **Chosen (a):** allowed only for the integration worktree, once per piece, recorded in the ADR (see "Former open questions"); the alternative (b) is to refresh in the root checkout after you merge (graph stale during the run). `AGENTS.md` is not edited by me.
 
 ## Team panel: skills, plugins, MCP
 
@@ -140,8 +140,14 @@ File layout under `src/orch/`, the exact JSON schema field names, the wording of
 6. **Review gate.** The **full ADR-019 machinery is reused unchanged** (hunters and verifiers, the existing round limit, the human approval of the exact commit), run once on the final integration tip; it needs a run row to hang on, so the orchestration's root run is a **synthetic orchestrator run** row (`work_mode: 'orchestrator'`, no agent process; left out of cost and routing stats like reviewer runs). The person therefore touches it **three** times: approve the plan, approve the review, merge into their own branch (the first sentence of "Intent" says two decisions: read it as "plan" and "final merge"; the review approval is the gate in front of the final merge).
 7. **Gate commands.** Proposals (from `package.json` scripts and the project's `hub.json`) are shown **on the plan approval screen**; approving the plan approves those exact argv, pinned by digest, and the approval is stored in the hub home folder (with the existing approvals), keyed by project and digest. **The hub never writes `hub.json` or any file of the person's repository** for this. A changed command needs a new approval.
 
-## Open questions for the user
+## Former open questions, closed by recommendation (**[call]**, change before approving)
 
-1. **[open 1]** Playwright for this repository: propose as a dev dependency in a separate task, or keep browser-session checks? (The hub works either way.)
-2. **[open 2]** Graph on the integration branch: option (a) recommended, or (b)?
-3. **[open 3]** Size limits (400 changed lines / 12 files per piece, 400 lines per source file): keep or change the numbers?
+1. **Playwright for this repository: not added in Stage 2.** The hub's own panel is checked by the manual protocol in `docs/TEST-PLAN.md` (part D) and by browser sessions; if you want an automated browser suite for the hub, that is a separate task with its own ADR and your OK for a dev dependency. The `qa` gate works for other projects without it (it runs *their* e2e command).
+2. **Graph on the integration branch: option (a).** The graph is refreshed and committed only in the **integration worktree**, once per merged piece, and the ADR records this as the single exception to "never build a graph copy inside a worktree". `AGENTS.md` is **not edited** by me; if you approve the document you also accept this exception, and you may change that line of `AGENTS.md` yourself.
+3. **Size limits kept as guessed:** 400 changed lines and 12 files per piece, 400 lines per source file. They live in one constant block and in the project's gate settings, so changing them is a one-line change. Real numbers should come from the first real orchestrations.
+
+## What would still make this design wrong (honest list)
+
+- Nothing here has met a real planner or worker: plan quality, cost and the failure rate are unknown until `docs/TEST-PLAN.md` part E is run with a signed-in CLI.
+- The `qa` case-to-test mapping is a heuristic.
+- Merging and gating many branches is slow on Windows (synchronous git); the first measurements may force an asynchronous git layer.
